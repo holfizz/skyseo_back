@@ -1,0 +1,327 @@
+{
+	"info": {
+		"name": "SkySEO API",
+		"description": "API для системы обмена посещениями SkySEO",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000"
+		},
+		{
+			"key": "token",
+			"value": ""
+		}
+	],
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Register",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\",\n  \"city\": \"Москва\",\n  \"referralSource\": \"Google\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/register",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "register"]
+						}
+					}
+				},
+				{
+					"name": "Login",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "login"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Users",
+			"item": [
+				{
+					"name": "Get Profile",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/users/profile",
+							"host": ["{{baseUrl}}"],
+							"path": ["users", "profile"]
+						}
+					}
+				},
+				{
+					"name": "Balance History",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/users/balance-history",
+							"host": ["{{baseUrl}}"],
+							"path": ["users", "balance-history"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Websites",
+			"item": [
+				{
+					"name": "Create Website",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"url\": \"https://example.com\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/websites",
+							"host": ["{{baseUrl}}"],
+							"path": ["websites"]
+						}
+					}
+				},
+				{
+					"name": "Get All Websites",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/websites",
+							"host": ["{{baseUrl}}"],
+							"path": ["websites"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Tasks",
+			"item": [
+				{
+					"name": "Create Task (Keyword)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"websiteId\": \"WEBSITE_ID\",\n  \"type\": \"SEARCH_KEYWORD\",\n  \"keyword\": \"купить телефон\",\n  \"geo\": \"Москва\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/tasks",
+							"host": ["{{baseUrl}}"],
+							"path": ["tasks"]
+						}
+					}
+				},
+				{
+					"name": "Get My Tasks",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/tasks/my",
+							"host": ["{{baseUrl}}"],
+							"path": ["tasks", "my"]
+						}
+					}
+				},
+				{
+					"name": "Get Available Task",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/tasks/available",
+							"host": ["{{baseUrl}}"],
+							"path": ["tasks", "available"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Executions",
+			"item": [
+				{
+					"name": "Start Execution",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"taskId\": \"TASK_ID\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/executions/start",
+							"host": ["{{baseUrl}}"],
+							"path": ["executions", "start"]
+						}
+					}
+				},
+				{
+					"name": "Complete Execution",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"foundInTop\": true,\n  \"position\": 5,\n  \"pagesVisited\": 3,\n  \"duration\": 120\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/executions/EXECUTION_ID/complete",
+							"host": ["{{baseUrl}}"],
+							"path": ["executions", "EXECUTION_ID", "complete"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Admin",
+			"item": [
+				{
+					"name": "Get Statistics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/admin/statistics",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "statistics"]
+						}
+					}
+				},
+				{
+					"name": "Get All Users",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/admin/users",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "users"]
+						}
+					}
+				},
+				{
+					"name": "Get Active Users Now",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/admin/active-users",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "active-users"]
+						}
+					}
+				}
+			]
+		}
+	]
+}

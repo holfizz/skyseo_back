@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "statistics" ADD COLUMN     "googleSearches" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "googleVisits" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "yandexSearches" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "yandexVisits" INTEGER NOT NULL DEFAULT 0;

@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  password            String
+  balance             Int       @default(1000) // Приветственный бонус 1000 баллов
+  role                Role      @default(USER)
+  referralSource      String? // Откуда узнал
+  city                String? // Город пользователя
+  isActive            Boolean   @default(true)
+  isSuspicious        Boolean   @default(false) // Флаг подозрительной активности
+  lastLoginIp         String? // Последний IP входа
+  registrationIp      String? // IP регистрации
+  failedLoginAttempts Int       @default(0) // Неудачные попытки входа
+  lastFailedLogin     DateTime? // Последняя неудачная попытка
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  websites       Website[]
+  executions     Execution[]
+  payments       Payment[]
+  balanceHistory BalanceHistory[]
+
+  @@map("users")
+}
+
+model Website {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  url       String
+  city      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks      Task[]
+  statistics Statistic[]
+
+  @@map("websites")
+}
+
+model Task {
+  id               String     @id @default(uuid())
+  websiteId        String
+  type             TaskType
+  keyword          String? // Для поиска
+  externalUrl      String? // Для внешних ссылок
+  geo              String     @default("Москва") // Город для выполнения
+  status           TaskStatus @default(PENDING)
+  pointsCost       Int        @default(10) // Стоимость задачи
+  priority         Int        @default(0)
+  maxYandexVisits  Int        @default(3) // Максимум посещений из Яндекса в сутки
+  maxGoogleVisits  Int        @default(3) // Максимум посещений из Google в сутки
+  pagesDepthFrom   Int        @default(3) // Минимальная глубина просмотра страниц
+  pagesDepthTo     Int        @default(5) // Максимальная глубина просмотра страниц
+  pageDurationFrom Int        @default(60) // Минимальная длительность просмотра страницы (сек)
+  pageDurationTo   Int        @default(180) // Максимальная длительность просмотра страницы (сек)
+  isActive         Boolean    @default(true)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  assignedAt       DateTime?
+  completedAt      DateTime?
+
+  website    Website     @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  executions Execution[]
+
+  @@index([status, priority])
+  @@map("tasks")
+}
+
+model Execution {
+  id           String          @id @default(uuid())
+  taskId       String
+  executorId   String
+  status       ExecutionStatus @default(IN_PROGRESS)
+  pointsEarned Int             @default(0) // Баллы заработанные исполнителем
+  pointsSpent  Int             @default(0) // Баллы списанные с владельца
+  foundInTop   Boolean? // Найден ли сайт/ссылка
+  position     Int? // Позиция в выдаче (для SEARCH_KEYWORD)
+  pagesVisited Int             @default(0)
+  duration     Int             @default(0) // Секунды
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime        @default(now())
+  completedAt  DateTime?
+
+  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  executor User @relation(fields: [executorId], references: [id], onDelete: Cascade)
+
+  @@map("executions")
+}
+
+model Statistic {
+  id             String   @id @default(uuid())
+  websiteId      String
+  keyword        String
+  position       Int? // null если ниже топ-50
+  inTop1         Int      @default(0)
+  inTop2_3       Int      @default(0)
+  inTop5         Int      @default(0)
+  inTop10        Int      @default(0)
+  inTop50        Int      @default(0)
+  belowTop50     Int      @default(0)
+  totalVisits    Int      @default(0)
+  yandexSearches Int      @default(0) // Количество поисков в Яндексе
+  googleSearches Int      @default(0) // Количество поисков в Google
+  yandexVisits   Int      @default(0) // Количество визитов из Яндекса
+  googleVisits   Int      @default(0) // Количество визитов из Google
+  date           DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, keyword, date])
+  @@map("statistics")
+}
+
+model BalanceHistory {
+  id          String             @id @default(uuid())
+  userId      String
+  amount      Int // Положительное или отрицательное
+  type        BalanceHistoryType
+  description String
+  taskId      String?
+  createdAt   DateTime           @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("balance_history")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  userId          String
+  amount          Decimal       @db.Decimal(10, 2)
+  points          Int
+  status          PaymentStatus @default(PENDING)
+  provider        String        @default("yookassa")
+  externalId      String?       @unique // ID платежа в YooKassa
+  confirmationUrl String?
+  createdAt       DateTime      @default(now())
+  paidAt          DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum TaskType {
+  SEARCH_KEYWORD // Поиск по ключевому слову
+  EXTERNAL_LINK // Переход по внешней ссылке
+  SEARCH_AND_VISIT // Поиск и посещение сайта
+}
+
+enum TaskStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum ExecutionStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum BalanceHistoryType {
+  WELCOME_BONUS
+  TASK_EARNED
+  TASK_SPENT
+  PAYMENT
+  REFUND
+  ADMIN_ADJUSTMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  CANCELED
+  FAILED
+}
