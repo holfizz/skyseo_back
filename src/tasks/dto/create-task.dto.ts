@@ -44,4 +44,24 @@ export class CreateTaskDto {
 	@IsOptional()
 	@IsBoolean()
 	useGoogle?: boolean
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	pagesDepthFrom?: number
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	pagesDepthTo?: number
+
+	@IsOptional()
+	@IsInt()
+	@Min(10)
+	pageDurationFrom?: number
+
+	@IsOptional()
+	@IsInt()
+	@Min(10)
+	pageDurationTo?: number
 }

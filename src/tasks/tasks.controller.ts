@@ -56,9 +56,14 @@ export class TasksController {
 	@Post(':id/initial-position')
 	async saveInitialPosition(
 		@Param('id') taskId: string,
-		@Body() body: { yandexPosition: number | null },
+		@Body()
+		body: { yandexPosition: number | null; googlePosition?: number | null },
 	) {
-		return this.tasksService.saveInitialPosition(taskId, body.yandexPosition)
+		return this.tasksService.saveInitialPosition(
+			taskId,
+			body.yandexPosition,
+			body.googlePosition ?? null,
+		)
 	}
 
 	@Delete(':id')

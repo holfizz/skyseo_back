@@ -44,8 +44,12 @@ export class TasksService {
 				pointsCost,
 				maxYandexVisits: dto.maxYandexVisits || 3,
 				maxGoogleVisits: dto.maxGoogleVisits || 3,
-				useYandex: dto.useYandex !== false, // По умолчанию true
-				useGoogle: dto.useGoogle !== false, // По умолчанию true
+				useYandex: dto.useYandex !== false,
+				useGoogle: dto.useGoogle !== false,
+				pagesDepthFrom: dto.pagesDepthFrom || 3,
+				pagesDepthTo: dto.pagesDepthTo || 5,
+				pageDurationFrom: dto.pageDurationFrom || 60,
+				pageDurationTo: dto.pageDurationTo || 180,
 			},
 		})
 
@@ -289,28 +293,24 @@ export class TasksService {
 		return history
 	}
 
-	async saveInitialPosition(taskId: string, yandexPosition: number | null) {
-		// Проверяем, нет ли уже начальной позиции
+	async saveInitialPosition(
+		taskId: string,
+		yandexPosition: number | null,
+		googlePosition: number | null = null,
+	) {
 		const existing = await this.prisma.positionHistory.findFirst({
 			where: { taskId },
 			orderBy: { createdAt: 'asc' },
 		})
 
-		if (existing) {
-			// Уже есть хотя бы одна точка — не перезаписываем
-			return existing
-		}
+		if (existing) return existing
 
 		const record = await this.prisma.positionHistory.create({
-			data: {
-				taskId,
-				yandexPosition,
-				googlePosition: null, // Google не проверяем при инициализации
-			},
+			data: { taskId, yandexPosition, googlePosition },
 		})
 
 		console.log(
-			`[TasksService] ✅ Начальная позиция сохранена: taskId=${taskId}, Яндекс=${yandexPosition ?? 'не в топ-100'}`,
+			`[TasksService] ✅ Начальная позиция: taskId=${taskId}, Яндекс=${yandexPosition ?? 'нет'}, Google=${googlePosition ?? 'нет'}`,
 		)
 
 		return record
