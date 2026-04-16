@@ -1,4 +1,5 @@
 import {
+	IsBoolean,
 	IsEnum,
 	IsInt,
 	IsOptional,
@@ -35,4 +36,12 @@ export class CreateTaskDto {
 	@IsInt()
 	@Min(1)
 	maxGoogleVisits?: number
+
+	@IsOptional()
+	@IsBoolean()
+	useYandex?: boolean
+
+	@IsOptional()
+	@IsBoolean()
+	useGoogle?: boolean
 }

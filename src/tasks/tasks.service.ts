@@ -44,6 +44,8 @@ export class TasksService {
 				pointsCost,
 				maxYandexVisits: dto.maxYandexVisits || 3,
 				maxGoogleVisits: dto.maxGoogleVisits || 3,
+				useYandex: dto.useYandex !== false, // По умолчанию true
+				useGoogle: dto.useGoogle !== false, // По умолчанию true
 			},
 		})
 

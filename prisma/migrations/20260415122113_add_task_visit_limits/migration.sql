@@ -1,6 +1,0 @@
--- AlterTable
-ALTER TABLE "tasks" ADD COLUMN     "isActive" BOOLEAN NOT NULL DEFAULT true,
-ADD COLUMN     "maxGoogleVisits" INTEGER NOT NULL DEFAULT 3,
-ADD COLUMN     "maxYandexVisits" INTEGER NOT NULL DEFAULT 3,
-ALTER COLUMN "geo" SET DEFAULT 'Москва',
-ALTER COLUMN "pointsCost" SET DEFAULT 10;

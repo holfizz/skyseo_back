@@ -61,6 +61,8 @@ model Task {
   priority         Int        @default(0)
   maxYandexVisits  Int        @default(3) // Максимум посещений из Яндекса в сутки
   maxGoogleVisits  Int        @default(3) // Максимум посещений из Google в сутки
+  useYandex        Boolean    @default(true) // Использовать Яндекс
+  useGoogle        Boolean    @default(true) // Использовать Google
   pagesDepthFrom   Int        @default(3) // Минимальная глубина просмотра страниц
   pagesDepthTo     Int        @default(5) // Максимальная глубина просмотра страниц
   pageDurationFrom Int        @default(60) // Минимальная длительность просмотра страницы (сек)
