@@ -1,10 +1,10 @@
-import { Body, Controller, Post, Request, UseGuards } from '@nestjs/common'
-import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { Body, Controller, Post } from '@nestjs/common'
 import { TelegramService } from './telegram.service'
 
 class SendComplaintDto {
 	text: string
 	contact?: string
+	email?: string
 }
 
 @Controller('telegram')
@@ -12,13 +12,12 @@ export class TelegramController {
 	constructor(private telegramService: TelegramService) {}
 
 	@Post('complaint')
-	@UseGuards(JwtAuthGuard)
-	async sendComplaint(@Body() dto: SendComplaintDto, @Request() req) {
+	async sendComplaint(@Body() dto: SendComplaintDto) {
 		await this.telegramService.sendComplaintNotification(
 			dto.text,
 			dto.contact,
-			req.user.email,
+			dto.email,
 		)
-		return { success: true, message: 'Жалоба отправлена' }
+		return { success: true, message: 'Сообщение отправлено' }
 	}
 }
