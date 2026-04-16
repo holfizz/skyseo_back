@@ -289,6 +289,47 @@ export class TasksService {
 		return history
 	}
 
+	async saveInitialPosition(taskId: string, yandexPosition: number | null) {
+		// Проверяем, нет ли уже начальной позиции
+		const existing = await this.prisma.positionHistory.findFirst({
+			where: { taskId },
+			orderBy: { createdAt: 'asc' },
+		})
+
+		if (existing) {
+			// Уже есть хотя бы одна точка — не перезаписываем
+			return existing
+		}
+
+		const record = await this.prisma.positionHistory.create({
+			data: {
+				taskId,
+				yandexPosition,
+				googlePosition: null, // Google не проверяем при инициализации
+			},
+		})
+
+		console.log(
+			`[TasksService] ✅ Начальная позиция сохранена: taskId=${taskId}, Яндекс=${yandexPosition ?? 'не в топ-100'}`,
+		)
+
+		return record
+	}
+
+	async deleteTask(userId: string, taskId: string) {
+		const task = await this.prisma.task.findUnique({
+			where: { id: taskId },
+			include: { website: true },
+		})
+
+		if (!task || task.website.userId !== userId) {
+			throw new NotFoundException('Task not found')
+		}
+
+		await this.prisma.task.delete({ where: { id: taskId } })
+		return { success: true }
+	}
+
 	private calculateTaskCost(type: string): number {
 		// Стоимость будет списана при выполнении
 		// Здесь возвращаем примерную стоимость для проверки баланса

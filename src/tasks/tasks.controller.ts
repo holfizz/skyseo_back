@@ -1,6 +1,7 @@
 import {
 	Body,
 	Controller,
+	Delete,
 	Get,
 	Param,
 	Post,
@@ -50,5 +51,18 @@ export class TasksController {
 	) {
 		const daysNum = days ? parseInt(days, 10) : 7
 		return this.tasksService.getPositionHistory(taskId, daysNum)
+	}
+
+	@Post(':id/initial-position')
+	async saveInitialPosition(
+		@Param('id') taskId: string,
+		@Body() body: { yandexPosition: number | null },
+	) {
+		return this.tasksService.saveInitialPosition(taskId, body.yandexPosition)
+	}
+
+	@Delete(':id')
+	async deleteTask(@Request() req, @Param('id') taskId: string) {
+		return this.tasksService.deleteTask(req.user.id, taskId)
 	}
 }

@@ -179,17 +179,24 @@ export class ExecutionsService {
 		// НЕ меняем статус задачи - она остается PENDING для следующих выполнений
 		// Задача выполняется много раз разными исполнителями
 
-		// Сохраняем историю позиций
-		if (execution.task.type === 'SEARCH_KEYWORD' && dto.position) {
+		// Сохраняем историю позиций (для SEARCH_KEYWORD и SEARCH_AND_VISIT)
+		const shouldSavePosition =
+			execution.task.type === 'SEARCH_KEYWORD' ||
+			execution.task.type === 'SEARCH_AND_VISIT'
+
+		if (
+			shouldSavePosition &&
+			(dto.yandexPosition || dto.googlePosition || dto.position)
+		) {
 			await this.prisma.positionHistory.create({
 				data: {
 					taskId: execution.taskId,
-					yandexPosition: dto.position, // Пока сохраняем одну позицию
-					googlePosition: dto.position, // В будущем можно разделить
+					yandexPosition: dto.yandexPosition ?? dto.position ?? null,
+					googlePosition: dto.googlePosition ?? dto.position ?? null,
 				},
 			})
 			console.log(
-				`[ExecutionsService] ✅ История позиций сохранена: позиция ${dto.position}`,
+				`[ExecutionsService] ✅ История позиций сохранена: Яндекс=${dto.yandexPosition ?? dto.position ?? 'нет'}, Google=${dto.googlePosition ?? dto.position ?? 'нет'}`,
 			)
 		}
 

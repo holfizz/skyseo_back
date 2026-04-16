@@ -9,6 +9,16 @@ export class CompleteExecutionDto {
 	@Min(1)
 	position?: number
 
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	yandexPosition?: number
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	googlePosition?: number
+
 	@IsInt()
 	@Min(0)
 	pagesVisited: number
