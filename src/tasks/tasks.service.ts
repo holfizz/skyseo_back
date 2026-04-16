@@ -100,10 +100,11 @@ export class TasksService {
 	}
 
 	async getAvailableTasks(executorId: string, limit: number = 10) {
-		// Получаем все активные задачи, отсортированные по дате создания (FIFO)
+		// Получаем все активные задачи со статусом PENDING, отсортированные по дате создания (FIFO)
 		const allTasks = await this.prisma.task.findMany({
 			where: {
 				isActive: true,
+				status: 'PENDING', // Только задачи в статусе PENDING
 				website: {
 					isActive: true,
 					userId: {
@@ -234,6 +235,56 @@ export class TasksService {
 		)
 
 		return tasksWithStats
+	}
+
+	async assignTask(taskId: string, executorId: string) {
+		// Проверяем что задача существует и доступна для назначения
+		const task = await this.prisma.task.findUnique({
+			where: { id: taskId },
+			include: { website: true },
+		})
+
+		if (!task) {
+			throw new NotFoundException('Task not found')
+		}
+
+		if (task.status !== 'PENDING') {
+			throw new BadRequestException('Task is not available for assignment')
+		}
+
+		if (task.website.userId === executorId) {
+			throw new BadRequestException('Cannot assign own task')
+		}
+
+		// Обновляем статус задачи на ASSIGNED
+		const updatedTask = await this.prisma.task.update({
+			where: { id: taskId },
+			data: {
+				status: 'ASSIGNED',
+				assignedAt: new Date(),
+			},
+		})
+
+		return updatedTask
+	}
+
+	async getPositionHistory(taskId: string, days: number = 7) {
+		const startDate = new Date()
+		startDate.setDate(startDate.getDate() - days)
+
+		const history = await this.prisma.positionHistory.findMany({
+			where: {
+				taskId,
+				createdAt: {
+					gte: startDate,
+				},
+			},
+			orderBy: {
+				createdAt: 'asc',
+			},
+		})
+
+		return history
 	}
 
 	private calculateTaskCost(type: string): number {

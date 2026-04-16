@@ -336,6 +336,92 @@ async function main() {
 
 	console.log('Created tasks for user2:', tasks3.length)
 
+	// Создаем дополнительные задачи для активного тестирования
+	const additionalTasks = await Promise.all([
+		prisma.task.create({
+			data: {
+				websiteId: website1.id,
+				type: 'SEARCH_AND_VISIT',
+				keyword: 'купить iphone 15 pro',
+				geo: 'Москва',
+				pointsCost: 10,
+				maxYandexVisits: 8,
+				maxGoogleVisits: 8,
+				pagesDepthFrom: 3,
+				pagesDepthTo: 5,
+				pageDurationFrom: 60,
+				pageDurationTo: 180,
+				isActive: true,
+			},
+		}),
+		prisma.task.create({
+			data: {
+				websiteId: website2.id,
+				type: 'SEARCH_AND_VISIT',
+				keyword: 'горящие туры египет',
+				geo: 'Москва',
+				pointsCost: 10,
+				maxYandexVisits: 7,
+				maxGoogleVisits: 7,
+				pagesDepthFrom: 3,
+				pagesDepthTo: 6,
+				pageDurationFrom: 90,
+				pageDurationTo: 240,
+				isActive: true,
+			},
+		}),
+		prisma.task.create({
+			data: {
+				websiteId: website3.id,
+				type: 'SEARCH_AND_VISIT',
+				keyword: 'кроссовки для бега',
+				geo: 'Москва',
+				pointsCost: 10,
+				maxYandexVisits: 6,
+				maxGoogleVisits: 6,
+				pagesDepthFrom: 2,
+				pagesDepthTo: 4,
+				pageDurationFrom: 45,
+				pageDurationTo: 150,
+				isActive: true,
+			},
+		}),
+		prisma.task.create({
+			data: {
+				websiteId: website4.id,
+				type: 'SEARCH_AND_VISIT',
+				keyword: 'суши роллы доставка',
+				geo: 'Москва',
+				pointsCost: 10,
+				maxYandexVisits: 9,
+				maxGoogleVisits: 9,
+				pagesDepthFrom: 2,
+				pagesDepthTo: 3,
+				pageDurationFrom: 30,
+				pageDurationTo: 90,
+				isActive: true,
+			},
+		}),
+		prisma.task.create({
+			data: {
+				websiteId: website1.id,
+				type: 'SEARCH_AND_VISIT',
+				keyword: 'смартфон xiaomi купить',
+				geo: 'Москва',
+				pointsCost: 10,
+				maxYandexVisits: 5,
+				maxGoogleVisits: 5,
+				pagesDepthFrom: 3,
+				pagesDepthTo: 5,
+				pageDurationFrom: 60,
+				pageDurationTo: 180,
+				isActive: true,
+			},
+		}),
+	])
+
+	console.log('Created additional tasks:', additionalTasks.length)
+
 	// Создаем много выполнений (executions) для реалистичной статистики
 	console.log('Creating executions...')
 	const allTasks = [...tasks1, ...tasks2]

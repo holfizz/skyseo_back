@@ -129,6 +129,9 @@ export class ExecutionsService {
 		})
 
 		// Начисляем баллы исполнителю (+5 всегда)
+		console.log(
+			`[ExecutionsService] Начисляем ${pointsEarned} баллов исполнителю ${execution.executorId}`,
+		)
 		await this.usersService.updateBalance(
 			execution.executorId,
 			pointsEarned,
@@ -136,8 +139,12 @@ export class ExecutionsService {
 			`Выполнена задача для ${execution.task.website.url}`,
 			execution.taskId,
 		)
+		console.log(`[ExecutionsService] ✅ Баллы начислены исполнителю`)
 
 		// Списываем баллы с владельца сайта
+		console.log(
+			`[ExecutionsService] Списываем ${pointsSpent} баллов с владельца ${execution.task.website.userId}`,
+		)
 		await this.usersService.updateBalance(
 			execution.task.website.userId,
 			-pointsSpent,
@@ -145,6 +152,7 @@ export class ExecutionsService {
 			`Задача выполнена: ${execution.task.keyword || execution.task.externalUrl} (${dto.foundInTop ? 'найдено' : 'не найдено'})`,
 			execution.taskId,
 		)
+		console.log(`[ExecutionsService] ✅ Баллы списаны с владельца`)
 
 		// Обновляем статус задачи
 		await this.prisma.task.update({
@@ -154,6 +162,20 @@ export class ExecutionsService {
 				completedAt: new Date(),
 			},
 		})
+
+		// Сохраняем историю позиций
+		if (execution.task.type === 'SEARCH_KEYWORD' && dto.position) {
+			await this.prisma.positionHistory.create({
+				data: {
+					taskId: execution.taskId,
+					yandexPosition: dto.position, // Пока сохраняем одну позицию
+					googlePosition: dto.position, // В будущем можно разделить
+				},
+			})
+			console.log(
+				`[ExecutionsService] ✅ История позиций сохранена: позиция ${dto.position}`,
+			)
+		}
 
 		return updatedExecution
 	}

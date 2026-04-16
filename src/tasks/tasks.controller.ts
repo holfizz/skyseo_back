@@ -2,6 +2,7 @@ import {
 	Body,
 	Controller,
 	Get,
+	Param,
 	Post,
 	Query,
 	Request,
@@ -35,5 +36,19 @@ export class TasksController {
 	async getAvailableTasks(@Request() req, @Query('limit') limit?: string) {
 		const limitNum = limit ? parseInt(limit, 10) : 10
 		return this.tasksService.getAvailableTasks(req.user.id, limitNum)
+	}
+
+	@Post(':id/assign')
+	async assignTask(@Request() req, @Param('id') taskId: string) {
+		return this.tasksService.assignTask(taskId, req.user.id)
+	}
+
+	@Get(':id/position-history')
+	async getPositionHistory(
+		@Param('id') taskId: string,
+		@Query('days') days?: string,
+	) {
+		const daysNum = days ? parseInt(days, 10) : 7
+		return this.tasksService.getPositionHistory(taskId, daysNum)
 	}
 }

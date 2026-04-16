@@ -71,8 +71,9 @@ model Task {
   assignedAt       DateTime?
   completedAt      DateTime?
 
-  website    Website     @relation(fields: [websiteId], references: [id], onDelete: Cascade)
-  executions Execution[]
+  website         Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  executions      Execution[]
+  positionHistory PositionHistory[]
 
   @@index([status, priority])
   @@map("tasks")
@@ -123,6 +124,20 @@ model Statistic {
 
   @@unique([websiteId, keyword, date])
   @@map("statistics")
+}
+
+model PositionHistory {
+  id             String   @id @default(uuid())
+  taskId         String
+  yandexPosition Int? // Позиция в Яндексе (null если не найдено)
+  googlePosition Int? // Позиция в Google (null если не найдено)
+  date           DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, date])
+  @@map("position_history")
 }
 
 model BalanceHistory {

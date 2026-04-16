@@ -60,4 +60,18 @@ export class TelegramService {
 
 		await this.sendAdminNotification(message)
 	}
+
+	async sendComplaintNotification(
+		text: string,
+		contact?: string,
+		userEmail?: string,
+	) {
+		const message =
+			`⚠️ <b>Новая жалоба</b>\n\n` +
+			`📝 Текст: ${text}\n` +
+			`📧 Email пользователя: ${userEmail || 'Не авторизован'}\n` +
+			`📞 Контакт для связи: ${contact || 'Не указан'}`
+
+		await this.sendAdminNotification(message)
+	}
 }
