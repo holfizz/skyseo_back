@@ -91,7 +91,7 @@ export class ExecutionsService {
 
 		// РАСЧЕТ БАЛЛОВ ПО НОВОЙ ЭКОНОМИКЕ
 		// Исполнитель: +20 если сайт найден, +5 если не найден
-		const pointsEarned = dto.foundInTop ? 20 : 5
+		const pointsEarned = dto.foundInTop ? 15 : 5
 		let pointsSpent = 0 // Сколько спишется с владельца сайта
 
 		if (
