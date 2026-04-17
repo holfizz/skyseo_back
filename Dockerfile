@@ -16,7 +16,8 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl
+# Fix Alpine mirrors and install openssl
+RUN apk update && apk add --no-cache openssl
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
