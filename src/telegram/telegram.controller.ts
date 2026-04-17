@@ -7,6 +7,13 @@ class SendComplaintDto {
 	email?: string
 }
 
+class SendContactFormDto {
+	name: string
+	email: string
+	phone?: string
+	message: string
+}
+
 @Controller('telegram')
 export class TelegramController {
 	constructor(private telegramService: TelegramService) {}
@@ -19,5 +26,11 @@ export class TelegramController {
 			dto.email,
 		)
 		return { success: true, message: 'Сообщение отправлено' }
+	}
+
+	@Post('contact-form')
+	async sendContactForm(@Body() dto: SendContactFormDto) {
+		await this.telegramService.sendContactFormNotification(dto)
+		return { success: true, message: 'Заявка отправлена' }
 	}
 }

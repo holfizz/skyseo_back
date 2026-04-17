@@ -74,4 +74,20 @@ export class TelegramService {
 
 		await this.sendAdminNotification(message)
 	}
+
+	async sendContactFormNotification(data: {
+		name: string
+		email: string
+		phone?: string
+		message: string
+	}) {
+		const message =
+			`📬 <b>Новая заявка с сайта</b>\n\n` +
+			`👤 Имя: ${data.name}\n` +
+			`📧 Email: ${data.email}\n` +
+			`📞 Телефон: ${data.phone || 'Не указан'}\n` +
+			`💬 Сообщение: ${data.message}`
+
+		await this.sendAdminNotification(message)
+	}
 }
