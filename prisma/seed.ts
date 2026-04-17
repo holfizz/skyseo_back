@@ -166,7 +166,7 @@ async function main() {
 			data: {
 				websiteId: website4.id,
 				type: 'SEARCH_AND_VISIT',
-				keyword: 'golden goose',
+				keyword: 'golden goose купить в москве',
 				geo: 'Москва',
 				pointsCost: 10,
 				maxYandexVisits: 5,
@@ -184,7 +184,7 @@ async function main() {
 			data: {
 				websiteId: website4.id,
 				type: 'SEARCH_AND_VISIT',
-				keyword: 'ggose vercel',
+				keyword: 'golden goose купить в мск',
 				geo: 'Москва',
 				pointsCost: 10,
 				maxYandexVisits: 3,
