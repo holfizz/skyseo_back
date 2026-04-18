@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common'
+import { Platform } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 
 @Controller('updates')
@@ -7,9 +8,26 @@ export class UpdatesController {
 
 	@Get('check/:platform/:currentVersion')
 	async checkForUpdates(
-		@Param('platform') platform: string,
+		@Param('platform') platformString: string,
 		@Param('currentVersion') currentVersion: string,
 	) {
+		// Конвертируем строку в enum
+		const platformMap: Record<string, Platform> = {
+			'darwin-arm64': Platform.DARWIN_ARM64,
+			'darwin-x64': Platform.DARWIN_X64,
+			'win32-x64': Platform.WIN32_X64,
+			'win32-ia32': Platform.WIN32_IA32,
+		}
+
+		const platform = platformMap[platformString]
+		if (!platform) {
+			return {
+				updateAvailable: false,
+				currentVersion,
+				message: 'Unsupported platform',
+			}
+		}
+
 		// Получаем последнюю версию для платформы из БД
 		const latestVersion = await this.prisma.appVersion.findFirst({
 			where: {
@@ -75,7 +93,7 @@ export class UpdatesController {
 		@Body()
 		data: {
 			version: string
-			platform: string
+			platform: Platform
 			downloadUrl: string
 			releaseNotes: string[]
 			mandatory?: boolean
