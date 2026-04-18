@@ -9,6 +9,7 @@ import { PrismaModule } from './prisma/prisma.module'
 import { StatisticsModule } from './statistics/statistics.module'
 import { TasksModule } from './tasks/tasks.module'
 import { TelegramModule } from './telegram/telegram.module'
+import { UpdatesModule } from './updates/updates.module'
 import { UsersModule } from './users/users.module'
 import { WebsitesModule } from './websites/websites.module'
 
@@ -28,6 +29,7 @@ import { WebsitesModule } from './websites/websites.module'
 		TelegramModule,
 		NotificationsModule,
 		AdminModule,
+		UpdatesModule,
 	],
 })
 export class AppModule {}

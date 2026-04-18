@@ -1,0 +1,59 @@
+ФОРМАТЫ ФАЙЛОВ ДЛЯ ОБНОВЛЕНИЙ:
+
+macOS:
+- Формат: .dmg (образ диска)
+- Файлы: SkySEO-1.2.0-arm64.dmg (для M1/M2+), SkySEO-1.2.0-x64.dmg (для Intel)
+
+Windows:
+- Формат: .exe (установщик NSIS) 
+- Файлы: SkySEO-1.2.0-x64.exe (64-бит), SkySEO-1.2.0-ia32.exe (32-бит)
+
+КОМАНДЫ НА СЕРВЕРЕ:
+
+1. Перезапустить бэкенд с новыми endpoints:
+cd skyseo_back
+docker-compose down && docker-compose build --no-cache && docker-compose up -d
+
+2. Проверить что API работает:
+curl https://skyseo.site/v1/api/updates/latest
+curl https://skyseo.site/v1/api/updates/check/darwin-arm64/1.1.0
+
+3. Когда будут реальные файлы - положить их в папку releases:
+cp SkySEO-1.2.0-arm64.dmg skyseo_back/releases/
+cp SkySEO-1.2.0-x64.dmg skyseo_back/releases/
+
+4. Сгенерировать хеши:
+cd skyseo_back/releases
+shasum -a 512 SkySEO-1.2.0-arm64.dmg
+shasum -a 512 SkySEO-1.2.0-x64.dmg
+
+5. Обновить latest-mac.yml с правильными хешами и размерами файлов
+
+КАК ТЕСТИРОВАТЬ СЕЙЧАС:
+
+1. Собрать приложение в dev режиме:
+cd skyseo_app
+npm run dev
+
+2. В приложении зайти в "О программе" и нажать "Проверить обновления"
+
+3. Должно показать модальное окно с версией 1.2.0 (текущая 1.1.0)
+
+4. Для полного теста нужно собрать продакшен версию:
+npm run build:prod
+npm run package:mac:arm64
+
+СТРУКТУРА ФАЙЛОВ:
+releases/
+├── SkySEO-1.2.0-arm64.dmg
+├── SkySEO-1.2.0-x64.dmg  
+├── SkySEO-1.2.0-x64.exe
+├── SkySEO-1.2.0-ia32.exe
+├── latest-mac.yml (метаданные для macOS)
+└── latest.yml (метаданные для Windows)
+
+API ENDPOINTS:
+GET /v1/api/updates/latest - информация о версии
+GET /v1/api/updates/check/darwin-arm64/1.1.0 - проверка обновлений
+GET /v1/api/updates/download/filename.dmg - скачать файл
+GET /v1/api/updates/latest-mac.yml - метаданные macOS

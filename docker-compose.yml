@@ -26,6 +26,8 @@ services:
       NODE_ENV: production
     ports:
       - "4000:4000"
+    volumes:
+      - ./releases:/app/releases
     networks:
       - skyseo_network
 
