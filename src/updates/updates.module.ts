@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common'
 import { PrismaModule } from '../prisma/prisma.module'
-import { UpdatesController } from './updates.controller'
+import { UpdatesProdController } from './updates-prod.controller'
 
 @Module({
 	imports: [PrismaModule],
-	controllers: [UpdatesController],
+	controllers: [UpdatesProdController],
 })
 export class UpdatesModule {}

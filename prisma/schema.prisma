@@ -177,15 +177,18 @@ model Payment {
 
 model AppVersion {
   id           String   @id @default(uuid())
-  version      String   @unique
+  version      String
   platform     Platform // darwin-arm64, darwin-x64, win32-x64, win32-ia32
   downloadUrl  String
+  sha512       String // SHA512 хеш файла в base64
+  fileSize     Int // Размер файла в байтах
   releaseNotes String[]
   mandatory    Boolean  @default(false)
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  @@unique([version, platform])
   @@map("app_versions")
 }
 

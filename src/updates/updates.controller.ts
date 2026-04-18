@@ -95,6 +95,8 @@ export class UpdatesController {
 			version: string
 			platform: Platform
 			downloadUrl: string
+			sha512: string
+			fileSize: number
 			releaseNotes: string[]
 			mandatory?: boolean
 		},
@@ -104,6 +106,8 @@ export class UpdatesController {
 				version: data.version,
 				platform: data.platform,
 				downloadUrl: data.downloadUrl,
+				sha512: data.sha512,
+				fileSize: data.fileSize,
 				releaseNotes: data.releaseNotes,
 				mandatory: data.mandatory || false,
 			},
