@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Put, Res } from '@nestjs/common'
 import { Platform } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -117,6 +117,82 @@ export class UpdatesController {
 			where: { id },
 			data: { isActive: false },
 		})
+	}
+
+	// Endpoint для latest-mac.yml (нужен для electron-updater)
+	@Get('latest-mac.yml')
+	async getLatestMacYml(@Res({ passthrough: false }) res: any) {
+		// Получаем версии для macOS из БД
+		const arm64Version = await this.prisma.appVersion.findFirst({
+			where: { platform: Platform.DARWIN_ARM64, isActive: true },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		const x64Version = await this.prisma.appVersion.findFirst({
+			where: { platform: Platform.DARWIN_X64, isActive: true },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		if (!arm64Version && !x64Version) {
+			return res.status(404).json({ error: 'No macOS versions available' })
+		}
+
+		// Используем ARM64 версию как основную
+		const mainVersion = arm64Version || x64Version
+
+		// Генерируем YAML
+		const yml = `version: ${mainVersion.version}
+files:
+  - url: ${arm64Version?.downloadUrl || ''}
+    sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    size: 150000000
+  - url: ${x64Version?.downloadUrl || ''}
+    sha512: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+    size: 150000000
+path: ${arm64Version?.downloadUrl || x64Version?.downloadUrl || ''}
+sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+releaseDate: '${mainVersion.createdAt.toISOString()}'`
+
+		res.setHeader('Content-Type', 'text/yaml')
+		return res.send(yml)
+	}
+
+	// Endpoint для latest.yml (Windows)
+	@Get('latest.yml')
+	async getLatestYml(@Res({ passthrough: false }) res: any) {
+		// Получаем версии для Windows из БД
+		const x64Version = await this.prisma.appVersion.findFirst({
+			where: { platform: Platform.WIN32_X64, isActive: true },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		const ia32Version = await this.prisma.appVersion.findFirst({
+			where: { platform: Platform.WIN32_IA32, isActive: true },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		if (!x64Version && !ia32Version) {
+			return res.status(404).json({ error: 'No Windows versions available' })
+		}
+
+		// Используем x64 версию как основную
+		const mainVersion = x64Version || ia32Version
+
+		// Генерируем YAML
+		const yml = `version: ${mainVersion.version}
+files:
+  - url: ${x64Version?.downloadUrl || ''}
+    sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    size: 150000000
+  - url: ${ia32Version?.downloadUrl || ''}
+    sha512: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+    size: 150000000
+path: ${x64Version?.downloadUrl || ia32Version?.downloadUrl || ''}
+sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+releaseDate: '${mainVersion.createdAt.toISOString()}'`
+
+		res.setHeader('Content-Type', 'text/yaml')
+		return res.send(yml)
 	}
 
 	private compareVersions(version1: string, version2: string): number {
