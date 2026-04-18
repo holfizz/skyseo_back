@@ -1,0 +1,44 @@
+ПРОСТАЯ СИСТЕМА ОБНОВЛЕНИЙ ЧЕРЕЗ БД
+
+ФОРМАТЫ ФАЙЛОВ:
+macOS: .dmg (SkySEO-1.2.0-arm64.dmg для M1/M2+, SkySEO-1.2.0-x64.dmg для Intel)
+Windows: .exe (SkySEO-1.2.0-x64.exe для 64-бит, SkySEO-1.2.0-ia32.exe для 32-бит)
+
+КОМАНДЫ НА СЕРВЕРЕ:
+
+1. Создать миграцию для новой таблицы:
+cd skyseo_back
+npx prisma migrate dev --name add_app_versions
+
+2. Перезапустить бэкенд:
+docker-compose down && docker-compose build --no-cache && docker-compose up -d
+
+3. Добавить версию в БД (через API или напрямую в БД):
+curl -X POST https://skyseo.site/v1/api/updates/admin/version \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "1.2.0",
+    "platform": "darwin-arm64", 
+    "downloadUrl": "https://res.cloudinary.com/your-cloud/SkySEO-1.2.0-arm64.dmg",
+    "releaseNotes": ["Улучшена стабильность", "Исправлены ошибки"],
+    "mandatory": false
+  }'
+
+ЗАГРУЗКА ФАЙЛОВ:
+Можно использовать любое облачное хранилище:
+- Cloudinary
+- AWS S3
+- Google Cloud Storage
+- Яндекс.Облако
+- Просто прямые ссылки
+
+ТЕСТИРОВАНИЕ:
+1. Запустить приложение: npm run dev
+2. Зайти в "О программе" → "Проверить обновления"
+3. Должно показать модальное окно если есть новая версия в БД
+
+ПРЕИМУЩЕСТВА:
+- Простота: просто ссылка в БД
+- Гибкость: любое облачное хранилище
+- Контроль: можно деактивировать версии
+- Админка: API для управления версиями

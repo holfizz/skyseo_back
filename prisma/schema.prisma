@@ -175,6 +175,20 @@ model Payment {
   @@map("payments")
 }
 
+model AppVersion {
+  id           String   @id @default(uuid())
+  version      String   @unique
+  platform     String // darwin-arm64, darwin-x64, win32-x64, win32-ia32
+  downloadUrl  String
+  releaseNotes String[]
+  mandatory    Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("app_versions")
+}
+
 enum Role {
   USER
   ADMIN
