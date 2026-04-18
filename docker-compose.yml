@@ -22,7 +22,7 @@ services:
       EMAIL_FROM: ${EMAIL_FROM}
       YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID}
       YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
-      PORT:4000
+      PORT: 4000
       NODE_ENV: production
     ports:
       - "4000:4000"
