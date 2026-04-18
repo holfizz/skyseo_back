@@ -22,10 +22,10 @@ services:
       EMAIL_FROM: ${EMAIL_FROM}
       YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID}
       YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
-      PORT: 3000
+      PORT:4000
       NODE_ENV: production
     ports:
-      - "3000:3000"
+      - "4000:4000"
     networks:
       - skyseo_network
 
