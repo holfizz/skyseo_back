@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config'
 import { AdminModule } from './admin/admin.module'
 import { AuthModule } from './auth/auth.module'
 import { ExecutionsModule } from './executions/executions.module'
+import { HealthModule } from './health/health.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { PaymentsModule } from './payments/payments.module'
 import { PrismaModule } from './prisma/prisma.module'
@@ -19,6 +20,7 @@ import { WebsitesModule } from './websites/websites.module'
 			isGlobal: true,
 		}),
 		PrismaModule,
+		HealthModule,
 		AuthModule,
 		UsersModule,
 		WebsitesModule,
