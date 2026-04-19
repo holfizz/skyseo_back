@@ -9,3 +9,7 @@ backups/
 logs/
 *.sql
 *.gpg
+releases/latest-mac.yml
+releases/latest.yml
+latest-mac.yml
+latest.yml
