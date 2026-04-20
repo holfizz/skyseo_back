@@ -6,7 +6,7 @@ import { PaymentsController } from './payments.controller'
 import { PaymentsService } from './payments.service'
 
 @Module({
-	imports: [UsersModule, TelegramModule, NotificationsModule],
+	imports: [UsersModule, TelegramModule.forRoot(), NotificationsModule],
 	providers: [PaymentsService],
 	controllers: [PaymentsController],
 	exports: [PaymentsService],

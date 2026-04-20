@@ -12,7 +12,7 @@ import { JwtStrategy } from './jwt.strategy'
 	imports: [
 		UsersModule,
 		PassportModule,
-		TelegramModule,
+		TelegramModule.forRoot(),
 		JwtModule.registerAsync({
 			inject: [ConfigService],
 			useFactory: (config: ConfigService) => ({
