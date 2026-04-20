@@ -1,30 +1,50 @@
-import { Injectable, Optional } from '@nestjs/common'
+import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { InjectBot } from 'nestjs-telegraf'
 import { Telegraf } from 'telegraf'
 
 @Injectable()
 export class TelegramService {
+	private bot: Telegraf | null = null
 	private adminId: string
-	private isEnabled: boolean
+	private isEnabled: boolean = false
 
-	constructor(
-		@Optional() @InjectBot() private readonly bot: Telegraf,
-		private configService: ConfigService,
-	) {
+	constructor(private configService: ConfigService) {
 		this.adminId = this.configService.get('TELEGRAM_ADMIN_ID')
 		const token = this.configService.get('TELEGRAM_BOT_TOKEN')
-		this.isEnabled = !!(token && token !== 'dummy-token' && this.bot)
 
-		if (!this.isEnabled) {
-			console.log('⚠️ Telegram bot disabled (no valid token)')
+		// Пытаемся инициализировать бота только если есть валидный токен
+		if (token && token !== 'dummy-token' && token.length >= 20) {
+			this.initializeBot(token)
 		} else {
-			console.log('✅ Telegram bot enabled')
+			console.log('⚠️ Telegram notifications disabled (no valid token)')
+		}
+	}
+
+	private async initializeBot(token: string) {
+		try {
+			this.bot = new Telegraf(token)
+
+			// Пытаемся проверить подключение с таймаутом
+			const timeoutPromise = new Promise((_, reject) =>
+				setTimeout(() => reject(new Error('Connection timeout')), 5000),
+			)
+
+			const getMePromise = this.bot.telegram.getMe()
+
+			await Promise.race([getMePromise, timeoutPromise])
+
+			this.isEnabled = true
+			console.log('✅ Telegram bot connected successfully')
+		} catch (error) {
+			console.log('⚠️ Telegram bot connection failed:', error.message)
+			console.log('⚠️ Telegram notifications disabled')
+			this.bot = null
+			this.isEnabled = false
 		}
 	}
 
 	async sendAdminNotification(message: string) {
-		if (!this.isEnabled || !this.adminId) {
+		if (!this.isEnabled || !this.adminId || !this.bot) {
 			console.log('[Telegram disabled]:', message)
 			return
 		}

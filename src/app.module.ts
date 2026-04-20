@@ -28,7 +28,7 @@ import { WebsitesModule } from './websites/websites.module'
 		ExecutionsModule,
 		StatisticsModule,
 		PaymentsModule,
-		TelegramModule,
+		TelegramModule.forRoot(),
 		NotificationsModule,
 		AdminModule,
 		UpdatesModule,
