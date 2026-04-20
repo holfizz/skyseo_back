@@ -1,19 +1,17 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import * as TelegramBot from 'node-telegram-bot-api'
+import { InjectBot } from 'nestjs-telegraf'
+import { Telegraf } from 'telegraf'
 
 @Injectable()
 export class TelegramService {
-	private bot: TelegramBot
 	private adminId: string
 
-	constructor(private configService: ConfigService) {
-		const token = this.configService.get('TELEGRAM_BOT_TOKEN')
+	constructor(
+		@InjectBot() private readonly bot: Telegraf,
+		private configService: ConfigService,
+	) {
 		this.adminId = this.configService.get('TELEGRAM_ADMIN_ID')
-
-		if (token) {
-			this.bot = new TelegramBot(token, { polling: false })
-		}
 	}
 
 	async sendAdminNotification(message: string) {
@@ -23,7 +21,7 @@ export class TelegramService {
 		}
 
 		try {
-			await this.bot.sendMessage(this.adminId, message, {
+			await this.bot.telegram.sendMessage(this.adminId, message, {
 				parse_mode: 'HTML',
 			})
 		} catch (error) {
