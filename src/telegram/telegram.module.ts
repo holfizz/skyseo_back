@@ -8,12 +8,24 @@ import { TelegramService } from './telegram.service'
 	imports: [
 		TelegrafModule.forRootAsync({
 			imports: [ConfigModule],
-			useFactory: (configService: ConfigService) => ({
-				token: configService.get<string>('TELEGRAM_BOT_TOKEN') || 'dummy-token',
-				launchOptions: {
-					webhook: undefined, // Отключаем webhook, используем только для отправки
-				},
-			}),
+			useFactory: (configService: ConfigService) => {
+				const token = configService.get<string>('TELEGRAM_BOT_TOKEN')
+
+				// Если токена нет - используем dummy token и отключаем запуск
+				if (!token || token === 'dummy-token') {
+					return {
+						token: 'dummy-token',
+						launchOptions: false, // Полностью отключаем бота
+					}
+				}
+
+				return {
+					token,
+					launchOptions: {
+						webhook: undefined,
+					},
+				}
+			},
 			inject: [ConfigService],
 		}),
 	],

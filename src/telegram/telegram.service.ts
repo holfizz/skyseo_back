@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Optional } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { InjectBot } from 'nestjs-telegraf'
 import { Telegraf } from 'telegraf'
@@ -6,17 +6,26 @@ import { Telegraf } from 'telegraf'
 @Injectable()
 export class TelegramService {
 	private adminId: string
+	private isEnabled: boolean
 
 	constructor(
-		@InjectBot() private readonly bot: Telegraf,
+		@Optional() @InjectBot() private readonly bot: Telegraf,
 		private configService: ConfigService,
 	) {
 		this.adminId = this.configService.get('TELEGRAM_ADMIN_ID')
+		const token = this.configService.get('TELEGRAM_BOT_TOKEN')
+		this.isEnabled = !!(token && token !== 'dummy-token' && this.bot)
+
+		if (!this.isEnabled) {
+			console.log('⚠️ Telegram bot disabled (no valid token)')
+		} else {
+			console.log('✅ Telegram bot enabled')
+		}
 	}
 
 	async sendAdminNotification(message: string) {
-		if (!this.bot || !this.adminId) {
-			console.log('Telegram not configured:', message)
+		if (!this.isEnabled || !this.adminId) {
+			console.log('[Telegram disabled]:', message)
 			return
 		}
 
@@ -25,7 +34,7 @@ export class TelegramService {
 				parse_mode: 'HTML',
 			})
 		} catch (error) {
-			console.error('Failed to send Telegram notification:', error)
+			console.error('Failed to send Telegram notification:', error.message)
 		}
 	}
 
