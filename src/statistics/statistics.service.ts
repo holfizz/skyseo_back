@@ -94,6 +94,94 @@ export class StatisticsService {
 		}
 	}
 
+	async getUserStatistics(userId: string) {
+		const now = new Date()
+		const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+
+		// Получаем статистику из executions (выполненные задачи)
+		const [
+			searchesCompleted24h,
+			searchesCompletedTotal,
+			searchesReceived24h,
+			searchesReceivedTotal,
+			visitsCompleted24h,
+			visitsCompletedTotal,
+		] = await Promise.all([
+			// Поиски выполнил за 24 часа
+			this.prisma.execution.count({
+				where: {
+					executorId: userId,
+					status: 'COMPLETED',
+					createdAt: { gte: oneDayAgo },
+				},
+			}),
+			// Поиски выполнил всего
+			this.prisma.execution.count({
+				where: {
+					executorId: userId,
+					status: 'COMPLETED',
+				},
+			}),
+			// Поиски получил за 24 часа (через задачи пользователя)
+			this.prisma.execution.count({
+				where: {
+					task: {
+						website: {
+							userId: userId,
+						},
+					},
+					status: 'COMPLETED',
+					createdAt: { gte: oneDayAgo },
+				},
+			}),
+			// Поиски получил всего
+			this.prisma.execution.count({
+				where: {
+					task: {
+						website: {
+							userId: userId,
+						},
+					},
+					status: 'COMPLETED',
+				},
+			}),
+			// Посещения получил за 24 часа (считаем как задачи с найденными сайтами)
+			this.prisma.execution.count({
+				where: {
+					task: {
+						website: {
+							userId: userId,
+						},
+					},
+					status: 'COMPLETED',
+					foundInTop: true,
+					createdAt: { gte: oneDayAgo },
+				},
+			}),
+			// Посещения получил всего
+			this.prisma.execution.count({
+				where: {
+					task: {
+						website: {
+							userId: userId,
+						},
+					},
+					status: 'COMPLETED',
+					foundInTop: true,
+				},
+			}),
+		])
+
+		return {
+			searchesCompleted24h,
+			searchesReceived24h,
+			visitsCompleted24h,
+			searchesCompletedTotal,
+			searchesReceivedTotal,
+			visitsCompletedTotal,
+		}
+	}
+
 	private categorizePosition(position: number | null) {
 		if (!position) {
 			return {

@@ -7,6 +7,11 @@ import { StatisticsService } from './statistics.service'
 export class StatisticsController {
 	constructor(private statisticsService: StatisticsService) {}
 
+	@Get('user')
+	async getUserStatistics(@Request() req) {
+		return this.statisticsService.getUserStatistics(req.user.id)
+	}
+
 	@Get('website/:id')
 	async getWebsiteStatistics(@Request() req, @Param('id') websiteId: string) {
 		return this.statisticsService.getWebsiteStatistics(websiteId, req.user.id)
