@@ -87,6 +87,7 @@ model Execution {
   id           String          @id @default(uuid())
   taskId       String
   executorId   String
+  websiteId    String?
   status       ExecutionStatus @default(IN_PROGRESS)
   pointsEarned Int             @default(0) // Баллы заработанные исполнителем
   pointsSpent  Int             @default(0) // Баллы списанные с владельца
@@ -96,12 +97,14 @@ model Execution {
   duration     Int             @default(0) // Секунды
   ipAddress    String?
   userAgent    String?
+  weekStart    DateTime? // Начало недели для отслеживания лимитов
   createdAt    DateTime        @default(now())
   completedAt  DateTime?
 
   task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   executor User @relation(fields: [executorId], references: [id], onDelete: Cascade)
 
+  @@index([executorId, websiteId, weekStart])
   @@map("executions")
 }
 

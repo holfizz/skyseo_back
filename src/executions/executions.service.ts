@@ -10,6 +10,16 @@ export class ExecutionsService {
 		private usersService: UsersService,
 	) {}
 
+	// Получить начало текущей недели (понедельник 00:00)
+	private getWeekStart(date: Date = new Date()): Date {
+		const d = new Date(date)
+		const day = d.getDay()
+		const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Понедельник
+		d.setDate(diff)
+		d.setHours(0, 0, 0, 0)
+		return d
+	}
+
 	async startExecution(
 		taskId: string,
 		executorId: string,
@@ -25,12 +35,31 @@ export class ExecutionsService {
 			throw new Error('Task not available')
 		}
 
+		// Проверяем лимит выполнений для этого сайта (2 раза в неделю)
+		const weekStart = this.getWeekStart()
+		const executionsThisWeek = await this.prisma.execution.count({
+			where: {
+				executorId,
+				websiteId: task.websiteId,
+				weekStart,
+				status: 'COMPLETED',
+			},
+		})
+
+		if (executionsThisWeek >= 2) {
+			throw new Error(
+				'Вы уже выполнили 2 задачи для этого сайта на этой неделе',
+			)
+		}
+
 		const execution = await this.prisma.execution.create({
 			data: {
 				taskId,
 				executorId,
+				websiteId: task.websiteId,
 				ipAddress,
 				userAgent,
+				weekStart,
 			},
 		})
 
@@ -90,9 +119,14 @@ export class ExecutionsService {
 		}
 
 		// РАСЧЕТ БАЛЛОВ ПО НОВОЙ ЭКОНОМИКЕ
-		// Исполнитель: +20 если сайт найден, +5 если не найден
-		const pointsEarned = dto.foundInTop ? 15 : 5
-		let pointsSpent = 0 // Сколько спишется с владельца сайта
+		// Исполнитель:
+		// - Если сайт найден в поиске и открыт: +15 баллов
+		// - Если сайт не найден, но ссылка открыта: +5 баллов
+		// Владелец сайта:
+		// - Если сайт найден в поиске: -30 баллов
+		// - Если сайт не найден в поиске: -10 баллов
+		let pointsEarned = 0
+		let pointsSpent = 0
 
 		if (
 			execution.task.type === 'SEARCH_KEYWORD' ||
@@ -101,19 +135,23 @@ export class ExecutionsService {
 			// Поиск по ключевому слову
 			if (dto.foundInTop) {
 				// Сайт найден в топ-50 и посещен
-				pointsSpent = 30
+				pointsEarned = 15 // Исполнитель получает +15
+				pointsSpent = 30 // Владелец платит -30
 			} else {
 				// Сайт не найден в топ-50
-				pointsSpent = 10
+				pointsEarned = 5 // Исполнитель получает +5 за попытку
+				pointsSpent = 10 // Владелец платит -10
 			}
 		} else if (execution.task.type === 'EXTERNAL_LINK') {
 			// Переход по внешней ссылке
 			if (dto.foundInTop) {
 				// Ссылка найдена на сайте-доноре и работает
+				pointsEarned = 5
 				pointsSpent = 10
 			} else {
 				// Ссылка не найдена или не работает
-				pointsSpent = 5
+				pointsEarned = 5
+				pointsSpent = 10
 			}
 		}
 
@@ -132,15 +170,24 @@ export class ExecutionsService {
 			},
 		})
 
-		// Начисляем баллы исполнителю (+5 всегда)
+		// Начисляем баллы исполнителю
 		console.log(
 			`[ExecutionsService] Начисляем ${pointsEarned} баллов исполнителю ${execution.executorId}`,
 		)
+
+		const taskDescription = execution.task.keyword
+			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
+			: `Переход по ссылке ${execution.task.externalUrl}`
+
+		const earnedDescription = dto.foundInTop
+			? `${taskDescription} (найдено в поиске)`
+			: `${taskDescription} (не найдено в поиске)`
+
 		await this.usersService.updateBalance(
 			execution.executorId,
 			pointsEarned,
 			'TASK_EARNED',
-			`Выполнена задача для ${execution.task.website.url}`,
+			earnedDescription,
 			execution.taskId,
 		)
 		console.log(`[ExecutionsService] ✅ Баллы начислены исполнителю`)
@@ -168,11 +215,15 @@ export class ExecutionsService {
 			)
 		}
 
+		const spentDescription = dto.foundInTop
+			? `Задача выполнена: ${taskDescription} (найдено в поиске)`
+			: `Задача выполнена: ${taskDescription} (не найдено в поиске)`
+
 		await this.usersService.updateBalance(
 			execution.task.website.userId,
 			-pointsSpent,
 			'TASK_SPENT',
-			`Задача выполнена: ${execution.task.keyword || execution.task.externalUrl} (${dto.foundInTop ? 'найдено' : 'не найдено'})`,
+			spentDescription,
 			execution.taskId,
 		)
 		console.log(`[ExecutionsService] ✅ Баллы списаны с владельца`)

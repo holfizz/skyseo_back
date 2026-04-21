@@ -105,7 +105,19 @@ export class TasksService {
 		return task
 	}
 
+	// Получить начало текущей недели (понедельник 00:00)
+	private getWeekStart(date: Date = new Date()): Date {
+		const d = new Date(date)
+		const day = d.getDay()
+		const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Понедельник
+		d.setDate(diff)
+		d.setHours(0, 0, 0, 0)
+		return d
+	}
+
 	async getAvailableTasks(executorId: string, limit: number = 10) {
+		const weekStart = this.getWeekStart()
+
 		// Получаем все активные задачи со статусом PENDING, отсортированные по дате создания (FIFO)
 		const allTasks = await this.prisma.task.findMany({
 			where: {
@@ -127,6 +139,7 @@ export class TasksService {
 				executions: {
 					where: {
 						executorId: executorId,
+						weekStart: weekStart,
 						status: 'COMPLETED',
 					},
 				},
@@ -134,19 +147,18 @@ export class TasksService {
 			orderBy: { createdAt: 'asc' }, // FIFO - кто первый создал
 		})
 
-		// Группируем задачи по websiteId и считаем выполнения
+		// Группируем задачи по websiteId и считаем выполнения за текущую неделю
 		const websiteExecutionCount = new Map<string, number>()
 		const availableTasks = []
 
 		for (const task of allTasks) {
 			const websiteId = task.websiteId
-			const currentCount = websiteExecutionCount.get(websiteId) || 0
 
-			// Проверяем: выполнял ли пользователь задачи этого сайта
-			const executionsForThisWebsite = task.executions.length
+			// Проверяем: сколько раз пользователь выполнял задачи этого сайта на этой неделе
+			const executionsThisWeek = task.executions.length
 
-			// Максимум 2 выполнения на сайт
-			if (currentCount + executionsForThisWebsite < 2) {
+			// Максимум 2 выполнения на сайт в неделю
+			if (executionsThisWeek < 2) {
 				availableTasks.push({
 					id: task.id,
 					websiteId: task.websiteId,
@@ -155,18 +167,14 @@ export class TasksService {
 					keyword: task.keyword,
 					type: task.type,
 					geo: task.geo,
-					pointsEarned: 5, // Фиксированная награда
+					pointsEarned: 15, // Максимальная награда (если найдено)
+					minPointsEarned: 5, // Минимальная награда (если не найдено)
 					maxYandexVisits: task.maxYandexVisits,
 					maxGoogleVisits: task.maxGoogleVisits,
 					createdAt: task.createdAt,
-					executionsCount: executionsForThisWebsite,
+					executionsThisWeek: executionsThisWeek,
+					remainingExecutions: 2 - executionsThisWeek,
 				})
-
-				// Обновляем счетчик для этого сайта
-				websiteExecutionCount.set(
-					websiteId,
-					currentCount + executionsForThisWebsite + 1,
-				)
 
 				// Ограничиваем количество задач
 				if (availableTasks.length >= limit) {
