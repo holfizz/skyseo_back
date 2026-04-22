@@ -1,25 +1,17 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import * as nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 
 @Injectable()
 export class NotificationsService {
-	private transporter: nodemailer.Transporter
+	private resend: Resend
 
 	constructor(private configService: ConfigService) {
-		this.transporter = nodemailer.createTransport({
-			host: this.configService.get('SMTP_HOST'),
-			port: this.configService.get('SMTP_PORT'),
-			secure: false,
-			auth: {
-				user: this.configService.get('SMTP_USER'),
-				pass: this.configService.get('SMTP_PASSWORD'),
-			},
-		})
+		this.resend = new Resend(this.configService.get('RESEND_API_KEY'))
 	}
 
 	async sendLowBalanceEmail(email: string, balance: number) {
-		const subject = '⚠️ Низкий баланс на SkySEO'
+		const subject = 'Низкий баланс на SkySEO'
 		const html = `
       <h2>Внимание! Низкий баланс</h2>
       <p>Ваш текущий баланс: <strong>${balance} баллов</strong></p>
@@ -33,11 +25,11 @@ export class NotificationsService {
 	}
 
 	async sendWelcomeEmail(email: string) {
-		const subject = '🎉 Добро пожаловать в SkySEO!'
+		const subject = 'Добро пожаловать в SkySEO!'
 		const html = `
       <h2>Добро пожаловать!</h2>
       <p>Спасибо за регистрацию в SkySEO.</p>
-      <p>Вам начислено <strong>5000 баллов</strong> в качестве приветственного бонуса!</p>
+      <p>Вам начислено <strong>1000 баллов</strong> в качестве приветственного бонуса!</p>
       <p>Начните добавлять свои сайты и ключевые слова для продвижения.</p>
       <br>
       <p>С уважением,<br>Команда SkySEO</p>
@@ -47,7 +39,7 @@ export class NotificationsService {
 	}
 
 	async sendPaymentSuccessEmail(email: string, amount: number, points: number) {
-		const subject = '✅ Платеж успешно выполнен'
+		const subject = 'Платеж успешно выполнен'
 		const html = `
       <h2>Платеж выполнен успешно!</h2>
       <p>Сумма: <strong>${amount} ₽</strong></p>
@@ -60,16 +52,49 @@ export class NotificationsService {
 		await this.sendEmail(email, subject, html)
 	}
 
+	async sendPasswordResetEmail(email: string, resetToken: string) {
+		const resetUrl = `https://skyseo.site/reset-password?token=${resetToken}`
+		const subject = 'Восстановление пароля SkySEO'
+		const html = `
+      <h2>Восстановление пароля</h2>
+      <p>Вы запросили восстановление пароля для вашего аккаунта SkySEO.</p>
+      <p>Для сброса пароля перейдите по ссылке:</p>
+      <p><a href="${resetUrl}" style="background-color: #1400ff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Восстановить пароль</a></p>
+      <p>Ссылка действительна в течение 1 часа.</p>
+      <p>Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>
+      <br>
+      <p>С уважением,<br>Команда SkySEO</p>
+    `
+
+		await this.sendEmail(email, subject, html)
+	}
+
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
-			await this.transporter.sendMail({
-				from: this.configService.get('EMAIL_FROM'),
+			const emailDomain = to.split('@')[1]?.toLowerCase()
+			console.log(
+				`[NotificationsService] Sending email to domain: ${emailDomain}`,
+			)
+
+			const { data, error } = await this.resend.emails.send({
+				from:
+					this.configService.get('EMAIL_FROM') || 'SkySEO <info@skyseo.site>',
 				to,
 				subject,
 				html,
 			})
+
+			if (error) {
+				console.error('[NotificationsService] Failed to send email:', error)
+				throw error
+			}
+
+			console.log(
+				`[NotificationsService] Email sent successfully, ID: ${data?.id}`,
+			)
 		} catch (error) {
-			console.error('Failed to send email:', error)
+			console.error('[NotificationsService] Failed to send email:', error)
+			throw error
 		}
 	}
 }

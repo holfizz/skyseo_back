@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtModule } from '@nestjs/jwt'
 import { PassportModule } from '@nestjs/passport'
+import { NotificationsModule } from '../notifications/notifications.module'
+import { PrismaModule } from '../prisma/prisma.module'
 import { TelegramModule } from '../telegram/telegram.module'
 import { UsersModule } from '../users/users.module'
 import { AuthController } from './auth.controller'
@@ -13,6 +15,8 @@ import { JwtStrategy } from './jwt.strategy'
 		UsersModule,
 		PassportModule,
 		TelegramModule.forRoot(),
+		NotificationsModule,
+		PrismaModule,
 		JwtModule.registerAsync({
 			inject: [ConfigService],
 			useFactory: (config: ConfigService) => ({

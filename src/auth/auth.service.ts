@@ -1,10 +1,14 @@
 import {
+	BadRequestException,
 	ConflictException,
 	Injectable,
 	UnauthorizedException,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import * as bcrypt from 'bcrypt'
+import { randomBytes } from 'crypto'
+import { NotificationsService } from '../notifications/notifications.service'
+import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
 import { LoginDto, RegisterDto } from './dto'
@@ -15,6 +19,8 @@ export class AuthService {
 		private usersService: UsersService,
 		private jwtService: JwtService,
 		private telegramService: TelegramService,
+		private notificationsService: NotificationsService,
+		private prisma: PrismaService,
 	) {}
 
 	async register(dto: RegisterDto, ipAddress?: string) {
@@ -66,6 +72,16 @@ export class AuthService {
 				`Баланс: ${user.balance} баллов (приветственный бонус)`,
 		)
 
+		// Отправка приветственного email
+		try {
+			await this.notificationsService.sendWelcomeEmail(user.email)
+			console.log(
+				`[AuthService] Welcome email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
+			)
+		} catch (error) {
+			console.error('[AuthService] Failed to send welcome email:', error)
+		}
+
 		const token = this.generateToken(user.id, user.email)
 
 		return {
@@ -114,5 +130,75 @@ export class AuthService {
 	private getCityFromIp(ipAddress?: string): string {
 		// TODO: Интеграция с IP геолокацией
 		return 'Не определен'
+	}
+
+	async forgotPassword(email: string) {
+		const user = await this.usersService.findByEmail(email)
+		if (!user) {
+			// Не раскрываем информацию о существовании email
+			return {
+				message: 'Если email существует, письмо с инструкциями отправлено',
+			}
+		}
+
+		// Генерируем токен
+		const resetToken = randomBytes(32).toString('hex')
+		const expiresAt = new Date(Date.now() + 60 * 60 * 1000) // 1 час
+
+		// Сохраняем токен в базе
+		await this.prisma.passwordResetToken.create({
+			data: {
+				userId: user.id,
+				token: resetToken,
+				expiresAt,
+			},
+		})
+
+		// Отправляем email
+		try {
+			await this.notificationsService.sendPasswordResetEmail(email, resetToken)
+			console.log(
+				`[AuthService] Password reset email sent to: ${email.split('@')[0]}***@${email.split('@')[1]}`,
+			)
+		} catch (error) {
+			console.error('[AuthService] Failed to send password reset email:', error)
+		}
+
+		return {
+			message: 'Если email существует, письмо с инструкциями отправлено',
+		}
+	}
+
+	async resetPassword(token: string, newPassword: string) {
+		// Находим токен
+		const resetToken = await this.prisma.passwordResetToken.findUnique({
+			where: { token },
+			include: { user: true },
+		})
+
+		if (!resetToken || resetToken.used || resetToken.expiresAt < new Date()) {
+			throw new BadRequestException('Недействительный или истекший токен')
+		}
+
+		// Хешируем новый пароль
+		const hashedPassword = await bcrypt.hash(newPassword, 10)
+
+		// Обновляем пароль пользователя
+		await this.prisma.user.update({
+			where: { id: resetToken.userId },
+			data: { password: hashedPassword },
+		})
+
+		// Помечаем токен как использованный
+		await this.prisma.passwordResetToken.update({
+			where: { id: resetToken.id },
+			data: { used: true },
+		})
+
+		console.log(
+			`[AuthService] Password reset successful for user: ${resetToken.user.id.substring(0, 8)}***`,
+		)
+
+		return { message: 'Пароль успешно изменен' }
 	}
 }
