@@ -23,6 +23,12 @@ export class PaymentsService {
 	}
 
 	async createPayment(userId: string, dto: CreatePaymentDto) {
+		console.log('[Payments] Creating payment', {
+			userId: userId.substring(0, 8) + '...',
+			points: dto.points,
+			amount: dto.amount,
+		})
+
 		const user = await this.usersService.findById(userId)
 
 		// Создаем платеж в БД
@@ -35,12 +41,23 @@ export class PaymentsService {
 			},
 		})
 
+		console.log('[Payments] Payment created in DB', {
+			paymentId: payment.id,
+			status: payment.status,
+		})
+
 		// Создаем платеж в YooKassa
 		const yooKassaPayment = await this.createYooKassaPayment(
 			payment.id,
 			dto.amount,
 			user.email,
 		)
+
+		console.log('[Payments] YooKassa payment created', {
+			paymentId: payment.id,
+			externalId: yooKassaPayment.id,
+			hasConfirmationUrl: !!yooKassaPayment.confirmation?.confirmation_url,
+		})
 
 		// Обновляем платеж с данными YooKassa
 		const updatedPayment = await this.prisma.payment.update({
@@ -57,6 +74,12 @@ export class PaymentsService {
 	async handleYooKassaWebhook(body: any) {
 		const { event, object } = body
 
+		console.log('[Payments] Webhook received', {
+			event,
+			paymentId: object?.id,
+			status: object?.status,
+		})
+
 		if (event === 'payment.succeeded') {
 			const externalId = object.id
 			const payment = await this.prisma.payment.findUnique({
@@ -64,9 +87,23 @@ export class PaymentsService {
 				include: { user: true },
 			})
 
-			if (!payment || payment.status === 'SUCCEEDED') {
+			if (!payment) {
+				console.log('[Payments] Payment not found', { externalId })
 				return { success: true }
 			}
+
+			if (payment.status === 'SUCCEEDED') {
+				console.log('[Payments] Payment already processed', {
+					paymentId: payment.id,
+				})
+				return { success: true }
+			}
+
+			console.log('[Payments] Processing payment', {
+				paymentId: payment.id,
+				userId: payment.userId.substring(0, 8) + '...',
+				points: payment.points,
+			})
 
 			// Обновляем статус платежа
 			await this.prisma.payment.update({
@@ -85,6 +122,11 @@ export class PaymentsService {
 				`Пополнение баланса на ${payment.amount} ₽`,
 			)
 
+			console.log('[Payments] Balance updated', {
+				paymentId: payment.id,
+				pointsAdded: payment.points,
+			})
+
 			// Отправляем уведомления
 			await this.telegramService.sendPaymentNotification(
 				payment.user.email,
@@ -97,6 +139,10 @@ export class PaymentsService {
 				Number(payment.amount),
 				payment.points,
 			)
+
+			console.log('[Payments] Notifications sent', {
+				paymentId: payment.id,
+			})
 		}
 
 		return { success: true }
@@ -126,8 +172,12 @@ export class PaymentsService {
 		amount: number,
 		email: string,
 	) {
-		// TODO: Интеграция с YooKassa API
-		// Пример структуры запроса:
+		console.log('[Payments] Creating YooKassa payment', {
+			paymentId,
+			amount,
+			emailDomain: email.split('@')[1],
+		})
+
 		const auth = Buffer.from(`${this.shopId}:${this.secretKey}`).toString(
 			'base64',
 		)
@@ -169,6 +219,17 @@ export class PaymentsService {
 			}),
 		})
 
-		return response.json()
+		const data = await response.json()
+
+		if (!response.ok) {
+			console.error('[Payments] YooKassa error', {
+				status: response.status,
+				errorType: data.type,
+				errorCode: data.code,
+			})
+			throw new Error(`YooKassa error: ${data.description || 'Unknown error'}`)
+		}
+
+		return data
 	}
 }
