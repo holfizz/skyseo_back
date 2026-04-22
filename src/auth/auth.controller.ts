@@ -1,4 +1,4 @@
-import { Body, Controller, Ip, Post } from '@nestjs/common'
+import { Body, Controller, Ip, Post, Request, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import {
 	ForgotPasswordDto,
@@ -6,6 +6,7 @@ import {
 	RegisterDto,
 	ResetPasswordDto,
 } from './dto'
+import { JwtAuthGuard } from './jwt-auth.guard'
 
 @Controller('auth')
 export class AuthController {
@@ -29,5 +30,16 @@ export class AuthController {
 	@Post('reset-password')
 	async resetPassword(@Body() dto: ResetPasswordDto) {
 		return this.authService.resetPassword(dto.token, dto.password)
+	}
+
+	@Post('verify-email')
+	async verifyEmail(@Body() body: { token: string }) {
+		return this.authService.verifyEmail(body.token)
+	}
+
+	@Post('resend-verification')
+	@UseGuards(JwtAuthGuard)
+	async resendVerification(@Request() req) {
+		return this.authService.resendVerificationEmail(req.user.id)
 	}
 }

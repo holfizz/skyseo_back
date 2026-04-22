@@ -30,6 +30,8 @@ export class NotificationsService {
       <h2>Добро пожаловать!</h2>
       <p>Спасибо за регистрацию в SkySEO.</p>
       <p>Вам начислено <strong>1000 баллов</strong> в качестве приветственного бонуса!</p>
+      <p><strong>Важно:</strong> Для пополнения баланса необходимо подтвердить email адрес. Письмо с подтверждением отправлено отдельно.</p>
+      <p>Если письмо не пришло, проверьте папку "Спам".</p>
       <p>Начните добавлять свои сайты и ключевые слова для продвижения.</p>
       <br>
       <p>С уважением,<br>Команда SkySEO</p>
@@ -62,6 +64,23 @@ export class NotificationsService {
       <p><a href="${resetUrl}" style="background-color: #1400ff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Восстановить пароль</a></p>
       <p>Ссылка действительна в течение 1 часа.</p>
       <p>Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>
+      <br>
+      <p>С уважением,<br>Команда SkySEO</p>
+    `
+
+		await this.sendEmail(email, subject, html)
+	}
+
+	async sendEmailVerification(email: string, verificationToken: string) {
+		const verifyUrl = `https://skyseo.site/verify-email?token=${verificationToken}`
+		const subject = 'Подтверждение email SkySEO'
+		const html = `
+      <h2>Подтвердите ваш email</h2>
+      <p>Спасибо за регистрацию в SkySEO!</p>
+      <p>Для завершения регистрации подтвердите ваш email адрес:</p>
+      <p><a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 12px 24px; text-decoration: none; border-radius: 12px; font-weight: bold;">Подтвердить email</a></p>
+      <p><strong>Важно:</strong> Без подтверждения email вы не сможете пополнять баланс.</p>
+      <p style="color: #666; font-size: 14px;">Если письмо не пришло, проверьте папку "Спам".</p>
       <br>
       <p>С уважением,<br>Команда SkySEO</p>
     `

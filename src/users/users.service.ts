@@ -15,6 +15,7 @@ export class UsersService {
 		referralSource?: string
 		city?: string
 		lastLoginIp?: string
+		emailVerificationToken?: string
 	}) {
 		return this.prisma.user.create({
 			data: {

@@ -10,21 +10,23 @@ datasource db {
 }
 
 model User {
-  id                  String    @id @default(uuid())
-  email               String    @unique
-  password            String
-  balance             Int       @default(1000) // Приветственный бонус 1000 баллов
-  role                Role      @default(USER)
-  referralSource      String? // Откуда узнал
-  city                String? // Город пользователя
-  isActive            Boolean   @default(true)
-  isSuspicious        Boolean   @default(false) // Флаг подозрительной активности
-  lastLoginIp         String? // Последний IP входа
-  registrationIp      String? // IP регистрации
-  failedLoginAttempts Int       @default(0) // Неудачные попытки входа
-  lastFailedLogin     DateTime? // Последняя неудачная попытка
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                     String    @id @default(uuid())
+  email                  String    @unique
+  password               String
+  balance                Int       @default(1000) // Приветственный бонус 1000 баллов
+  role                   Role      @default(USER)
+  referralSource         String? // Откуда узнал
+  city                   String? // Город пользователя
+  isActive               Boolean   @default(true)
+  isSuspicious           Boolean   @default(false) // Флаг подозрительной активности
+  emailVerified          Boolean   @default(false) // Подтверждение email
+  emailVerificationToken String?   @unique // Токен для подтверждения email
+  lastLoginIp            String? // Последний IP входа
+  registrationIp         String? // IP регистрации
+  failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
+  lastFailedLogin        DateTime? // Последняя неудачная попытка
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   websites            Website[]
   executions          Execution[]

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -30,6 +30,13 @@ export class PaymentsService {
 		})
 
 		const user = await this.usersService.findById(userId)
+
+		// Проверяем подтверждение email
+		if (!user.emailVerified) {
+			throw new BadRequestException(
+				'Необходимо подтвердить email перед пополнением баланса',
+			)
+		}
 
 		// Создаем платеж в БД
 		const payment = await this.prisma.payment.create({

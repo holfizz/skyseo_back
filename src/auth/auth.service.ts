@@ -55,12 +55,16 @@ export class AuthService {
 
 		const hashedPassword = await bcrypt.hash(dto.password, 10)
 
+		// Генерируем токен для подтверждения email
+		const emailVerificationToken = randomBytes(32).toString('hex')
+
 		const user = await this.usersService.create({
 			email: dto.email,
 			password: hashedPassword,
 			referralSource: dto.referralSource,
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
+			emailVerificationToken,
 		})
 
 		// Отправка уведомления в Telegram
@@ -80,6 +84,19 @@ export class AuthService {
 			)
 		} catch (error) {
 			console.error('[AuthService] Failed to send welcome email:', error)
+		}
+
+		// Отправка email для подтверждения
+		try {
+			await this.notificationsService.sendEmailVerification(
+				user.email,
+				emailVerificationToken,
+			)
+			console.log(
+				`[AuthService] Verification email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
+			)
+		} catch (error) {
+			console.error('[AuthService] Failed to send verification email:', error)
 		}
 
 		const token = this.generateToken(user.id, user.email)
@@ -200,5 +217,71 @@ export class AuthService {
 		)
 
 		return { message: 'Пароль успешно изменен' }
+	}
+
+	async verifyEmail(token: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { emailVerificationToken: token },
+		})
+
+		if (!user) {
+			throw new BadRequestException('Недействительный токен подтверждения')
+		}
+
+		if (user.emailVerified) {
+			return { message: 'Email уже подтвержден', alreadyVerified: true }
+		}
+
+		await this.prisma.user.update({
+			where: { id: user.id },
+			data: {
+				emailVerified: true,
+				emailVerificationToken: null,
+			},
+		})
+
+		console.log(
+			`[AuthService] Email verified for user: ${user.id.substring(0, 8)}***`,
+		)
+
+		return { message: 'Email успешно подтвержден' }
+	}
+
+	async resendVerificationEmail(userId: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+		})
+
+		if (!user) {
+			throw new NotFoundException('Пользователь не найден')
+		}
+
+		if (user.emailVerified) {
+			throw new BadRequestException('Email уже подтвержден')
+		}
+
+		// Генерируем новый токен
+		const emailVerificationToken = randomBytes(32).toString('hex')
+
+		await this.prisma.user.update({
+			where: { id: userId },
+			data: { emailVerificationToken },
+		})
+
+		// Отправляем email
+		try {
+			await this.notificationsService.sendEmailVerification(
+				user.email,
+				emailVerificationToken,
+			)
+			console.log(
+				`[AuthService] Verification email resent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
+			)
+		} catch (error) {
+			console.error('[AuthService] Failed to resend verification email:', error)
+			throw new BadRequestException('Не удалось отправить письмо')
+		}
+
+		return { message: 'Письмо с подтверждением отправлено повторно' }
 	}
 }
