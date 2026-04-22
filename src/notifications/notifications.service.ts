@@ -7,7 +7,24 @@ export class NotificationsService {
 	private resend: Resend
 
 	constructor(private configService: ConfigService) {
-		this.resend = new Resend(this.configService.get('RESEND_API_KEY'))
+		const apiKey = this.configService.get('RESEND_API_KEY')
+		if (!apiKey) {
+			console.warn(
+				'[NotificationsService] RESEND_API_KEY not found, email sending will be disabled',
+			)
+			this.resend = null as any
+		} else {
+			try {
+				this.resend = new Resend(apiKey)
+				console.log('[NotificationsService] Resend initialized successfully')
+			} catch (error) {
+				console.error(
+					'[NotificationsService] Failed to initialize Resend:',
+					error,
+				)
+				this.resend = null as any
+			}
+		}
 	}
 
 	async sendLowBalanceEmail(email: string, balance: number) {
@@ -90,6 +107,13 @@ export class NotificationsService {
 
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
+			if (!this.resend) {
+				console.warn(
+					'[NotificationsService] Resend not initialized, skipping email send',
+				)
+				return
+			}
+
 			const emailDomain = to.split('@')[1]?.toLowerCase()
 			console.log(
 				`[NotificationsService] Sending email to domain: ${emailDomain}`,
