@@ -7,7 +7,7 @@ dist
 .DS_Store
 backups/
 logs/
-*.sql
+
 *.gpg
 releases/latest-mac.yml
 releases/latest.yml
