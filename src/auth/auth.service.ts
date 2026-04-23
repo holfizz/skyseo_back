@@ -16,6 +16,153 @@ import { LoginDto, RegisterDto } from './dto'
 
 @Injectable()
 export class AuthService {
+	// Список разрешенных email доменов
+	private readonly allowedEmailDomains = new Set([
+		// Google
+		'gmail.com',
+		'googlemail.com',
+		// Microsoft
+		'outlook.com',
+		'hotmail.com',
+		'live.com',
+		'msn.com',
+		// Yandex
+		'yandex.ru',
+		'yandex.com',
+		'ya.ru',
+		'yandex.by',
+		'yandex.kz',
+		'yandex.ua',
+		// Mail.ru Group
+		'mail.ru',
+		'inbox.ru',
+		'list.ru',
+		'bk.ru',
+		// Rambler
+		'rambler.ru',
+		'lenta.ru',
+		'autorambler.ru',
+		'myrambler.ru',
+		'ro.ru',
+		// Yahoo
+		'yahoo.com',
+		'yahoo.co.uk',
+		'yahoo.fr',
+		'yahoo.de',
+		'yahoo.es',
+		'yahoo.it',
+		// Apple
+		'icloud.com',
+		'me.com',
+		'mac.com',
+		// Популярные международные
+		'protonmail.com',
+		'tutanota.com',
+		'zoho.com',
+		'aol.com',
+		// Немецкие
+		'gmx.de',
+		'web.de',
+		't-online.de',
+		'freenet.de',
+		// Французские
+		'orange.fr',
+		'wanadoo.fr',
+		'free.fr',
+		'laposte.net',
+		// Итальянские
+		'libero.it',
+		'virgilio.it',
+		'alice.it',
+		'tin.it',
+		// Испанские
+		'terra.es',
+		'telefonica.net',
+		'ya.com',
+		// Польские
+		'wp.pl',
+		'onet.pl',
+		'interia.pl',
+		'gazeta.pl',
+		// Чешские
+		'seznam.cz',
+		'centrum.cz',
+		'email.cz',
+		// Украинские
+		'ukr.net',
+		'i.ua',
+		'bigmir.net',
+		'meta.ua',
+		// Белорусские
+		'tut.by',
+		'mail.by',
+		// Казахские
+		'mail.kz',
+		'inbox.kz',
+		// Другие популярные
+		'fastmail.com',
+		'hushmail.com',
+		'guerrillamail.com',
+		'10minutemail.com',
+		'mailinator.com',
+		'tempmail.org',
+
+		// Образовательные
+		'edu',
+		'ac.uk',
+		'edu.ru',
+		'student.ru',
+		// Региональные российские
+		'spb.ru',
+		'msk.ru',
+		'ngs.ru',
+		'e1.ru',
+		'74.ru',
+		'96.ru',
+		// Дополнительные международные
+		'rediffmail.com',
+		'indiatimes.com',
+		'sify.com', // Индия
+		'163.com',
+		'126.com',
+		'qq.com',
+		'sina.com', // Китай
+		'naver.com',
+		'daum.net',
+		'hanmail.net', // Корея
+		'goo.ne.jp',
+		'so-net.ne.jp',
+		'nifty.com', // Япония
+		'bol.com.br',
+		'uol.com.br',
+		'ig.com.br', // Бразилия
+		'terra.com.br',
+		'globo.com',
+		'r7.com',
+		// Дополнительные европейские
+		'bluewin.ch',
+		'sunrise.ch', // Швейцария
+		'chello.nl',
+		'planet.nl',
+		'xs4all.nl', // Нидерланды
+		'skynet.be',
+		'belgacom.net', // Бельгия
+		'eircom.net',
+		'indigo.ie', // Ирландия
+		'telenet.be',
+		'pandora.be',
+		// Скандинавские
+		'telia.com',
+		'spray.se',
+		'passagen.se', // Швеция
+		'online.no',
+		'start.no', // Норвегия
+		'jubii.dk',
+		'post.dk', // Дания
+		'suomi24.fi',
+		'luukku.com', // Финляндия
+	])
+
 	constructor(
 		private usersService: UsersService,
 		private jwtService: JwtService,
@@ -24,7 +171,24 @@ export class AuthService {
 		private prisma: PrismaService,
 	) {}
 
+	private validateEmailDomain(email: string): void {
+		const domain = email.split('@')[1]?.toLowerCase()
+
+		if (!domain) {
+			throw new BadRequestException('Некорректный email адрес')
+		}
+
+		if (!this.allowedEmailDomains.has(domain)) {
+			throw new BadRequestException(
+				`Регистрация с корпоративных и неподтвержденных почтовых доменов временно ограничена. Пожалуйста, используйте личную почту с проверенных сервисов: gmail.com, yandex.ru, mail.ru, outlook.com и других популярных почтовых провайдеров.`,
+			)
+		}
+	}
+
 	async register(dto: RegisterDto, ipAddress?: string) {
+		// Валидация email домена
+		this.validateEmailDomain(dto.email)
+
 		// Защита от одноразовых email
 		const disposableEmailDomains = [
 			'tempmail.com',
@@ -70,11 +234,13 @@ export class AuthService {
 
 		// Отправка уведомления в Telegram
 		await this.telegramService.sendAdminNotification(
-			`🆕 Новая регистрация\n\n` +
-				`Email: ${user.email}\n` +
-				`Город: ${user.city || 'Не указан'}\n` +
-				`Источник: ${user.referralSource || 'Не указан'}\n` +
-				`Баланс: ${user.balance} баллов (приветственный бонус)`,
+			`🆕 <b>Новая регистрация</b>\n\n` +
+				`📧 Email: ${user.email}\n` +
+				`🌍 Город: ${user.city || 'Не указан'}\n` +
+				`📍 Источник: ${user.referralSource || 'Не указан'}\n` +
+				`🌐 IP: ${ipAddress || 'Не определен'}\n` +
+				`💰 Баланс: ${user.balance} баллов\n` +
+				`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,
 		)
 
 		// Отправка приветственного email
