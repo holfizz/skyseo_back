@@ -1,0 +1,23 @@
+[Unit]
+Description=Xray Proxy for Telegram
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/skyseo_back
+ExecStart=/usr/local/bin/xray run -config /root/skyseo_back/xray-config.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/skyseo_back
+
+[Install]
+WantedBy=multi-user.target

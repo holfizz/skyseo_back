@@ -1,0 +1,77 @@
+{
+	"log": {
+		"loglevel": "warning"
+	},
+	"inbounds": [
+		{
+			"port": 1080,
+			"listen": "127.0.0.1",
+			"protocol": "socks",
+			"settings": {
+				"auth": "noauth",
+				"udp": true
+			},
+			"tag": "socks-in"
+		}
+	],
+	"outbounds": [
+		{
+			"protocol": "vless",
+			"settings": {
+				"vnext": [
+					{
+						"address": "77.246.97.238",
+						"port": 443,
+						"users": [
+							{
+								"id": "e03361c39d324152853ba94da3ae7dc9",
+								"encryption": "none",
+								"flow": "xtls-rprx-vision"
+							}
+						]
+					}
+				]
+			},
+			"streamSettings": {
+				"network": "tcp",
+				"security": "reality",
+				"realitySettings": {
+					"fingerprint": "chrome",
+					"serverName": "dutchnews.nl",
+					"publicKey": "mqecwHTuDdHY7ejecZfdhm2qYEYGCqweB_WbWykEEjE",
+					"shortId": "aabbccdd"
+				}
+			},
+			"tag": "proxy"
+		},
+		{
+			"protocol": "freedom",
+			"tag": "direct"
+		}
+	],
+	"routing": {
+		"domainStrategy": "AsIs",
+		"rules": [
+			{
+				"type": "field",
+				"domain": ["api.telegram.org", "telegram.org"],
+				"outboundTag": "proxy"
+			},
+			{
+				"type": "field",
+				"ip": [
+					"149.154.160.0/20",
+					"91.108.4.0/22",
+					"91.108.8.0/22",
+					"91.108.12.0/22",
+					"91.108.16.0/22",
+					"91.108.56.0/22",
+					"149.154.164.0/22",
+					"149.154.168.0/22",
+					"149.154.172.0/22"
+				],
+				"outboundTag": "proxy"
+			}
+		]
+	}
+}

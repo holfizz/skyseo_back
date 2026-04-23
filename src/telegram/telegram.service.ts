@@ -22,21 +22,71 @@ export class TelegramService {
 
 	private async initializeBot(token: string) {
 		try {
-			this.bot = new Telegraf(token)
+			// Настройка прокси для обхода блокировок в России
+			const proxyUrl =
+				this.configService.get('TELEGRAM_PROXY_URL') ||
+				'socks5://127.0.0.1:1080'
+
+			let botOptions: any = {}
+
+			// Пытаемся использовать прокси если он настроен
+			if (proxyUrl && proxyUrl !== 'disabled') {
+				try {
+					const { SocksProxyAgent } = require('socks-proxy-agent')
+					const agent = new SocksProxyAgent(proxyUrl)
+					botOptions = {
+						telegram: {
+							agent: agent,
+							apiRoot: 'https://api.telegram.org',
+						},
+					}
+					console.log(`🔄 Telegram: Using proxy ${proxyUrl}`)
+				} catch (proxyError) {
+					console.log(
+						`⚠️ Telegram: Proxy failed (${proxyError.message}), trying direct connection`,
+					)
+					botOptions = {}
+				}
+			}
+
+			this.bot = new Telegraf(token, botOptions)
 
 			// Пытаемся проверить подключение с таймаутом
-			const timeoutPromise = new Promise((_, reject) =>
-				setTimeout(() => reject(new Error('Connection timeout')), 5000),
+			const timeoutPromise = new Promise(
+				(_, reject) =>
+					setTimeout(() => reject(new Error('Connection timeout')), 10000), // Увеличиваем таймаут до 10 сек
 			)
 
 			const getMePromise = this.bot.telegram.getMe()
 
-			await Promise.race([getMePromise, timeoutPromise])
+			const botInfo = await Promise.race([getMePromise, timeoutPromise])
 
 			this.isEnabled = true
-			console.log('✅ Telegram bot connected successfully')
+			console.log(
+				`✅ Telegram bot connected successfully: @${(botInfo as any).username}`,
+			)
 		} catch (error) {
 			console.log('⚠️ Telegram bot connection failed:', error.message)
+
+			// Если прокси не сработал, пробуем без прокси
+			if (error.message.includes('proxy') || error.message.includes('SOCKS')) {
+				console.log('🔄 Telegram: Retrying without proxy...')
+				try {
+					this.bot = new Telegraf(token)
+					const botInfo = await this.bot.telegram.getMe()
+					this.isEnabled = true
+					console.log(
+						`✅ Telegram bot connected (direct): @${botInfo.username}`,
+					)
+					return
+				} catch (directError) {
+					console.log(
+						'⚠️ Telegram: Direct connection also failed:',
+						directError.message,
+					)
+				}
+			}
+
 			console.log('⚠️ Telegram notifications disabled')
 			this.bot = null
 			this.isEnabled = false
@@ -55,6 +105,23 @@ export class TelegramService {
 			})
 		} catch (error) {
 			console.error('Failed to send Telegram notification:', error.message)
+
+			// Если ошибка связана с сетью, пытаемся переподключиться
+			if (
+				error.message.includes('ECONNRESET') ||
+				error.message.includes('ENOTFOUND') ||
+				error.message.includes('timeout')
+			) {
+				console.log('🔄 Telegram: Network error, attempting reconnect...')
+
+				// Переинициализируем бота
+				const token = this.configService.get('TELEGRAM_BOT_TOKEN')
+				if (token) {
+					setTimeout(() => {
+						this.initializeBot(token)
+					}, 5000) // Ждем 5 секунд перед переподключением
+				}
+			}
 		}
 	}
 
