@@ -99,7 +99,6 @@ Wants=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$WORK_DIR
 ExecStart=/usr/local/bin/xray run -config /etc/xray-telegram.json
 Restart=always
 RestartSec=5
@@ -108,9 +107,6 @@ StandardError=journal
 
 # Безопасность
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$WORK_DIR
 
 [Install]
 WantedBy=multi-user.target
