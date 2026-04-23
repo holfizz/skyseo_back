@@ -45,27 +45,29 @@ export class NotificationsService {
 		email: string,
 		verificationToken: string,
 	) {
-		const verifyUrl = `https://skyseo.site/verify-email?token=${verificationToken}`
+		const frontendUrl = process.env.FRONTEND_URL || 'https://skyseo.site'
+		const verifyUrl = `${frontendUrl}/verify-email?token=${verificationToken}`
 		const subject = 'Добро пожаловать в SkySEO! Подтвердите email'
 		const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1400ff; text-align: center;">Добро пожаловать в SkySEO!</h2>
         
-        <div style="background: linear-gradient(135deg, #1400ff 0%, #ffe381 100%); padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0;">
-          <h3 style="color: white; margin: 0 0 10px 0;">🎉 Приветственный бонус</h3>
-          <p style="color: white; font-size: 18px; font-weight: bold; margin: 0;">Вам начислено 1000 баллов!</p>
-        </div>
-
         <p>Спасибо за регистрацию в SkySEO! Теперь вы можете начать продвижение своих сайтов.</p>
         
-        <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 20px 0;">
-          <h4 style="color: #856404; margin: 0 0 10px 0;">⚠️ Важно: Подтвердите email</h4>
+        <!-- Cookie-style banner -->
+        <div style="background: linear-gradient(135deg, #1400ff 0%, #3b82f6 100%); padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0; border: 2px solid #1400ff;">
+          <h3 style="color: white; margin: 0 0 10px 0; font-size: 18px;">Приветственный бонус</h3>
+          <p style="color: white; font-size: 16px; font-weight: bold; margin: 0;">Вам начислено 1000 баллов!</p>
+        </div>
+
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+          <h4 style="color: #856404; margin: 0 0 10px 0;">Важно: Подтвердите email</h4>
           <p style="color: #856404; margin: 0;">Для пополнения баланса и полного доступа к функциям необходимо подтвердить ваш email адрес.</p>
         </div>
 
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 15px 30px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 16px; display: inline-block;">
-            ✅ Подтвердить email
+          <a href="${verifyUrl}" style="background-color: #1400ff; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Подтвердить email
           </a>
         </div>
 
@@ -126,7 +128,8 @@ export class NotificationsService {
 	}
 
 	async sendEmailVerification(email: string, verificationToken: string) {
-		const verifyUrl = `https://skyseo.site/verify-email?token=${verificationToken}`
+		const frontendUrl = process.env.FRONTEND_URL || 'https://skyseo.site'
+		const verifyUrl = `${frontendUrl}/verify-email?token=${verificationToken}`
 		const subject = 'Подтверждение email SkySEO'
 		const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -135,12 +138,12 @@ export class NotificationsService {
         <p>Для завершения регистрации и получения полного доступа к функциям SkySEO подтвердите ваш email адрес:</p>
         
         <div style="text-align: center; margin: 30px 0;">
-          <a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 15px 30px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 16px; display: inline-block;">
-            ✅ Подтвердить email
+          <a href="${verifyUrl}" style="background-color: #1400ff; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Подтвердить email
           </a>
         </div>
 
-        <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
           <p style="color: #856404; margin: 0;"><strong>Важно:</strong> Без подтверждения email вы не сможете пополнять баланс.</p>
         </div>
 
