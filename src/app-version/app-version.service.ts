@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { Platform } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 
 @Injectable()
@@ -82,14 +83,14 @@ export class AppVersionService {
 	/**
 	 * Преобразует platform string в enum
 	 */
-	private getPlatformEnum(platform: string): string {
-		const platformMap: Record<string, string> = {
-			'darwin-arm64': 'DARWIN_ARM64',
-			'darwin-x64': 'DARWIN_X64',
-			'win32-x64': 'WIN32_X64',
-			'win32-ia32': 'WIN32_IA32',
+	private getPlatformEnum(platform: string): Platform {
+		const platformMap: Record<string, Platform> = {
+			'darwin-arm64': Platform.DARWIN_ARM64,
+			'darwin-x64': Platform.DARWIN_X64,
+			'win32-x64': Platform.WIN32_X64,
+			'win32-ia32': Platform.WIN32_IA32,
 		}
 
-		return platformMap[platform] || 'WIN32_X64'
+		return platformMap[platform] || Platform.WIN32_X64
 	}
 }
