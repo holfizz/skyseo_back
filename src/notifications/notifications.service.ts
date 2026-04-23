@@ -41,17 +41,54 @@ export class NotificationsService {
 		await this.sendEmail(email, subject, html)
 	}
 
-	async sendWelcomeEmail(email: string) {
-		const subject = 'Добро пожаловать в SkySEO!'
+	async sendWelcomeAndVerificationEmail(
+		email: string,
+		verificationToken: string,
+	) {
+		const verifyUrl = `https://skyseo.site/verify-email?token=${verificationToken}`
+		const subject = 'Добро пожаловать в SkySEO! Подтвердите email'
 		const html = `
-      <h2>Добро пожаловать!</h2>
-      <p>Спасибо за регистрацию в SkySEO.</p>
-      <p>Вам начислено <strong>1000 баллов</strong> в качестве приветственного бонуса!</p>
-      <p><strong>Важно:</strong> Для пополнения баланса необходимо подтвердить email адрес. Письмо с подтверждением отправлено отдельно.</p>
-      <p>Если письмо не пришло, проверьте папку "Спам".</p>
-      <p>Начните добавлять свои сайты и ключевые слова для продвижения.</p>
-      <br>
-      <p>С уважением,<br>Команда SkySEO</p>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1400ff; text-align: center;">Добро пожаловать в SkySEO!</h2>
+        
+        <div style="background: linear-gradient(135deg, #1400ff 0%, #ffe381 100%); padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0;">
+          <h3 style="color: white; margin: 0 0 10px 0;">🎉 Приветственный бонус</h3>
+          <p style="color: white; font-size: 18px; font-weight: bold; margin: 0;">Вам начислено 1000 баллов!</p>
+        </div>
+
+        <p>Спасибо за регистрацию в SkySEO! Теперь вы можете начать продвижение своих сайтов.</p>
+        
+        <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #856404; margin: 0 0 10px 0;">⚠️ Важно: Подтвердите email</h4>
+          <p style="color: #856404; margin: 0;">Для пополнения баланса и полного доступа к функциям необходимо подтвердить ваш email адрес.</p>
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 15px 30px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 16px; display: inline-block;">
+            ✅ Подтвердить email
+          </a>
+        </div>
+
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <h4 style="color: #495057; margin: 0 0 10px 0;">Что дальше?</h4>
+          <ul style="color: #6c757d; margin: 0; padding-left: 20px;">
+            <li>Добавьте свои сайты в панели управления</li>
+            <li>Укажите ключевые слова для продвижения</li>
+            <li>Запустите автоматическое продвижение</li>
+            <li>Зарабатывайте баллы, выполняя задачи других пользователей</li>
+          </ul>
+        </div>
+
+        <p style="color: #666; font-size: 14px; text-align: center;">
+          Если письмо попало в спам, добавьте info@skyseo.site в список доверенных отправителей.
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+        <p style="text-align: center; color: #999; font-size: 14px;">
+          С уважением,<br>
+          <strong>Команда SkySEO</strong>
+        </p>
+      </div>
     `
 
 		await this.sendEmail(email, subject, html)
@@ -92,14 +129,31 @@ export class NotificationsService {
 		const verifyUrl = `https://skyseo.site/verify-email?token=${verificationToken}`
 		const subject = 'Подтверждение email SkySEO'
 		const html = `
-      <h2>Подтвердите ваш email</h2>
-      <p>Спасибо за регистрацию в SkySEO!</p>
-      <p>Для завершения регистрации подтвердите ваш email адрес:</p>
-      <p><a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 12px 24px; text-decoration: none; border-radius: 12px; font-weight: bold;">Подтвердить email</a></p>
-      <p><strong>Важно:</strong> Без подтверждения email вы не сможете пополнять баланс.</p>
-      <p style="color: #666; font-size: 14px;">Если письмо не пришло, проверьте папку "Спам".</p>
-      <br>
-      <p>С уважением,<br>Команда SkySEO</p>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1400ff; text-align: center;">Подтвердите ваш email</h2>
+        
+        <p>Для завершения регистрации и получения полного доступа к функциям SkySEO подтвердите ваш email адрес:</p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verifyUrl}" style="background-color: #ffe381; color: #181818; padding: 15px 30px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 16px; display: inline-block;">
+            ✅ Подтвердить email
+          </a>
+        </div>
+
+        <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p style="color: #856404; margin: 0;"><strong>Важно:</strong> Без подтверждения email вы не сможете пополнять баланс.</p>
+        </div>
+
+        <p style="color: #666; font-size: 14px; text-align: center;">
+          Если письмо попало в спам, добавьте info@skyseo.site в список доверенных отправителей.
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+        <p style="text-align: center; color: #999; font-size: 14px;">
+          С уважением,<br>
+          <strong>Команда SkySEO</strong>
+        </p>
+      </div>
     `
 
 		await this.sendEmail(email, subject, html)

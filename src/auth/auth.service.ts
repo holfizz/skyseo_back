@@ -233,37 +233,36 @@ export class AuthService {
 		})
 
 		// Отправка уведомления в Telegram
-		await this.telegramService.sendAdminNotification(
-			`🆕 <b>Новая регистрация</b>\n\n` +
-				`📧 Email: ${user.email}\n` +
-				`🌍 Город: ${user.city || 'Не указан'}\n` +
-				`📍 Источник: ${user.referralSource || 'Не указан'}\n` +
-				`🌐 IP: ${ipAddress || 'Не определен'}\n` +
-				`💰 Баланс: ${user.balance} баллов\n` +
-				`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,
-		)
-
-		// Отправка приветственного email
 		try {
-			await this.notificationsService.sendWelcomeEmail(user.email)
-			console.log(
-				`[AuthService] Welcome email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
+			console.log('[AuthService] Sending Telegram notification...')
+			await this.telegramService.sendAdminNotification(
+				`🆕 <b>Новая регистрация</b>\n\n` +
+					`📧 Email: ${user.email}\n` +
+					`🌍 Город: ${user.city || 'Не указан'}\n` +
+					`📍 Источник: ${user.referralSource || 'Не указан'}\n` +
+					`🌐 IP: ${ipAddress || 'Не определен'}\n` +
+					`💰 Баланс: ${user.balance} баллов\n` +
+					`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,
 			)
+			console.log('[AuthService] Telegram notification sent successfully')
 		} catch (error) {
-			console.error('[AuthService] Failed to send welcome email:', error)
+			console.error(
+				'[AuthService] Failed to send Telegram notification:',
+				error,
+			)
 		}
 
-		// Отправка email для подтверждения
+		// Отправка объединенного приветственного письма с подтверждением email
 		try {
-			await this.notificationsService.sendEmailVerification(
+			await this.notificationsService.sendWelcomeAndVerificationEmail(
 				user.email,
 				emailVerificationToken,
 			)
 			console.log(
-				`[AuthService] Verification email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
+				`[AuthService] Welcome + verification email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
 			)
 		} catch (error) {
-			console.error('[AuthService] Failed to send verification email:', error)
+			console.error('[AuthService] Failed to send welcome email:', error)
 		}
 
 		const token = this.generateToken(user.id, user.email)

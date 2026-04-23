@@ -21,6 +21,7 @@ export class TelegramService {
 	}
 
 	private async initializeBot(token: string) {
+		console.log('[TelegramService] Initializing bot...')
 		try {
 			// Настройка прокси для обхода блокировок в России
 			const proxyUrl =
@@ -57,6 +58,7 @@ export class TelegramService {
 					setTimeout(() => reject(new Error('Connection timeout')), 10000), // Увеличиваем таймаут до 10 сек
 			)
 
+			console.log('[TelegramService] Testing bot connection...')
 			const getMePromise = this.bot.telegram.getMe()
 
 			const botInfo = await Promise.race([getMePromise, timeoutPromise])
@@ -65,6 +67,22 @@ export class TelegramService {
 			console.log(
 				`✅ Telegram bot connected successfully: @${(botInfo as any).username}`,
 			)
+
+			// Отправляем тестовое сообщение при инициализации (только в dev режиме)
+			if (
+				this.configService.get('NODE_ENV') === 'development' &&
+				this.adminId
+			) {
+				try {
+					await this.bot.telegram.sendMessage(
+						this.adminId,
+						'🤖 Telegram bot initialized successfully!',
+					)
+					console.log('✅ Test message sent to admin')
+				} catch (testError) {
+					console.error('❌ Failed to send test message:', testError.message)
+				}
+			}
 		} catch (error) {
 			console.log('⚠️ Telegram bot connection failed:', error.message)
 
@@ -78,6 +96,25 @@ export class TelegramService {
 					console.log(
 						`✅ Telegram bot connected (direct): @${botInfo.username}`,
 					)
+
+					// Отправляем тестовое сообщение при инициализации (только в dev режиме)
+					if (
+						this.configService.get('NODE_ENV') === 'development' &&
+						this.adminId
+					) {
+						try {
+							await this.bot.telegram.sendMessage(
+								this.adminId,
+								'🤖 Telegram bot initialized successfully (direct connection)!',
+							)
+							console.log('✅ Test message sent to admin (direct)')
+						} catch (testError) {
+							console.error(
+								'❌ Failed to send test message (direct):',
+								testError.message,
+							)
+						}
+					}
 					return
 				} catch (directError) {
 					console.log(
@@ -94,17 +131,31 @@ export class TelegramService {
 	}
 
 	async sendAdminNotification(message: string) {
+		console.log('[TelegramService] Attempting to send notification...')
+		console.log('[TelegramService] Bot enabled:', this.isEnabled)
+		console.log('[TelegramService] Admin ID:', this.adminId ? 'set' : 'not set')
+		console.log('[TelegramService] Bot instance:', this.bot ? 'exists' : 'null')
+
 		if (!this.isEnabled || !this.adminId || !this.bot) {
 			console.log('[Telegram disabled]:', message)
 			return
 		}
 
 		try {
+			console.log(
+				'[TelegramService] Sending message to admin ID:',
+				this.adminId,
+			)
 			await this.bot.telegram.sendMessage(this.adminId, message, {
 				parse_mode: 'HTML',
 			})
+			console.log('[TelegramService] Message sent successfully')
 		} catch (error) {
-			console.error('Failed to send Telegram notification:', error.message)
+			console.error(
+				'[TelegramService] Failed to send notification:',
+				error.message,
+			)
+			console.error('[TelegramService] Full error:', error)
 
 			// Если ошибка связана с сетью, пытаемся переподключиться
 			if (
