@@ -40,6 +40,19 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Проверяем наличие unzip
+if ! command -v unzip &> /dev/null; then
+    echo "📦 Устанавливаем unzip..."
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq && apt-get install -y unzip
+    elif command -v yum &> /dev/null; then
+        yum install -y unzip
+    else
+        echo "❌ Не удалось установить unzip. Установите его вручную и повторите"
+        exit 1
+    fi
+fi
+
 echo "📦 Распаковываем..."
 unzip -q "Xray-${XRAY_ARCH}.zip"
 
@@ -57,10 +70,12 @@ else
 fi
 
 # Копируем конфиг в рабочую директорию
-WORK_DIR="/root/skyseo_back"
-if [ ! -d "$WORK_DIR" ]; then
-    echo "❌ Директория $WORK_DIR не найдена"
-    echo "   Убедитесь что бэкенд развернут в $WORK_DIR"
+WORK_DIR=$(pwd)
+echo "📋 Рабочая директория: $WORK_DIR"
+
+if [ ! -f "$WORK_DIR/xray-config.json" ]; then
+    echo "❌ Файл конфигурации $WORK_DIR/xray-config.json не найден"
+    echo "   Убедитесь что вы запускаете скрипт из директории с бэкендом"
     exit 1
 fi
 
