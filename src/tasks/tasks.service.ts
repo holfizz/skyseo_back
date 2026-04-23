@@ -25,6 +25,20 @@ export class TasksService {
 			throw new NotFoundException('Website not found')
 		}
 
+		// Проверка на существующий ключевик для этого сайта
+		const existingTask = await this.prisma.task.findFirst({
+			where: {
+				websiteId: dto.websiteId,
+				keyword: dto.keyword,
+			},
+		})
+
+		if (existingTask) {
+			throw new BadRequestException(
+				`Ключевое слово "${dto.keyword}" уже существует для этого сайта`,
+			)
+		}
+
 		// Расчет стоимости задачи
 		const pointsCost = this.calculateTaskCost(dto.type)
 

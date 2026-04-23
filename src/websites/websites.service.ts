@@ -1,4 +1,5 @@
 import {
+	BadRequestException,
 	ForbiddenException,
 	Injectable,
 	NotFoundException,
@@ -11,6 +12,20 @@ export class WebsitesService {
 	constructor(private prisma: PrismaService) {}
 
 	async create(userId: string, dto: CreateWebsiteDto) {
+		// Проверка на существующий сайт с таким же URL у этого пользователя
+		const existingWebsite = await this.prisma.website.findFirst({
+			where: {
+				userId,
+				url: dto.url,
+			},
+		})
+
+		if (existingWebsite) {
+			throw new BadRequestException(
+				'Сайт с таким URL уже существует в вашем списке',
+			)
+		}
+
 		return this.prisma.website.create({
 			data: {
 				userId,
