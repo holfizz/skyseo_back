@@ -144,17 +144,25 @@ export class UpdatesController {
 		// Используем ARM64 версию как основную
 		const mainVersion = arm64Version || x64Version
 
+		// Формируем массив файлов только для существующих версий
+		const files: string[] = []
+		if (arm64Version) {
+			files.push(`  - url: ${arm64Version.downloadUrl}
+    sha512: ${arm64Version.sha512}
+    size: ${arm64Version.fileSize}`)
+		}
+		if (x64Version) {
+			files.push(`  - url: ${x64Version.downloadUrl}
+    sha512: ${x64Version.sha512}
+    size: ${x64Version.fileSize}`)
+		}
+
 		// Генерируем YAML
 		const yml = `version: ${mainVersion.version}
 files:
-  - url: ${arm64Version?.downloadUrl || ''}
-    sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-    size: 150000000
-  - url: ${x64Version?.downloadUrl || ''}
-    sha512: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
-    size: 150000000
+${files.join('\n')}
 path: ${arm64Version?.downloadUrl || x64Version?.downloadUrl || ''}
-sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+sha512: ${arm64Version?.sha512 || x64Version?.sha512 || ''}
 releaseDate: '${mainVersion.createdAt.toISOString()}'`
 
 		res.setHeader('Content-Type', 'text/yaml')
@@ -182,17 +190,25 @@ releaseDate: '${mainVersion.createdAt.toISOString()}'`
 		// Используем x64 версию как основную
 		const mainVersion = x64Version || ia32Version
 
+		// Формируем массив файлов только для существующих версий
+		const files: string[] = []
+		if (x64Version) {
+			files.push(`  - url: ${x64Version.downloadUrl}
+    sha512: ${x64Version.sha512}
+    size: ${x64Version.fileSize}`)
+		}
+		if (ia32Version) {
+			files.push(`  - url: ${ia32Version.downloadUrl}
+    sha512: ${ia32Version.sha512}
+    size: ${ia32Version.fileSize}`)
+		}
+
 		// Генерируем YAML
 		const yml = `version: ${mainVersion.version}
 files:
-  - url: ${x64Version?.downloadUrl || ''}
-    sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-    size: 150000000
-  - url: ${ia32Version?.downloadUrl || ''}
-    sha512: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
-    size: 150000000
+${files.join('\n')}
 path: ${x64Version?.downloadUrl || ia32Version?.downloadUrl || ''}
-sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+sha512: ${x64Version?.sha512 || ia32Version?.sha512 || ''}
 releaseDate: '${mainVersion.createdAt.toISOString()}'`
 
 		res.setHeader('Content-Type', 'text/yaml')

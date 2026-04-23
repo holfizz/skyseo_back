@@ -72,9 +72,6 @@ files:
   - url: http://localhost:4000/v1/api/updates/download/SkySEO-1.2.0-mac-arm64.zip
     sha512: d2RcKUIOlPSrxPT0veA1hzEJWL3e7aD2qJ5Nz2jnhV+DXyevLwZ2dAwq1BqkLetCwvE/98m5S9Z07luhGQvCNQ==
     size: 97432887
-  - url: http://localhost:4000/v1/api/updates/download/SkySEO-1.2.0-mac-x64.zip
-    sha512: obBD/64JqeXRUvTF17IaOqxi9sToL5A6u4pIcvZuacoFSLY/3EtEToo3QVa13ixhmLW2AfnNBVBkGE347Bau6w==
-    size: 97432887
 path: http://localhost:4000/v1/api/updates/download/SkySEO-1.2.0-mac-arm64.zip
 sha512: d2RcKUIOlPSrxPT0veA1hzEJWL3e7aD2qJ5Nz2jnhV+DXyevLwZ2dAwq1BqkLetCwvE/98m5S9Z07luhGQvCNQ==
 releaseDate: '2026-04-18T14:00:00.000Z'`
@@ -89,9 +86,6 @@ releaseDate: '2026-04-18T14:00:00.000Z'`
 files:
   - url: https://s3.cloud.ru/skyseo/SkySEO-1.2.0-x64.exe
     sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-    size: 150000000
-  - url: https://s3.cloud.ru/skyseo/SkySEO-1.2.0-ia32.exe
-    sha512: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
     size: 150000000
 path: https://s3.cloud.ru/skyseo/SkySEO-1.2.0-x64.exe
 sha512: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef

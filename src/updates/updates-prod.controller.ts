@@ -44,14 +44,22 @@ export class UpdatesProdController {
 
 		const mainVersion = arm64Version || x64Version
 
+		// Формируем массив файлов только для существующих версий
+		const files: string[] = []
+		if (arm64Version) {
+			files.push(`  - url: ${arm64Version.downloadUrl}
+    sha512: ${arm64Version.sha512}
+    size: ${arm64Version.fileSize}`)
+		}
+		if (x64Version) {
+			files.push(`  - url: ${x64Version.downloadUrl}
+    sha512: ${x64Version.sha512}
+    size: ${x64Version.fileSize}`)
+		}
+
 		const yml = `version: ${mainVersion.version}
 files:
-  - url: ${arm64Version?.downloadUrl || ''}
-    sha512: ${arm64Version?.sha512 || ''}
-    size: ${arm64Version?.fileSize || 0}
-  - url: ${x64Version?.downloadUrl || ''}
-    sha512: ${x64Version?.sha512 || ''}
-    size: ${x64Version?.fileSize || 0}
+${files.join('\n')}
 path: ${arm64Version?.downloadUrl || x64Version?.downloadUrl || ''}
 sha512: ${arm64Version?.sha512 || x64Version?.sha512 || ''}
 releaseDate: '${mainVersion.createdAt.toISOString()}'`
@@ -78,14 +86,22 @@ releaseDate: '${mainVersion.createdAt.toISOString()}'`
 
 		const mainVersion = x64Version || ia32Version
 
+		// Формируем массив файлов только для существующих версий
+		const files: string[] = []
+		if (x64Version) {
+			files.push(`  - url: ${x64Version.downloadUrl}
+    sha512: ${x64Version.sha512}
+    size: ${x64Version.fileSize}`)
+		}
+		if (ia32Version) {
+			files.push(`  - url: ${ia32Version.downloadUrl}
+    sha512: ${ia32Version.sha512}
+    size: ${ia32Version.fileSize}`)
+		}
+
 		const yml = `version: ${mainVersion.version}
 files:
-  - url: ${x64Version?.downloadUrl || ''}
-    sha512: ${x64Version?.sha512 || ''}
-    size: ${x64Version?.fileSize || 0}
-  - url: ${ia32Version?.downloadUrl || ''}
-    sha512: ${ia32Version?.sha512 || ''}
-    size: ${ia32Version?.fileSize || 0}
+${files.join('\n')}
 path: ${x64Version?.downloadUrl || ia32Version?.downloadUrl || ''}
 sha512: ${x64Version?.sha512 || ia32Version?.sha512 || ''}
 releaseDate: '${mainVersion.createdAt.toISOString()}'`
