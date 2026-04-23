@@ -423,7 +423,11 @@ export class AuthService {
 		}
 
 		if (user.emailVerified) {
-			throw new BadRequestException('Email уже подтвержден')
+			return {
+				success: true,
+				message: 'Email уже подтвержден',
+				alreadyVerified: true,
+			}
 		}
 
 		// Генерируем новый токен
@@ -448,6 +452,10 @@ export class AuthService {
 			throw new BadRequestException('Не удалось отправить письмо')
 		}
 
-		return { message: 'Письмо с подтверждением отправлено повторно' }
+		return {
+			success: true,
+			message: 'Письмо с подтверждением отправлено повторно',
+			alreadyVerified: false,
+		}
 	}
 }

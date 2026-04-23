@@ -45,6 +45,7 @@ export class UsersService {
 				email: true,
 				balance: true,
 				role: true,
+				emailVerified: true,
 				referralSource: true,
 				city: true,
 				createdAt: true,
