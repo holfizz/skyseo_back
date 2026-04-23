@@ -28,6 +28,9 @@ esac
 
 echo "📋 Архитектура: $ARCH -> $XRAY_ARCH"
 
+# Сохраняем текущую директорию
+ORIGINAL_DIR=$(pwd)
+
 # Создаем временную директорию
 TEMP_DIR=$(mktemp -d)
 cd "$TEMP_DIR"
@@ -69,8 +72,11 @@ else
     exit 1
 fi
 
+# Возвращаемся в исходную директорию
+cd "$ORIGINAL_DIR"
+
 # Копируем конфиг в рабочую директорию
-WORK_DIR=$(pwd)
+WORK_DIR="$ORIGINAL_DIR"
 echo "📋 Рабочая директория: $WORK_DIR"
 
 if [ ! -f "$WORK_DIR/xray-config.json" ]; then
