@@ -189,7 +189,7 @@ model AppVersion {
   sha512       String // SHA512 хеш файла в base64
   fileSize     Int // Размер файла в байтах
   releaseNotes String[]
-  mandatory    Boolean  @default(false)
+  mandatory    Boolean  @default(false) // Обязательное обновление - блокирует работу старых версий
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
