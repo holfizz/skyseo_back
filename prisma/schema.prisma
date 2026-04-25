@@ -25,6 +25,7 @@ model User {
   registrationIp         String? // IP регистрации
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка
+  appVersion             String? // Версия приложения пользователя
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

@@ -230,6 +230,7 @@ export class AuthService {
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
 			emailVerificationToken,
+			appVersion: dto.appVersion, // Сохраняем версию приложения
 		})
 
 		// Отправка уведомления в Telegram
@@ -292,6 +293,14 @@ export class AuthService {
 
 		// Сброс счетчика неудачных попыток
 		await this.usersService.resetFailedLogin(user.id)
+
+		// Обновляем версию приложения если передана
+		if (dto.appVersion) {
+			await this.prisma.user.update({
+				where: { id: user.id },
+				data: { appVersion: dto.appVersion },
+			})
+		}
 
 		const token = this.generateToken(user.id, user.email)
 

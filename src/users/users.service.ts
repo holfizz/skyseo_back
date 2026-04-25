@@ -16,6 +16,7 @@ export class UsersService {
 		city?: string
 		lastLoginIp?: string
 		emailVerificationToken?: string
+		appVersion?: string
 	}) {
 		return this.prisma.user.create({
 			data: {

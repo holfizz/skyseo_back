@@ -15,4 +15,8 @@ export class RegisterDto {
 	@IsOptional()
 	@IsString()
 	city?: string
+
+	@IsOptional()
+	@IsString()
+	appVersion?: string
 }
