@@ -6,7 +6,15 @@ async function bootstrap() {
 	const app = await NestFactory.create(AppModule)
 
 	// Trust proxy для получения реального IP через заголовки
-	app.getHttpAdapter().getInstance().set('trust proxy', true)
+	// Доверяем всем прокси в Docker сети (172.x.x.x) и локальным адресам
+	app.getHttpAdapter().getInstance().set('trust proxy', [
+		'loopback',
+		'linklocal',
+		'uniquelocal',
+		'172.16.0.0/12', // Docker networks
+		'10.0.0.0/8', // Private networks
+		'192.168.0.0/16', // Private networks
+	])
 
 	// Global prefix
 	app.setGlobalPrefix('v1/api')

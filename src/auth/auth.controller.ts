@@ -15,23 +15,67 @@ export class AuthController {
 	@Post('register')
 	async register(@Body() dto: RegisterDto, @Request() req: any) {
 		// Получаем реальный IP из заголовков Nginx (приоритет по порядку)
-		const ip =
-			req.headers['x-real-ip'] ||
-			req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-			req.connection?.remoteAddress ||
-			req.socket?.remoteAddress ||
-			req.ip ||
-			'unknown'
+		const xRealIp = req.headers['x-real-ip']
+		const xForwardedFor = req.headers['x-forwarded-for']
+		const connectionRemote = req.connection?.remoteAddress
+		const socketRemote = req.socket?.remoteAddress
+		const reqIp = req.ip
 
-		console.log('[AuthController] Registration IP headers:', {
-			'x-real-ip': req.headers['x-real-ip'],
-			'x-forwarded-for': req.headers['x-forwarded-for'],
-			'connection.remoteAddress': req.connection?.remoteAddress,
-			'req.ip': req.ip,
-			final_ip: ip,
+		// Парсим X-Forwarded-For (берем первый IP, который не является приватным)
+		let finalIp = 'unknown'
+
+		if (xRealIp) {
+			finalIp = xRealIp
+		} else if (xForwardedFor) {
+			const ips = xForwardedFor.split(',').map(ip => ip.trim())
+			// Ищем первый публичный IP
+			for (const ip of ips) {
+				if (
+					!ip.startsWith('172.') &&
+					!ip.startsWith('10.') &&
+					!ip.startsWith('192.168.') &&
+					ip !== '127.0.0.1'
+				) {
+					finalIp = ip
+					break
+				}
+			}
+			// Если публичный не найден, берем первый
+			if (finalIp === 'unknown' && ips.length > 0) {
+				finalIp = ips[0]
+			}
+		} else if (
+			reqIp &&
+			!reqIp.startsWith('172.') &&
+			!reqIp.startsWith('10.') &&
+			!reqIp.startsWith('192.168.')
+		) {
+			finalIp = reqIp
+		} else if (connectionRemote) {
+			finalIp = connectionRemote
+		} else if (socketRemote) {
+			finalIp = socketRemote
+		}
+
+		console.log('[AuthController] Registration IP analysis:', {
+			'x-real-ip': xRealIp,
+			'x-forwarded-for': xForwardedFor,
+			'connection.remoteAddress': connectionRemote,
+			'socket.remoteAddress': socketRemote,
+			'req.ip': reqIp,
+			final_ip: finalIp,
+			all_headers: Object.keys(req.headers)
+				.filter(
+					h =>
+						h.includes('forward') || h.includes('real') || h.includes('client'),
+				)
+				.reduce((acc, key) => {
+					acc[key] = req.headers[key]
+					return acc
+				}, {}),
 		})
 
-		return this.authService.register(dto, ip)
+		return this.authService.register(dto, finalIp)
 	}
 
 	@Post('login')
