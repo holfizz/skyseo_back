@@ -5,6 +5,9 @@ import { AppModule } from './app.module'
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule)
 
+	// Trust proxy для получения реального IP через заголовки
+	app.getHttpAdapter().getInstance().set('trust proxy', true)
+
 	// Global prefix
 	app.setGlobalPrefix('v1/api')
 

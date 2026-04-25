@@ -229,6 +229,7 @@ export class AuthService {
 			referralSource: dto.referralSource,
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
+			registrationIp: ipAddress, // Добавляем IP регистрации для защиты
 			emailVerificationToken,
 			appVersion: dto.appVersion, // Сохраняем версию приложения
 		})

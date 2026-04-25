@@ -1,4 +1,4 @@
-import { Body, Controller, Ip, Post, Request, UseGuards } from '@nestjs/common'
+import { Body, Controller, Post, Request, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import {
 	ForgotPasswordDto,
@@ -13,7 +13,24 @@ export class AuthController {
 	constructor(private authService: AuthService) {}
 
 	@Post('register')
-	async register(@Body() dto: RegisterDto, @Ip() ip: string) {
+	async register(@Body() dto: RegisterDto, @Request() req: any) {
+		// Получаем реальный IP из заголовков Nginx (приоритет по порядку)
+		const ip =
+			req.headers['x-real-ip'] ||
+			req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+			req.connection?.remoteAddress ||
+			req.socket?.remoteAddress ||
+			req.ip ||
+			'unknown'
+
+		console.log('[AuthController] Registration IP headers:', {
+			'x-real-ip': req.headers['x-real-ip'],
+			'x-forwarded-for': req.headers['x-forwarded-for'],
+			'connection.remoteAddress': req.connection?.remoteAddress,
+			'req.ip': req.ip,
+			final_ip: ip,
+		})
+
 		return this.authService.register(dto, ip)
 	}
 

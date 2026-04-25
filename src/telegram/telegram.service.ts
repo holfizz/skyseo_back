@@ -175,7 +175,6 @@ export class TelegramService {
 			`🌍 Город: ${city || 'Не указан'}\n` +
 			`📍 Источник: ${source || 'Не указан'}\n` +
 			`🌐 IP: ${ipAddress || 'Не определен'}\n` +
-			`💰 Баланс: ${balance} баллов\n` +
 			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		await this.sendAdminNotification(message)
