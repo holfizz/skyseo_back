@@ -15,13 +15,14 @@ export class UsersService {
 		referralSource?: string
 		city?: string
 		lastLoginIp?: string
+		registrationIp?: string
 		emailVerificationToken?: string
 		appVersion?: string
 	}) {
 		return this.prisma.user.create({
 			data: {
 				...data,
-				registrationIp: data.lastLoginIp,
+				registrationIp: data.registrationIp || data.lastLoginIp,
 			},
 		})
 	}
