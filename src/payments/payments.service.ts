@@ -161,26 +161,35 @@ export class PaymentsService {
 			})
 
 			// Отправляем уведомления
+			console.log('[Payments] Sending Telegram notification...')
 			try {
 				await this.telegramService.sendPaymentNotification(
 					payment.user.email,
 					Number(payment.amount),
 					payment.points,
 				)
-				console.log('[Payments] Telegram notification sent')
+				console.log('[Payments] ✅ Telegram notification sent successfully')
 			} catch (error) {
-				console.error('[Payments] Failed to send Telegram notification:', error)
+				console.error(
+					'[Payments] ❌ Failed to send Telegram notification:',
+					error,
+				)
+				console.error('[Payments] Error details:', {
+					message: error.message,
+					stack: error.stack,
+				})
 			}
 
+			console.log('[Payments] Sending email notification...')
 			try {
 				await this.notificationsService.sendPaymentSuccessEmail(
 					payment.user.email,
 					Number(payment.amount),
 					payment.points,
 				)
-				console.log('[Payments] Email notification sent')
+				console.log('[Payments] ✅ Email notification sent successfully')
 			} catch (error) {
-				console.error('[Payments] Failed to send email notification:', error)
+				console.error('[Payments] ❌ Failed to send email notification:', error)
 			}
 
 			console.log('[Payments] Payment processing completed successfully', {
@@ -208,6 +217,7 @@ export class PaymentsService {
 
 		const payment = await this.prisma.payment.findUnique({
 			where: { id: paymentId },
+			include: { user: true },
 		})
 
 		if (!payment || payment.userId !== userId) {
@@ -243,7 +253,9 @@ export class PaymentsService {
 
 				// Если статус изменился, обновляем в базе
 				if (yooKassaStatus.status === 'succeeded') {
-					console.log('[Payments] Payment succeeded, updating status')
+					console.log(
+						'[Payments] Payment succeeded via polling, updating status',
+					)
 
 					await this.prisma.payment.update({
 						where: { id: payment.id },
@@ -264,6 +276,43 @@ export class PaymentsService {
 					console.log('[Payments] Balance updated for payment', {
 						paymentId: payment.id,
 					})
+
+					// Отправляем уведомления (важно!)
+					console.log(
+						'[Payments] Sending Telegram notification (from polling)...',
+					)
+					try {
+						await this.telegramService.sendPaymentNotification(
+							payment.user.email,
+							Number(payment.amount),
+							payment.points,
+						)
+						console.log('[Payments] ✅ Telegram notification sent successfully')
+					} catch (error) {
+						console.error(
+							'[Payments] ❌ Failed to send Telegram notification:',
+							error,
+						)
+						console.error('[Payments] Error details:', {
+							message: error.message,
+							stack: error.stack,
+						})
+					}
+
+					console.log('[Payments] Sending email notification (from polling)...')
+					try {
+						await this.notificationsService.sendPaymentSuccessEmail(
+							payment.user.email,
+							Number(payment.amount),
+							payment.points,
+						)
+						console.log('[Payments] ✅ Email notification sent successfully')
+					} catch (error) {
+						console.error(
+							'[Payments] ❌ Failed to send email notification:',
+							error,
+						)
+					}
 
 					return { ...payment, status: 'SUCCEEDED' }
 				}
