@@ -23,39 +23,12 @@ export class TelegramService {
 	private async initializeBot(token: string) {
 		console.log('[TelegramService] Initializing bot...')
 		try {
-			// Настройка прокси для обхода блокировок в России
-			const proxyUrl =
-				this.configService.get('TELEGRAM_PROXY_URL') ||
-				'socks5://127.0.0.1:1080'
-
-			let botOptions: any = {}
-
-			// Пытаемся использовать прокси если он настроен
-			if (proxyUrl && proxyUrl !== 'disabled') {
-				try {
-					const { SocksProxyAgent } = require('socks-proxy-agent')
-					const agent = new SocksProxyAgent(proxyUrl)
-					botOptions = {
-						telegram: {
-							agent: agent,
-							apiRoot: 'https://api.telegram.org',
-						},
-					}
-					console.log(`🔄 Telegram: Using proxy ${proxyUrl}`)
-				} catch (proxyError) {
-					console.log(
-						`⚠️ Telegram: Proxy failed (${proxyError.message}), trying direct connection`,
-					)
-					botOptions = {}
-				}
-			}
-
-			this.bot = new Telegraf(token, botOptions)
+			// Инициализируем бота без прокси
+			this.bot = new Telegraf(token)
 
 			// Пытаемся проверить подключение с таймаутом
-			const timeoutPromise = new Promise(
-				(_, reject) =>
-					setTimeout(() => reject(new Error('Connection timeout')), 10000), // Увеличиваем таймаут до 10 сек
+			const timeoutPromise = new Promise((_, reject) =>
+				setTimeout(() => reject(new Error('Connection timeout')), 10000),
 			)
 
 			console.log('[TelegramService] Testing bot connection...')
@@ -85,45 +58,6 @@ export class TelegramService {
 			}
 		} catch (error) {
 			console.log('⚠️ Telegram bot connection failed:', error.message)
-
-			// Если прокси не сработал, пробуем без прокси
-			if (error.message.includes('proxy') || error.message.includes('SOCKS')) {
-				console.log('🔄 Telegram: Retrying without proxy...')
-				try {
-					this.bot = new Telegraf(token)
-					const botInfo = await this.bot.telegram.getMe()
-					this.isEnabled = true
-					console.log(
-						`✅ Telegram bot connected (direct): @${botInfo.username}`,
-					)
-
-					// Отправляем тестовое сообщение при инициализации (только в dev режиме)
-					if (
-						this.configService.get('NODE_ENV') === 'development' &&
-						this.adminId
-					) {
-						try {
-							await this.bot.telegram.sendMessage(
-								this.adminId,
-								'🤖 Telegram bot initialized successfully (direct connection)!',
-							)
-							console.log('✅ Test message sent to admin (direct)')
-						} catch (testError) {
-							console.error(
-								'❌ Failed to send test message (direct):',
-								testError.message,
-							)
-						}
-					}
-					return
-				} catch (directError) {
-					console.log(
-						'⚠️ Telegram: Direct connection also failed:',
-						directError.message,
-					)
-				}
-			}
-
 			console.log('⚠️ Telegram notifications disabled')
 			this.bot = null
 			this.isEnabled = false
