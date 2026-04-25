@@ -166,12 +166,17 @@ export class TelegramService {
 		email: string,
 		city: string,
 		source: string,
+		ipAddress: string,
+		balance: number,
 	) {
 		const message =
 			`🆕 <b>Новая регистрация</b>\n\n` +
 			`📧 Email: ${email}\n` +
 			`🌍 Город: ${city || 'Не указан'}\n` +
-			`📍 Источник: ${source || 'Не указан'}`
+			`📍 Источник: ${source || 'Не указан'}\n` +
+			`🌐 IP: ${ipAddress || 'Не определен'}\n` +
+			`💰 Баланс: ${balance} баллов\n` +
+			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		await this.sendAdminNotification(message)
 	}
@@ -241,6 +246,7 @@ export class TelegramService {
 			totalUsers,
 			activeUsers,
 			usersByVersion,
+			usersByReferralSource,
 			totalTasks,
 			activeTasks,
 			completedTasks,
@@ -273,6 +279,14 @@ export class TelegramService {
 				_count: { appVersion: true },
 				where: { appVersion: { not: null } },
 				orderBy: { _count: { appVersion: 'desc' } },
+			}),
+
+			// Пользователи по источникам регистрации
+			this.prisma.user.groupBy({
+				by: ['referralSource'],
+				_count: { referralSource: true },
+				where: { referralSource: { not: null } },
+				orderBy: { _count: { referralSource: 'desc' } },
 			}),
 
 			// Всего заданий создано
@@ -333,6 +347,17 @@ export class TelegramService {
 				const isLast = index === usersByVersion.length - 1
 				const prefix = isLast ? '└' : '├'
 				message += `${prefix} ${v.appVersion || 'Не указана'}: ${v._count.appVersion} чел.\n`
+			})
+			message += '\n'
+		}
+
+		// Источники регистрации
+		if (usersByReferralSource.length > 0) {
+			message += '📍 <b>Откуда узнали:</b>\n'
+			usersByReferralSource.forEach((s, index) => {
+				const isLast = index === usersByReferralSource.length - 1
+				const prefix = isLast ? '└' : '├'
+				message += `${prefix} ${s.referralSource || 'Не указано'}: ${s._count.referralSource} чел.\n`
 			})
 			message += '\n'
 		}

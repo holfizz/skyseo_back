@@ -235,22 +235,23 @@ export class AuthService {
 
 		// Отправка уведомления в Telegram
 		try {
-			console.log('[AuthService] Sending Telegram notification...')
-			await this.telegramService.sendAdminNotification(
-				`🆕 <b>Новая регистрация</b>\n\n` +
-					`📧 Email: ${user.email}\n` +
-					`🌍 Город: ${user.city || 'Не указан'}\n` +
-					`📍 Источник: ${user.referralSource || 'Не указан'}\n` +
-					`🌐 IP: ${ipAddress || 'Не определен'}\n` +
-					`💰 Баланс: ${user.balance} баллов\n` +
-					`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,
+			console.log('[AuthService] Sending Telegram registration notification...')
+			await this.telegramService.sendRegistrationNotification(
+				user.email,
+				user.city || 'Не указан',
+				user.referralSource || 'Не указан',
+				ipAddress || 'Не определен',
+				user.balance,
 			)
-			console.log('[AuthService] Telegram notification sent successfully')
+			console.log(
+				'[AuthService] ✅ Telegram registration notification sent successfully',
+			)
 		} catch (error) {
 			console.error(
-				'[AuthService] Failed to send Telegram notification:',
+				'[AuthService] ❌ Failed to send Telegram notification:',
 				error,
 			)
+			console.error('[AuthService] Error details:', error.message)
 		}
 
 		// Отправка объединенного приветственного письма с подтверждением email
