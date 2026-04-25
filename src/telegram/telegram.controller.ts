@@ -20,6 +20,8 @@ export class TelegramController {
 
 	@Post('complaint')
 	async sendComplaint(@Body() dto: SendComplaintDto) {
+		console.log('[TelegramController] Received complaint:', dto)
+
 		await this.telegramService.sendComplaintNotification(
 			dto.text,
 			dto.contact,

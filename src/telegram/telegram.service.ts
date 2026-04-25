@@ -207,9 +207,15 @@ export class TelegramService {
 		contact?: string,
 		userEmail?: string,
 	) {
+		console.log('[TelegramService] Sending complaint notification:', {
+			text,
+			contact,
+			userEmail,
+		})
+
 		const message =
 			`⚠️ <b>Новая жалоба</b>\n\n` +
-			`📝 Текст: ${text}\n` +
+			`📝 Текст: ${text || 'Не указан'}\n` +
 			`📧 Email пользователя: ${userEmail || 'Не авторизован'}\n` +
 			`📞 Контакт для связи: ${contact || 'Не указан'}`
 
