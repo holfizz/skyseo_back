@@ -35,12 +35,11 @@ export class ExecutionsService {
 			throw new Error('Task not available')
 		}
 
-		// Проверяем лимит выполнений для этого сайта (2 раза в неделю)
 		const weekStart = this.getWeekStart()
 		const executionsThisWeek = await this.prisma.execution.count({
 			where: {
 				executorId,
-				websiteId: task.websiteId,
+				taskId,
 				weekStart,
 				status: 'COMPLETED',
 			},
@@ -48,7 +47,7 @@ export class ExecutionsService {
 
 		if (executionsThisWeek >= 2) {
 			throw new Error(
-				'Вы уже выполнили 2 задачи для этого сайта на этой неделе',
+				'Вы уже выполнили 2 задачи для этой задачи на этой неделе',
 			)
 		}
 
@@ -118,13 +117,6 @@ export class ExecutionsService {
 			throw new Error('Position required when site found in top')
 		}
 
-		// РАСЧЕТ БАЛЛОВ ПО НОВОЙ ЭКОНОМИКЕ
-		// Исполнитель:
-		// - Если сайт найден в поиске и открыт: +15 баллов
-		// - Если сайт не найден, но ссылка открыта: +5 баллов
-		// Владелец сайта:
-		// - Если сайт найден в поиске: -30 баллов
-		// - Если сайт не найден в поиске: -10 баллов
 		let pointsEarned = 0
 		let pointsSpent = 0
 
@@ -132,30 +124,34 @@ export class ExecutionsService {
 			execution.task.type === 'SEARCH_KEYWORD' ||
 			execution.task.type === 'SEARCH_AND_VISIT'
 		) {
-			// Поиск по ключевому слову
 			if (dto.foundInTop) {
-				// Сайт найден в топ-50 и посещен
-				pointsEarned = 15 // Исполнитель получает +15
-				pointsSpent = 30 // Владелец платит -30
+				pointsEarned = 15
+				pointsSpent = 30
 			} else {
-				// Сайт не найден в топ-50
-				pointsEarned = 5 // Исполнитель получает +5 за попытку
-				pointsSpent = 10 // Владелец платит -10
+				pointsEarned = 5
+				pointsSpent = 10
 			}
 		} else if (execution.task.type === 'EXTERNAL_LINK') {
-			// Переход по внешней ссылке
-			if (dto.foundInTop) {
-				// Ссылка найдена на сайте-доноре и работает
-				pointsEarned = 5
-				pointsSpent = 10
-			} else {
-				// Ссылка не найдена или не работает
-				pointsEarned = 5
-				pointsSpent = 10
-			}
+			pointsEarned = 5
+			pointsSpent = 10
 		}
 
-		// Обновляем выполнение
+		const taskDescription = execution.task.keyword
+			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
+			: `Переход по ссылке ${execution.task.externalUrl}`
+
+		const ownerBalance = execution.task.website.user.balance
+		if (ownerBalance < pointsSpent) {
+			console.log(
+				`[ExecutionsService] Недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Задача деактивируется.`,
+			)
+			await this.prisma.task.update({
+				where: { id: execution.taskId },
+				data: { isActive: false, status: 'PENDING' },
+			})
+			throw new Error('Недостаточно баллов у владельца сайта. Задача деактивирована.')
+		}
+
 		const updatedExecution = await this.prisma.execution.update({
 			where: { id: executionId },
 			data: {
@@ -165,19 +161,10 @@ export class ExecutionsService {
 				pagesVisited: dto.pagesVisited,
 				duration: dto.duration,
 				completedAt: new Date(),
-				pointsEarned, // Сохраняем для истории
-				pointsSpent, // Сохраняем для истории
+				pointsEarned,
+				pointsSpent,
 			},
 		})
-
-		// Начисляем баллы исполнителю
-		console.log(
-			`[ExecutionsService] Начисляем ${pointsEarned} баллов исполнителю ${execution.executorId}`,
-		)
-
-		const taskDescription = execution.task.keyword
-			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
-			: `Переход по ссылке ${execution.task.externalUrl}`
 
 		const earnedDescription = dto.foundInTop
 			? `${taskDescription} (найдено в поиске)`
@@ -190,30 +177,7 @@ export class ExecutionsService {
 			earnedDescription,
 			execution.taskId,
 		)
-		console.log(`[ExecutionsService] ✅ Баллы начислены исполнителю`)
-
-		// Списываем баллы с владельца сайта
-		console.log(
-			`[ExecutionsService] Списываем ${pointsSpent} баллов с владельца ${execution.task.website.userId}`,
-		)
-
-		// Проверяем баланс владельца перед списанием
-		const ownerBalance = execution.task.website.user.balance
-		if (ownerBalance < pointsSpent) {
-			console.log(
-				`[ExecutionsService] ❌ Недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Задача будет деактивирована.`,
-			)
-
-			// Деактивируем задачу если недостаточно баллов
-			await this.prisma.task.update({
-				where: { id: execution.taskId },
-				data: { isActive: false },
-			})
-
-			throw new Error(
-				`Недостаточно баллов у владельца сайта. Задача деактивирована.`,
-			)
-		}
+		console.log(`[ExecutionsService] Начислено ${pointsEarned} баллов исполнителю`)
 
 		const spentDescription = dto.foundInTop
 			? `Задача выполнена: ${taskDescription} (найдено в поиске)`
@@ -226,10 +190,13 @@ export class ExecutionsService {
 			spentDescription,
 			execution.taskId,
 		)
-		console.log(`[ExecutionsService] ✅ Баллы списаны с владельца`)
+		console.log(`[ExecutionsService] Списано ${pointsSpent} баллов с владельца`)
 
-		// НЕ меняем статус задачи - она остается PENDING для следующих выполнений
-		// Задача выполняется много раз разными исполнителями
+		await this.prisma.task.update({
+			where: { id: execution.taskId },
+			data: { status: 'PENDING' },
+		})
+		console.log(`[ExecutionsService] Задача ${execution.taskId} сброшена в PENDING`)
 
 		// Сохраняем историю позиций (для SEARCH_KEYWORD и SEARCH_AND_VISIT)
 		const shouldSavePosition =

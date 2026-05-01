@@ -3,6 +3,9 @@
 	"version": "1.0.0",
 	"description": "SkySEO Backend API",
 	"main": "dist/main.js",
+	"prisma": {
+		"seed": "ts-node --transpile-only prisma/seed.ts"
+	},
 	"scripts": {
 		"build": "nest build",
 		"start": "node dist/src/main",

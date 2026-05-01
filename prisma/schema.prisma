@@ -15,6 +15,7 @@ model User {
   password               String
   balance                Int       @default(1000) // Приветственный бонус 1000 баллов
   role                   Role      @default(USER)
+  userType               UserType? // Кто вы: маркетолог, SEO, предприниматель, стартапер
   referralSource         String? // Откуда узнал
   city                   String? // Город пользователя
   isActive               Boolean   @default(true)
@@ -215,6 +216,13 @@ model PasswordResetToken {
 enum Role {
   USER
   ADMIN
+}
+
+enum UserType {
+  MARKETER // Маркетолог
+  SEO // SEO специалист
+  ENTREPRENEUR // Предприниматель
+  STARTUP // Стартапер
 }
 
 enum TaskType {

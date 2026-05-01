@@ -266,34 +266,50 @@ export class TasksService {
 	}
 
 	async assignTask(taskId: string, executorId: string) {
-		// Проверяем что задача существует и доступна для назначения
-		const task = await this.prisma.task.findUnique({
-			where: { id: taskId },
-			include: { website: true },
-		})
+		// Используем транзакцию для атомарного назначения задачи
+		try {
+			const result = await this.prisma.$transaction(async prisma => {
+				// Проверяем что задача существует и доступна для назначения
+				const task = await prisma.task.findUnique({
+					where: { id: taskId },
+					include: { website: true },
+				})
 
-		if (!task) {
-			throw new NotFoundException('Task not found')
+				if (!task) {
+					throw new NotFoundException('Task not found')
+				}
+
+				if (task.status !== 'PENDING') {
+					throw new BadRequestException('Task is not available for assignment')
+				}
+
+				if (task.website.userId === executorId) {
+					throw new BadRequestException('Cannot assign own task')
+				}
+
+				// Обновляем статус задачи на ASSIGNED
+				const updatedTask = await prisma.task.update({
+					where: {
+						id: taskId,
+						status: 'PENDING', // Дополнительная проверка в WHERE
+					},
+					data: {
+						status: 'ASSIGNED',
+						assignedAt: new Date(),
+					},
+				})
+
+				return updatedTask
+			})
+
+			return result
+		} catch (error) {
+			// Если задача уже была назначена между проверкой и обновлением
+			if (error.code === 'P2025') {
+				throw new BadRequestException('Task is not available for assignment')
+			}
+			throw error
 		}
-
-		if (task.status !== 'PENDING') {
-			throw new BadRequestException('Task is not available for assignment')
-		}
-
-		if (task.website.userId === executorId) {
-			throw new BadRequestException('Cannot assign own task')
-		}
-
-		// Обновляем статус задачи на ASSIGNED
-		const updatedTask = await this.prisma.task.update({
-			where: { id: taskId },
-			data: {
-				status: 'ASSIGNED',
-				assignedAt: new Date(),
-			},
-		})
-
-		return updatedTask
 	}
 
 	async getPositionHistory(taskId: string, days: number = 7) {
