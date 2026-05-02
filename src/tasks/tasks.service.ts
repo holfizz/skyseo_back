@@ -221,6 +221,10 @@ export class TasksService {
 					},
 					orderBy: { createdAt: 'desc' },
 				},
+				positionHistory: {
+					orderBy: { createdAt: 'desc' },
+					take: 1,
+				},
 			},
 			orderBy: { createdAt: 'desc' },
 		})
@@ -250,8 +254,11 @@ export class TasksService {
 				const yandexCount = Math.floor(totalExecutions / 2)
 				const googleCount = totalExecutions - yandexCount
 
+				const latestPosition = task.positionHistory[0] ?? null
 				return {
 					...task,
+					currentYandexPosition: latestPosition?.yandexPosition ?? null,
+					currentGooglePosition: latestPosition?.googlePosition ?? null,
 					stats: {
 						yandexSearches: yandexCount,
 						yandexVisits: yandexCount,
@@ -336,19 +343,30 @@ export class TasksService {
 		yandexPosition: number | null,
 		googlePosition: number | null = null,
 	) {
-		const existing = await this.prisma.positionHistory.findFirst({
-			where: { taskId },
-			orderBy: { createdAt: 'asc' },
+		// Prevent duplicate records within the same hour (e.g. rapid recheck spam)
+		const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
+		const recentRecord = await this.prisma.positionHistory.findFirst({
+			where: { taskId, createdAt: { gte: oneHourAgo } },
+			orderBy: { createdAt: 'desc' },
 		})
 
-		if (existing) return existing
+		if (recentRecord) {
+			// Update the recent record instead of duplicating
+			return this.prisma.positionHistory.update({
+				where: { id: recentRecord.id },
+				data: {
+					yandexPosition: yandexPosition ?? recentRecord.yandexPosition,
+					googlePosition: googlePosition ?? recentRecord.googlePosition,
+				},
+			})
+		}
 
 		const record = await this.prisma.positionHistory.create({
 			data: { taskId, yandexPosition, googlePosition },
 		})
 
 		console.log(
-			`[TasksService] ✅ Начальная позиция: taskId=${taskId}, Яндекс=${yandexPosition ?? 'нет'}, Google=${googlePosition ?? 'нет'}`,
+			`[TasksService] ✅ Позиция: taskId=${taskId}, Яндекс=${yandexPosition ?? 'нет'}, Google=${googlePosition ?? 'нет'}`,
 		)
 
 		return record

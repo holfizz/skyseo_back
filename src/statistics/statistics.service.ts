@@ -182,6 +182,158 @@ export class StatisticsService {
 		}
 	}
 
+	async getWebsiteSeoStats(websiteId: string, userId: string) {
+		const website = await this.prisma.website.findUnique({
+			where: { id: websiteId },
+			include: { tasks: true },
+		})
+
+		if (!website || website.userId !== userId) {
+			throw new Error('Access denied')
+		}
+
+		const now = new Date()
+		const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+		const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
+
+		// Последние позиции по каждому ключевому слову (из PositionHistory)
+		const tasks = website.tasks
+		const keywordStats: Array<{
+			keyword: string
+			taskId: string
+			currentYandex: number | null
+			currentGoogle: number | null
+			prevYandex: number | null
+			prevGoogle: number | null
+			yandexDelta: number | null
+			googleDelta: number | null
+			totalVisits: number
+			yandexVisits: number
+			googleVisits: number
+		}> = []
+
+		for (const task of tasks) {
+			if (!task.keyword) continue
+
+			// Последняя запись за 7 дней
+			const recent = await this.prisma.positionHistory.findFirst({
+				where: { taskId: task.id, date: { gte: sevenDaysAgo } },
+				orderBy: { date: 'desc' },
+			})
+			// Запись за предыдущую неделю (7-14 дней назад)
+			const previous = await this.prisma.positionHistory.findFirst({
+				where: { taskId: task.id, date: { gte: fourteenDaysAgo, lt: sevenDaysAgo } },
+				orderBy: { date: 'desc' },
+			})
+
+			// Визиты из Statistic
+			const statAgg = await this.prisma.statistic.aggregate({
+				where: { websiteId, keyword: task.keyword },
+				_sum: { totalVisits: true, yandexVisits: true, googleVisits: true },
+			})
+
+			const currentYandex = recent?.yandexPosition ?? null
+			const currentGoogle = recent?.googlePosition ?? null
+			const prevYandex = previous?.yandexPosition ?? null
+			const prevGoogle = previous?.googlePosition ?? null
+
+			keywordStats.push({
+				keyword: task.keyword,
+				taskId: task.id,
+				currentYandex,
+				currentGoogle,
+				prevYandex,
+				prevGoogle,
+				// Дельта: отрицательная = улучшение (позиция стала ниже по числу = выше в выдаче)
+				yandexDelta: currentYandex !== null && prevYandex !== null ? prevYandex - currentYandex : null,
+				googleDelta: currentGoogle !== null && prevGoogle !== null ? prevGoogle - currentGoogle : null,
+				totalVisits: statAgg._sum.totalVisits ?? 0,
+				yandexVisits: statAgg._sum.yandexVisits ?? 0,
+				googleVisits: statAgg._sum.googleVisits ?? 0,
+			})
+		}
+
+		// Агрегаты для Яндекса
+		const yPositions = keywordStats.map(k => k.currentYandex).filter((v): v is number => v !== null)
+		const gPositions = keywordStats.map(k => k.currentGoogle).filter((v): v is number => v !== null)
+
+		const yAvg = yPositions.length ? Math.round(yPositions.reduce((a, b) => a + b, 0) / yPositions.length) : null
+		const gAvg = gPositions.length ? Math.round(gPositions.reduce((a, b) => a + b, 0) / gPositions.length) : null
+
+		// Видимость = % ключевых слов в топ-10 (из тех что проверялись)
+		const totalChecked = Math.max(yPositions.length, gPositions.length, 1)
+		const inTop10Y = yPositions.filter(v => v <= 10).length
+		const inTop10G = gPositions.filter(v => v <= 10).length
+		const visibilityScore = Math.round(((inTop10Y + inTop10G) / (totalChecked * 2)) * 100)
+
+		// Топ растущих и падающих ключевых слов
+		const improving = [...keywordStats]
+			.filter(k => k.yandexDelta !== null && k.yandexDelta > 0)
+			.sort((a, b) => (b.yandexDelta ?? 0) - (a.yandexDelta ?? 0))
+			.slice(0, 3)
+
+		const declining = [...keywordStats]
+			.filter(k => k.yandexDelta !== null && k.yandexDelta < 0)
+			.sort((a, b) => (a.yandexDelta ?? 0) - (b.yandexDelta ?? 0))
+			.slice(0, 3)
+
+		// Распределение по позициям
+		const distribution = {
+			yandex: {
+				top3: yPositions.filter(v => v <= 3).length,
+				top10: yPositions.filter(v => v > 3 && v <= 10).length,
+				top30: yPositions.filter(v => v > 10 && v <= 30).length,
+				top100: yPositions.filter(v => v > 30 && v <= 100).length,
+				outTop: keywordStats.filter(k => k.currentYandex === null && tasks.find(t => t.keyword === k.keyword)?.useYandex).length,
+			},
+			google: {
+				top3: gPositions.filter(v => v <= 3).length,
+				top10: gPositions.filter(v => v > 3 && v <= 10).length,
+				top30: gPositions.filter(v => v > 10 && v <= 30).length,
+				top100: gPositions.filter(v => v > 30 && v <= 100).length,
+				outTop: keywordStats.filter(k => k.currentGoogle === null && tasks.find(t => t.keyword === k.keyword)?.useGoogle).length,
+			},
+		}
+
+		// Общие визиты за последние 30 дней
+		const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+		const recentVisits = await this.prisma.execution.count({
+			where: {
+				task: { websiteId },
+				status: 'COMPLETED',
+				foundInTop: true,
+				createdAt: { gte: thirtyDaysAgo },
+			},
+		})
+
+		// Визиты за предыдущие 30 дней (30-60 дней назад)
+		const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000)
+		const prevVisits = await this.prisma.execution.count({
+			where: {
+				task: { websiteId },
+				status: 'COMPLETED',
+				foundInTop: true,
+				createdAt: { gte: sixtyDaysAgo, lt: thirtyDaysAgo },
+			},
+		})
+
+		return {
+			keywords: keywordStats,
+			summary: {
+				totalKeywords: tasks.filter(t => t.keyword).length,
+				checkedKeywords: Math.max(yPositions.length, gPositions.length),
+				yandexAvgPosition: yAvg,
+				googleAvgPosition: gAvg,
+				visibilityScore,
+				visitsLast30Days: recentVisits,
+				visitsTrend: prevVisits > 0 ? Math.round(((recentVisits - prevVisits) / prevVisits) * 100) : null,
+			},
+			distribution,
+			improving,
+			declining,
+		}
+	}
+
 	private categorizePosition(position: number | null) {
 		if (!position) {
 			return {

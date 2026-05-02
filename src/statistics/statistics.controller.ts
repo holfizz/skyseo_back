@@ -17,6 +17,11 @@ export class StatisticsController {
 		return this.statisticsService.getWebsiteStatistics(websiteId, req.user.id)
 	}
 
+	@Get('website/:id/seo')
+	async getWebsiteSeoStats(@Request() req, @Param('id') websiteId: string) {
+		return this.statisticsService.getWebsiteSeoStats(websiteId, req.user.id)
+	}
+
 	@Get('admin')
 	async getAdminStatistics(@Request() req) {
 		if (req.user.role !== 'ADMIN') {
