@@ -215,27 +215,34 @@ export class StatisticsService {
 		for (const task of tasks) {
 			if (!task.keyword) continue
 
-			// Последняя запись за 7 дней
-			const recent = await this.prisma.positionHistory.findFirst({
-				where: { taskId: task.id, date: { gte: sevenDaysAgo } },
-				orderBy: { date: 'desc' },
-			})
-			// Запись за предыдущую неделю (7-14 дней назад)
-			const previous = await this.prisma.positionHistory.findFirst({
-				where: { taskId: task.id, date: { gte: fourteenDaysAgo, lt: sevenDaysAgo } },
-				orderBy: { date: 'desc' },
-			})
+			// Последние позиции за 7 дней — отдельно для Яндекса и Google
+			const [recentY, recentG, prevY, prevG, statAgg] = await Promise.all([
+				this.prisma.positionHistory.findFirst({
+					where: { taskId: task.id, date: { gte: sevenDaysAgo }, yandexPosition: { not: null } },
+					orderBy: { date: 'desc' },
+				}),
+				this.prisma.positionHistory.findFirst({
+					where: { taskId: task.id, date: { gte: sevenDaysAgo }, googlePosition: { not: null } },
+					orderBy: { date: 'desc' },
+				}),
+				this.prisma.positionHistory.findFirst({
+					where: { taskId: task.id, date: { gte: fourteenDaysAgo, lt: sevenDaysAgo }, yandexPosition: { not: null } },
+					orderBy: { date: 'desc' },
+				}),
+				this.prisma.positionHistory.findFirst({
+					where: { taskId: task.id, date: { gte: fourteenDaysAgo, lt: sevenDaysAgo }, googlePosition: { not: null } },
+					orderBy: { date: 'desc' },
+				}),
+				this.prisma.statistic.aggregate({
+					where: { websiteId, keyword: task.keyword },
+					_sum: { totalVisits: true, yandexVisits: true, googleVisits: true },
+				}),
+			])
 
-			// Визиты из Statistic
-			const statAgg = await this.prisma.statistic.aggregate({
-				where: { websiteId, keyword: task.keyword },
-				_sum: { totalVisits: true, yandexVisits: true, googleVisits: true },
-			})
-
-			const currentYandex = recent?.yandexPosition ?? null
-			const currentGoogle = recent?.googlePosition ?? null
-			const prevYandex = previous?.yandexPosition ?? null
-			const prevGoogle = previous?.googlePosition ?? null
+			const currentYandex = recentY?.yandexPosition ?? null
+			const currentGoogle = recentG?.googlePosition ?? null
+			const prevYandex = prevY?.yandexPosition ?? null
+			const prevGoogle = prevG?.googlePosition ?? null
 
 			keywordStats.push({
 				keyword: task.keyword,
