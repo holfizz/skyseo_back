@@ -1,9 +1,10 @@
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import helmet from 'helmet'
 import { AppModule } from './app.module'
 
 async function bootstrap() {
-	const app = await NestFactory.create(AppModule)
+	const app = await NestFactory.create(AppModule, { logger: false })
 
 	// Trust proxy для получения реального IP через заголовки
 	// Доверяем всем прокси в Docker сети (172.x.x.x) и локальным адресам
@@ -15,6 +16,11 @@ async function bootstrap() {
 		'10.0.0.0/8', // Private networks
 		'192.168.0.0/16', // Private networks
 	])
+
+	app.use(helmet({
+		crossOriginEmbedderPolicy: false,
+		contentSecurityPolicy: false,
+	}))
 
 	// Global prefix
 	app.setGlobalPrefix('v1/api')

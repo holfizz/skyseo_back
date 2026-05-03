@@ -5,6 +5,8 @@ import {
 	IsOptional,
 	IsString,
 	IsUUID,
+	IsUrl,
+	MaxLength,
 	Min,
 } from 'class-validator'
 
@@ -17,14 +19,17 @@ export class CreateTaskDto {
 
 	@IsOptional()
 	@IsString()
+	@MaxLength(200)
 	keyword?: string
 
 	@IsOptional()
-	@IsString()
+	@IsUrl()
+	@MaxLength(500)
 	externalUrl?: string
 
 	@IsOptional()
 	@IsString()
+	@MaxLength(100)
 	geo?: string
 
 	@IsOptional()
