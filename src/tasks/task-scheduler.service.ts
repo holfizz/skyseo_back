@@ -7,7 +7,7 @@ export class TaskSchedulerService implements OnModuleInit {
 
 	onModuleInit() {
 		setTimeout(() => this.resetStuckTasks(), 10000)
-		setInterval(() => this.resetStuckTasks(), 30 * 60 * 1000)
+		setInterval(() => this.resetStuckTasks(), 15 * 60 * 1000)
 	}
 
 	private async resetStuckTasks() {

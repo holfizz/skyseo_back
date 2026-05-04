@@ -7,6 +7,12 @@ import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 import { CreateTaskDto } from './dto'
 
+const DOMAIN_BLACKLIST = [
+	'skyseo.site',
+	'skyseo.ru',
+	'skyseo.com',
+]
+
 @Injectable()
 export class TasksService {
 	constructor(
@@ -25,6 +31,16 @@ export class TasksService {
 			throw new NotFoundException('Website not found')
 		}
 
+		// Лимит 20 ключевых слов на сайт (только активные)
+		const keywordCount = await this.prisma.task.count({
+			where: { websiteId: dto.websiteId, isActive: true },
+		})
+		if (keywordCount >= 20) {
+			throw new BadRequestException(
+				'Достигнут лимит в 20 ключевых слов для этого сайта',
+			)
+		}
+
 		// Проверка на существующий ключевик для этого сайта
 		const existingTask = await this.prisma.task.findFirst({
 			where: {
@@ -34,6 +50,13 @@ export class TasksService {
 		})
 
 		if (existingTask) {
+			if (!existingTask.isActive) {
+				// Переактивируем мягко удалённый ключевик
+				return this.prisma.task.update({
+					where: { id: existingTask.id },
+					data: { isActive: true, status: 'PENDING' },
+				})
+			}
 			throw new BadRequestException(
 				`Ключевое слово "${dto.keyword}" уже существует для этого сайта`,
 			)
@@ -41,11 +64,6 @@ export class TasksService {
 
 		// Расчет стоимости задачи
 		const pointsCost = this.calculateTaskCost(dto.type)
-
-		// Проверка баланса
-		if (website.user.balance < pointsCost) {
-			throw new BadRequestException('Insufficient balance')
-		}
 
 		// Создание задачи
 		const task = await this.prisma.task.create({
@@ -75,11 +93,12 @@ export class TasksService {
 		// Если у задачи несколько ключевых слов, выбираем случайные 1-2
 		const task = await this.prisma.task.findFirst({
 			where: {
+				isActive: true,
 				status: 'PENDING',
 				website: {
-					userId: {
-						not: executorId,
-					},
+					isActive: true,
+					userId: { not: executorId },
+					NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
 				},
 			},
 			orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
@@ -136,12 +155,11 @@ export class TasksService {
 		const allTasks = await this.prisma.task.findMany({
 			where: {
 				isActive: true,
-				status: 'PENDING', // Только задачи в статусе PENDING
+				status: 'PENDING',
 				website: {
 					isActive: true,
-					userId: {
-						not: executorId, // Не свои задачи
-					},
+					userId: { not: executorId },
+					NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
 				},
 			},
 			include: {
@@ -166,6 +184,8 @@ export class TasksService {
 		const availableTasks = []
 
 		for (const task of allTasks) {
+			// Дополнительная защита: никогда не возвращаем собственные задачи
+			if (task.website.userId === executorId) continue
 			const websiteId = task.websiteId
 
 			// Проверяем: сколько раз пользователь выполнял задачи этого сайта на этой неделе
@@ -202,6 +222,7 @@ export class TasksService {
 
 	async getUserTasks(userId: string, websiteId?: string) {
 		const where: any = {
+			isActive: true,
 			website: {
 				userId,
 			},
@@ -382,7 +403,11 @@ export class TasksService {
 			throw new NotFoundException('Task not found')
 		}
 
-		await this.prisma.task.delete({ where: { id: taskId } })
+		// Мягкое удаление — не трогаем executions других пользователей и историю позиций
+		await this.prisma.task.update({
+			where: { id: taskId },
+			data: { isActive: false, status: 'PENDING' },
+		})
 		return { success: true }
 	}
 
