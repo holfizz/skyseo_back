@@ -59,10 +59,6 @@ export class TelegramService {
 				this.adminId
 			) {
 				try {
-					await this.bot.telegram.sendMessage(
-						this.adminId,
-						'🤖 Telegram bot initialized successfully!',
-					)
 					console.log('✅ Test message sent to admin')
 				} catch (testError) {
 					console.error('❌ Failed to send test message:', testError.message)
@@ -315,10 +311,14 @@ export class TelegramService {
 			this.prisma.execution.count(),
 
 			// Успешных полных операций (сайт найден в топе, полный визит)
-			this.prisma.execution.count({ where: { status: 'COMPLETED', foundInTop: true } }),
+			this.prisma.execution.count({
+				where: { status: 'COMPLETED', foundInTop: true },
+			}),
 
 			// Переходы без нахождения в топе (сайт не найден)
-			this.prisma.execution.count({ where: { status: 'COMPLETED', foundInTop: false } }),
+			this.prisma.execution.count({
+				where: { status: 'COMPLETED', foundInTop: false },
+			}),
 
 			// Активных исполнителей (выполняли задачи)
 			this.prisma.execution
@@ -373,7 +373,10 @@ export class TelegramService {
 		}
 
 		// Задания
-		const successRate = completedTasks > 0 ? Math.round((foundInTopCount / completedTasks) * 100) : 0
+		const successRate =
+			completedTasks > 0
+				? Math.round((foundInTopCount / completedTasks) * 100)
+				: 0
 		message += '📋 <b>Задания:</b>\n'
 		message += `├ Всего создано: ${totalTasks}\n`
 		message += `├ Активных: ${activeTasks}\n`

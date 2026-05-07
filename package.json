@@ -15,7 +15,8 @@
 		"prisma:migrate": "prisma migrate dev",
 		"prisma:studio": "prisma studio",
 		"prisma:seed": "ts-node --transpile-only prisma/seed.ts",
-		"seed": "ts-node --transpile-only prisma/seed.ts"
+		"seed": "ts-node --transpile-only prisma/seed.ts",
+		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts"
 	},
 	"dependencies": {
 		"@nestjs/common": "^10.2.4",
