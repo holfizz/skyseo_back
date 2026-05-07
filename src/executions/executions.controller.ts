@@ -43,4 +43,12 @@ export class ExecutionsController {
 	async getHistory(@Request() req) {
 		return this.executionsService.getExecutionHistory(req.user.id)
 	}
+
+	@Post('captcha-event')
+	async logCaptcha(
+		@Request() req,
+		@Body() body: { engine: string; resolved: boolean },
+	) {
+		return this.executionsService.logCaptchaEvent(req.user.id, body.engine, body.resolved)
+	}
 }

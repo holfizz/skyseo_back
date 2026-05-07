@@ -223,15 +223,30 @@ export class AuthService {
 		// Генерируем токен для подтверждения email
 		const emailVerificationToken = randomBytes(32).toString('hex')
 
+		// Генерируем уникальный реферальный код
+		const referralCode = randomBytes(4).toString('hex').toUpperCase()
+
+		// Ищем пригласившего по коду
+		let referredBy: string | undefined
+		if (dto.referralCode) {
+			const referrer = await this.prisma.user.findUnique({
+				where: { referralCode: dto.referralCode },
+				select: { id: true },
+			})
+			if (referrer) referredBy = referrer.id
+		}
+
 		const user = await this.usersService.create({
 			email: dto.email,
 			password: hashedPassword,
 			referralSource: dto.referralSource,
+			referralCode,
+			referredBy,
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
-			registrationIp: ipAddress, // Добавляем IP регистрации для защиты
+			registrationIp: ipAddress,
 			emailVerificationToken,
-			appVersion: dto.appVersion, // Сохраняем версию приложения
+			appVersion: dto.appVersion,
 		})
 
 		// Отправка уведомления в Telegram

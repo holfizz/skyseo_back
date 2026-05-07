@@ -258,6 +258,8 @@ export class TelegramService {
 			yandexTasks,
 			googleTasks,
 			totalExecutions,
+			foundInTopCount,
+			notFoundCount,
 			activeExecutors,
 			totalEarned,
 			totalPayments,
@@ -312,12 +314,15 @@ export class TelegramService {
 			// Всего выполнений
 			this.prisma.execution.count(),
 
+			// Успешных полных операций (сайт найден в топе, полный визит)
+			this.prisma.execution.count({ where: { status: 'COMPLETED', foundInTop: true } }),
+
+			// Переходы без нахождения в топе (сайт не найден)
+			this.prisma.execution.count({ where: { status: 'COMPLETED', foundInTop: false } }),
+
 			// Активных исполнителей (выполняли задачи)
 			this.prisma.execution
-				.groupBy({
-					by: ['executorId'],
-					where: { status: 'COMPLETED' },
-				})
+				.groupBy({ by: ['executorId'], where: { status: 'COMPLETED' } })
 				.then(result => result.length),
 
 			// Всего заработано баллов пользователями
@@ -368,10 +373,13 @@ export class TelegramService {
 		}
 
 		// Задания
+		const successRate = completedTasks > 0 ? Math.round((foundInTopCount / completedTasks) * 100) : 0
 		message += '📋 <b>Задания:</b>\n'
 		message += `├ Всего создано: ${totalTasks}\n`
 		message += `├ Активных: ${activeTasks}\n`
 		message += `├ Выполнено: ${completedTasks}\n`
+		message += `├ ✅ Найден в топе (полный визит): ${foundInTopCount} (${successRate}%)\n`
+		message += `├ 📋 Без нахождения в топе: ${notFoundCount}\n`
 		message += `├ Яндекс: ${yandexTasks}\n`
 		message += `└ Google: ${googleTasks}\n\n`
 

@@ -236,4 +236,10 @@ export class ExecutionsService {
 			take: limit,
 		})
 	}
+
+	async logCaptchaEvent(userId: string, engine: string, resolved: boolean) {
+		return this.prisma.captchaEvent.create({
+			data: { userId, engine, resolved },
+		})
+	}
 }

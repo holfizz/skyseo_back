@@ -13,6 +13,48 @@ const DOMAIN_BLACKLIST = [
 	'skyseo.com',
 ]
 
+// Запрещённые слова в поисковых запросах
+const KEYWORD_FORBIDDEN_WORDS = [
+	'порно', 'porno', 'porn', 'секс', 'sex', 'эротика', 'erotic', 'xxx',
+	'наркотик', 'наркотики', 'drug', 'drugs', 'героин', 'кокаин', 'cocaine',
+	'герoin', 'мефедрон', 'закладки', 'купить наркотики',
+	'оружие', 'оружию', 'weapon', 'взрывчатка', 'бомба',
+	'хакер', 'взлом', 'hacking', 'malware',
+]
+
+function validateKeyword(keyword: string): void {
+	const trimmed = keyword.trim()
+
+	// Минимальная длина
+	if (trimmed.length < 3) {
+		throw new BadRequestException('Ключевое слово слишком короткое (минимум 3 символа)')
+	}
+
+	// Нет ни одной буквы (включая кириллицу)
+	if (!/\p{L}/u.test(trimmed)) {
+		throw new BadRequestException('Ключевое слово должно содержать буквы')
+	}
+
+	// Слишком много цифр (не осмысленный запрос типа "123 456")
+	const digits = (trimmed.match(/\d/g) || []).length
+	if (digits > trimmed.length * 0.6) {
+		throw new BadRequestException('Ключевое слово не должно состоять преимущественно из цифр')
+	}
+
+	// Один символ повторяется больше половины (ааааааа, 111111)
+	if (/(.)\1{4,}/.test(trimmed)) {
+		throw new BadRequestException('Ключевое слово содержит недопустимые повторения символов')
+	}
+
+	// Запрещённые слова
+	const lower = trimmed.toLowerCase()
+	for (const word of KEYWORD_FORBIDDEN_WORDS) {
+		if (lower.includes(word)) {
+			throw new BadRequestException('Ключевое слово содержит запрещённые слова')
+		}
+	}
+}
+
 @Injectable()
 export class TasksService {
 	constructor(
@@ -29,6 +71,11 @@ export class TasksService {
 
 		if (!website || website.userId !== userId) {
 			throw new NotFoundException('Website not found')
+		}
+
+		// Валидация ключевого слова
+		if (dto.keyword) {
+			validateKeyword(dto.keyword)
 		}
 
 		// Лимит 20 ключевых слов на сайт (только активные)

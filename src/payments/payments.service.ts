@@ -105,7 +105,7 @@ export class PaymentsService {
 
 			const payment = await this.prisma.payment.findUnique({
 				where: { externalId },
-				include: { user: true },
+				include: { user: { select: { id: true, email: true, balance: true, referredBy: true } } },
 			})
 
 			if (!payment) {
@@ -154,6 +154,20 @@ export class PaymentsService {
 				'PAYMENT',
 				`Пополнение баланса на ${payment.amount} ₽`,
 			)
+
+			// Реферальный бонус — +10% пригласившему
+			if (payment.user.referredBy) {
+				const referralBonus = Math.floor(payment.points * 0.1)
+				if (referralBonus > 0) {
+					await this.usersService.updateBalance(
+						payment.user.referredBy,
+						referralBonus,
+						'REFERRAL_BONUS',
+						`Реферальный бонус 10% от пополнения друга (${payment.points} баллов)`,
+					)
+					console.log(`[Payments] Реферальный бонус ${referralBonus} баллов → ${payment.user.referredBy}`)
+				}
+			}
 
 			console.log('[Payments] Balance updated', {
 				paymentId: payment.id,

@@ -17,6 +17,8 @@ model User {
   role                   Role      @default(USER)
   userType               UserType? // Кто вы: маркетолог, SEO, предприниматель, стартапер
   referralSource         String? // Откуда узнал
+  referralCode           String?   @unique // Реферальный код пользователя
+  referredBy             String? // ID пользователя, который пригласил
   city                   String? // Город пользователя
   isActive               Boolean   @default(true)
   isSuspicious           Boolean   @default(false) // Флаг подозрительной активности
@@ -27,6 +29,7 @@ model User {
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка
   appVersion             String? // Версия приложения пользователя
+  weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -35,6 +38,7 @@ model User {
   payments            Payment[]
   balanceHistory      BalanceHistory[]
   passwordResetTokens PasswordResetToken[]
+  captchaEvents       CaptchaEvent[]
 
   @@map("users")
 }
@@ -89,28 +93,46 @@ model Task {
 }
 
 model Execution {
-  id           String          @id @default(uuid())
-  taskId       String
-  executorId   String
-  websiteId    String?
-  status       ExecutionStatus @default(IN_PROGRESS)
-  pointsEarned Int             @default(0) // Баллы заработанные исполнителем
-  pointsSpent  Int             @default(0) // Баллы списанные с владельца
-  foundInTop   Boolean? // Найден ли сайт/ссылка
-  position     Int? // Позиция в выдаче (для SEARCH_KEYWORD)
-  pagesVisited Int             @default(0)
-  duration     Int             @default(0) // Секунды
-  ipAddress    String?
-  userAgent    String?
-  weekStart    DateTime? // Начало недели для отслеживания лимитов
-  createdAt    DateTime        @default(now())
-  completedAt  DateTime?
+  id            String          @id @default(uuid())
+  taskId        String
+  executorId    String
+  websiteId     String?
+  status        ExecutionStatus @default(IN_PROGRESS)
+  pointsEarned  Int             @default(0)
+  pointsSpent   Int             @default(0)
+  foundInTop    Boolean?
+  position      Int?
+  yandexFoundInTop Boolean?
+  googleFoundInTop Boolean?
+  yandexPosition   Int?
+  googlePosition   Int?
+  failureReason    FailureReason?
+  pagesVisited  Int             @default(0)
+  duration      Int             @default(0)
+  ipAddress     String?
+  userAgent     String?
+  weekStart     DateTime?
+  createdAt     DateTime        @default(now())
+  completedAt   DateTime?
 
   task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   executor User @relation(fields: [executorId], references: [id], onDelete: Cascade)
 
   @@index([executorId, websiteId, weekStart])
   @@map("executions")
+}
+
+model CaptchaEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  engine    String   // "yandex" | "google"
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@map("captcha_events")
 }
 
 model Statistic {
@@ -252,6 +274,14 @@ enum BalanceHistoryType {
   PAYMENT
   REFUND
   ADMIN_ADJUSTMENT
+  REFERRAL_BONUS
+}
+
+enum FailureReason {
+  CAPTCHA
+  SCRIPT_ERROR
+  NOT_IN_SERP
+  LOCK_TIMEOUT
 }
 
 enum PaymentStatus {

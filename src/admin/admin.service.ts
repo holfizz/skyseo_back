@@ -237,4 +237,145 @@ export class AdminService {
 
 		return activeExecutions
 	}
+
+	async getAnalytics(from: Date, to: Date) {
+		const [
+			totalSearches,
+			foundInTop,
+			notFound,
+			scriptErrors,
+			captchaDropped,
+			lockTimeout,
+			yandexSearches,
+			googleSearches,
+			captchaTotal,
+			captchaResolved,
+			pagesSum,
+			totalUsers,
+			activeUsers,
+			withWebsites,
+			newUsers,
+			totalEarned,
+			totalSpent,
+			totalPayments,
+		] = await Promise.all([
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to } } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, status: 'COMPLETED', foundInTop: true } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, status: 'COMPLETED', foundInTop: false } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, status: 'FAILED', failureReason: 'SCRIPT_ERROR' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, status: 'FAILED', failureReason: 'CAPTCHA' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, status: 'FAILED', failureReason: 'LOCK_TIMEOUT' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, yandexFoundInTop: { not: null } } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: from, lte: to }, googleFoundInTop: { not: null } } }),
+			this.prisma.captchaEvent.count({ where: { createdAt: { gte: from, lte: to } } }),
+			this.prisma.captchaEvent.count({ where: { createdAt: { gte: from, lte: to }, resolved: true } }),
+			this.prisma.execution.aggregate({ where: { createdAt: { gte: from, lte: to } }, _sum: { pagesVisited: true } }),
+			this.prisma.user.count(),
+			this.prisma.user.count({ where: { executions: { some: { createdAt: { gte: from, lte: to } } } } }),
+			this.prisma.user.count({ where: { websites: { some: {} } } }),
+			this.prisma.user.count({ where: { createdAt: { gte: from, lte: to } } }),
+			this.prisma.balanceHistory.aggregate({ where: { type: 'TASK_EARNED', createdAt: { gte: from, lte: to } }, _sum: { amount: true } }),
+			this.prisma.balanceHistory.aggregate({ where: { type: 'TASK_SPENT', createdAt: { gte: from, lte: to } }, _sum: { amount: true } }),
+			this.prisma.balanceHistory.aggregate({ where: { type: 'PAYMENT', createdAt: { gte: from, lte: to } }, _sum: { amount: true } }),
+		])
+
+		// По дням
+		const byDay = await this.prisma.$queryRaw<Array<{
+			date: string; found: bigint; not_found: bigint; errors: bigint; new_users: bigint; captchas: bigint
+		}>>`
+			SELECT
+				DATE(e."createdAt") as date,
+				COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = true THEN 1 END) as found,
+				COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = false THEN 1 END) as not_found,
+				COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) as errors,
+				(SELECT COUNT(*) FROM users u WHERE DATE(u."createdAt") = DATE(e."createdAt")) as new_users,
+				(SELECT COUNT(*) FROM captcha_events c WHERE DATE(c."createdAt") = DATE(e."createdAt")) as captchas
+			FROM executions e
+			WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
+			GROUP BY DATE(e."createdAt")
+			ORDER BY date DESC
+			LIMIT 30
+		`
+
+		// Позиции — улучшились/ухудшились
+		const latestPositions = await this.prisma.$queryRaw<Array<{
+			taskId: string; yandex_curr: number | null; yandex_prev: number | null;
+			google_curr: number | null; google_prev: number | null
+		}>>`
+			SELECT
+				p1."taskId",
+				p1."yandexPosition" as yandex_curr, p2."yandexPosition" as yandex_prev,
+				p1."googlePosition" as google_curr, p2."googlePosition" as google_prev
+			FROM position_history p1
+			LEFT JOIN position_history p2 ON p2."taskId" = p1."taskId"
+				AND p2."createdAt" = (
+					SELECT MAX("createdAt") FROM position_history
+					WHERE "taskId" = p1."taskId" AND "createdAt" < p1."createdAt"
+				)
+			WHERE p1."createdAt" = (
+				SELECT MAX("createdAt") FROM position_history WHERE "taskId" = p1."taskId"
+			)
+		`
+
+		let improved = 0, worsened = 0, unchanged = 0, noData = 0
+		for (const row of latestPositions) {
+			const yImproved = row.yandex_curr && row.yandex_prev ? row.yandex_prev > row.yandex_curr : null
+			const gImproved = row.google_curr && row.google_prev ? row.google_prev > row.google_curr : null
+			if (yImproved === null && gImproved === null) { noData++; continue }
+			const improved_ = (yImproved === true) || (gImproved === true)
+			const worsened_ = (yImproved === false) || (gImproved === false)
+			if (improved_) improved++
+			else if (worsened_) worsened++
+			else unchanged++
+		}
+
+		// Сайты в топ-10
+		const sitesInTop10 = latestPositions.filter(
+			r => (r.yandex_curr && r.yandex_curr <= 10) || (r.google_curr && r.google_curr <= 10)
+		).length
+
+		return {
+			searches: {
+				total: totalSearches,
+				foundInTop,
+				notFound,
+				scriptErrors,
+				captchaDropped,
+				lockTimeout,
+				byEngine: {
+					yandex: { total: yandexSearches },
+					google: { total: googleSearches },
+				},
+				byDay: byDay.map(r => ({
+					date: r.date,
+					found: Number(r.found),
+					notFound: Number(r.not_found),
+					errors: Number(r.errors),
+				})),
+			},
+			captcha: {
+				total: captchaTotal,
+				resolved: captchaResolved,
+				dropped: captchaTotal - captchaResolved,
+				byDay: byDay.map(r => ({ date: r.date, count: Number(r.captchas) })),
+			},
+			pages: {
+				totalVisited: pagesSum._sum.pagesVisited ?? 0,
+				avgPerTask: totalSearches > 0 ? Math.round((pagesSum._sum.pagesVisited ?? 0) / totalSearches) : 0,
+			},
+			positions: { improved, worsened, unchanged, noData, sitesInTop10 },
+			users: {
+				total: totalUsers,
+				activeThisPeriod: activeUsers,
+				withWebsites,
+				newThisPeriod: newUsers,
+				byDay: byDay.map(r => ({ date: r.date, newRegistrations: Number(r.new_users) })),
+			},
+			economy: {
+				totalEarned: totalEarned._sum.amount ?? 0,
+				totalSpent: Math.abs(totalSpent._sum.amount ?? 0),
+				totalPaymentPoints: totalPayments._sum.amount ?? 0,
+			},
+		}
+	}
 }

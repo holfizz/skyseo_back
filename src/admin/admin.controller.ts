@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, Put, Query, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { AdminGuard } from './admin.guard'
 import { AdminService } from './admin.service'
@@ -11,6 +11,16 @@ export class AdminController {
 	@Get('statistics')
 	async getStatistics() {
 		return this.adminService.getAdminStatistics()
+	}
+
+	@Get('analytics')
+	async getAnalytics(
+		@Query('from') from?: string,
+		@Query('to') to?: string,
+	) {
+		const toDate = to ? new Date(to) : new Date()
+		const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		return this.adminService.getAnalytics(fromDate, toDate)
 	}
 
 	@Get('users')

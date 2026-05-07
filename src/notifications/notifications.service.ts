@@ -162,6 +162,81 @@ export class NotificationsService {
 		await this.sendEmail(email, subject, html)
 	}
 
+	async sendWeeklyReport(email: string, data: {
+		balance: number
+		weeklyEarned: number
+		tasksCompleted: number
+		found: number
+		websites: Array<{
+			name: string
+			url: string
+			tasks: Array<{
+				keyword: string | null
+				positionHistory: Array<{ yandexPosition: number | null; googlePosition: number | null }>
+			}>
+		}>
+	}) {
+		const keywordsRows = data.websites.flatMap(site =>
+			site.tasks.map(task => {
+				const prev = task.positionHistory[1]
+				const curr = task.positionHistory[0]
+				const yDelta = prev?.yandexPosition && curr?.yandexPosition
+					? prev.yandexPosition - curr.yandexPosition : null
+				const gDelta = prev?.googlePosition && curr?.googlePosition
+					? prev.googlePosition - curr.googlePosition : null
+				const arrow = (d: number | null) => d === null ? '—' : d > 0 ? `↑${d}` : d < 0 ? `↓${Math.abs(d)}` : '='
+				return `<tr>
+					<td style="padding:8px;border-bottom:1px solid #eee;">${site.name}</td>
+					<td style="padding:8px;border-bottom:1px solid #eee;">${task.keyword || '—'}</td>
+					<td style="padding:8px;border-bottom:1px solid #eee;text-align:center;">${curr?.yandexPosition ?? '—'} <span style="color:${yDelta && yDelta > 0 ? 'green' : 'red'}">${arrow(yDelta)}</span></td>
+					<td style="padding:8px;border-bottom:1px solid #eee;text-align:center;">${curr?.googlePosition ?? '—'} <span style="color:${gDelta && gDelta > 0 ? 'green' : 'red'}">${arrow(gDelta)}</span></td>
+				</tr>`
+			})
+		).join('')
+
+		const html = `
+		<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+			<h2 style="color:#1400ff;">SkySEO — еженедельный отчёт</h2>
+
+			<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:20px 0;">
+				<div style="background:#f0f4ff;border-radius:10px;padding:16px;text-align:center;">
+					<div style="font-size:24px;font-weight:bold;color:#1400ff;">${data.balance}</div>
+					<div style="color:#666;font-size:13px;">баланс баллов</div>
+				</div>
+				<div style="background:#f0fff4;border-radius:10px;padding:16px;text-align:center;">
+					<div style="font-size:24px;font-weight:bold;color:#16a34a;">+${data.weeklyEarned}</div>
+					<div style="color:#666;font-size:13px;">заработано за неделю</div>
+				</div>
+				<div style="background:#fff7ed;border-radius:10px;padding:16px;text-align:center;">
+					<div style="font-size:24px;font-weight:bold;color:#ea580c;">${data.tasksCompleted}</div>
+					<div style="color:#666;font-size:13px;">задач выполнено</div>
+				</div>
+			</div>
+
+			${keywordsRows ? `
+			<h3 style="color:#333;">Позиции по ключевым словам</h3>
+			<table style="width:100%;border-collapse:collapse;font-size:14px;">
+				<thead>
+					<tr style="background:#f5f5f5;">
+						<th style="padding:8px;text-align:left;">Сайт</th>
+						<th style="padding:8px;text-align:left;">Запрос</th>
+						<th style="padding:8px;text-align:center;">Яндекс</th>
+						<th style="padding:8px;text-align:center;">Google</th>
+					</tr>
+				</thead>
+				<tbody>${keywordsRows}</tbody>
+			</table>` : '<p style="color:#666;">Нет активных ключевых слов.</p>'}
+
+			<p style="color:#999;font-size:12px;margin-top:30px;">
+				Вы получаете этот отчёт каждый понедельник. Отписаться можно в настройках профиля.
+			</p>
+			<hr style="border:none;border-top:1px solid #eee;">
+			<p style="text-align:center;color:#999;font-size:13px;">Команда SkySEO</p>
+		</div>`
+
+		await this.sendEmail(email, 'SkySEO: еженедельный отчёт по позициям', html)
+	}
+
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
 			if (!this.resend) {

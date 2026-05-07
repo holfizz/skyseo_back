@@ -13,6 +13,8 @@ export class UsersService {
 		email: string
 		password: string
 		referralSource?: string
+		referralCode?: string
+		referredBy?: string
 		city?: string
 		lastLoginIp?: string
 		registrationIp?: string
@@ -64,7 +66,8 @@ export class UsersService {
 			| 'TASK_SPENT'
 			| 'PAYMENT'
 			| 'REFUND'
-			| 'ADMIN_ADJUSTMENT',
+			| 'ADMIN_ADJUSTMENT'
+			| 'REFERRAL_BONUS',
 		description: string,
 		taskId?: string,
 	) {

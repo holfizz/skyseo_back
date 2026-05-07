@@ -14,6 +14,10 @@ export class RegisterDto {
 
 	@IsOptional()
 	@IsString()
+	referralCode?: string
+
+	@IsOptional()
+	@IsString()
 	city?: string
 
 	@IsOptional()
