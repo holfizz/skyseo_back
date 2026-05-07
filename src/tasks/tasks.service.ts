@@ -78,13 +78,13 @@ export class TasksService {
 			validateKeyword(dto.keyword)
 		}
 
-		// Лимит 20 ключевых слов на сайт (только активные)
+		// Лимит 50 ключевых слов на сайт (только активные)
 		const keywordCount = await this.prisma.task.count({
 			where: { websiteId: dto.websiteId, isActive: true },
 		})
-		if (keywordCount >= 20) {
+		if (keywordCount >= 50) {
 			throw new BadRequestException(
-				'Достигнут лимит в 20 ключевых слов для этого сайта',
+				'Достигнут лимит в 50 ключевых слов для этого сайта',
 			)
 		}
 

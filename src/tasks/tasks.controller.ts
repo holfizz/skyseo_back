@@ -9,10 +9,12 @@ import {
 	Request,
 	UseGuards,
 } from '@nestjs/common'
+import { SkipThrottle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CreateTaskDto } from './dto'
 import { TasksService } from './tasks.service'
 
+@SkipThrottle({ short: true, medium: true })
 @Controller('tasks')
 @UseGuards(JwtAuthGuard)
 export class TasksController {

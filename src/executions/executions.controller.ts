@@ -10,10 +10,12 @@ import {
 	Request,
 	UseGuards,
 } from '@nestjs/common'
+import { SkipThrottle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CompleteExecutionDto, StartExecutionDto } from './dto'
 import { ExecutionsService } from './executions.service'
 
+@SkipThrottle({ short: true, medium: true })
 @Controller('executions')
 @UseGuards(JwtAuthGuard)
 export class ExecutionsController {
