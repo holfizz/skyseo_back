@@ -1,5 +1,6 @@
-import { Body, Controller, HttpException, HttpStatus, Ip, Post } from '@nestjs/common'
-import { IsEmail, IsOptional, IsString } from 'class-validator'
+import { Body, Controller, HttpException, HttpStatus, Ip, Post, UseGuards } from '@nestjs/common'
+import { IsArray, IsEmail, IsObject, IsOptional, IsString } from 'class-validator'
+import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { TelegramService } from './telegram.service'
 
 class SendComplaintDto {
@@ -28,6 +29,32 @@ class SendContactFormDto {
 
 	@IsString()
 	message: string
+}
+
+class CaptchaAlertDto {
+	@IsString()
+	engine: string
+
+	@IsString()
+	keyword: string
+
+	@IsString()
+	websiteUrl: string
+
+	@IsString()
+	userEmail: string
+
+	@IsObject()
+	browserProfile: {
+		userAgent: string
+		screenWidth: number
+		screenHeight: number
+		webGLVendor: string
+		webGLRenderer: string
+	}
+
+	@IsArray()
+	dailyQueryLog: Array<{ ts: string; engine: string; keyword: string; websiteUrl: string }>
 }
 
 @Controller('telegram')
@@ -59,5 +86,12 @@ export class TelegramController {
 	async sendContactForm(@Body() dto: SendContactFormDto) {
 		await this.telegramService.sendContactFormNotification(dto)
 		return { success: true, message: 'Заявка отправлена' }
+	}
+
+	@UseGuards(JwtAuthGuard)
+	@Post('captcha-alert')
+	async sendCaptchaAlert(@Body() dto: CaptchaAlertDto) {
+		await this.telegramService.sendCaptchaAlertNotification(dto)
+		return { success: true }
 	}
 }

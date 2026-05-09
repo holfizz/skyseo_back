@@ -7,11 +7,27 @@ import {
 import { PrismaService } from '../prisma/prisma.service'
 import { CreateWebsiteDto, UpdateWebsiteDto } from './dto'
 
+const URL_FORBIDDEN_WORDS = [
+	'porn', 'sex', 'xxx', 'erotic', 'adult', 'casino', 'betting',
+	'escort', 'слот', 'ставки', 'казино', 'порно', 'секс',
+]
+
+function validateWebsiteUrl(url: string): void {
+	const lower = url.toLowerCase()
+	for (const word of URL_FORBIDDEN_WORDS) {
+		if (lower.includes(word)) {
+			throw new BadRequestException('Сайт нарушает правила использования сервиса')
+		}
+	}
+}
+
 @Injectable()
 export class WebsitesService {
 	constructor(private prisma: PrismaService) {}
 
 	async create(userId: string, dto: CreateWebsiteDto) {
+		validateWebsiteUrl(dto.url)
+
 		// Проверка на существующий сайт с таким же URL у этого пользователя
 		const existingWebsite = await this.prisma.website.findFirst({
 			where: {

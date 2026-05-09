@@ -217,6 +217,34 @@ export class TelegramService {
 		await this.sendAdminNotification(message)
 	}
 
+	async sendCaptchaAlertNotification(data: {
+		engine: string
+		keyword: string
+		websiteUrl: string
+		userEmail: string
+		browserProfile: { userAgent: string; screenWidth: number; screenHeight: number; webGLVendor: string; webGLRenderer: string }
+		dailyQueryLog: Array<{ ts: string; engine: string; keyword: string; websiteUrl: string }>
+	}) {
+		const now = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
+		const historyLines = data.dailyQueryLog
+			.map(e => `  ${e.ts} [${e.engine}] ${e.keyword} → ${e.websiteUrl}`)
+			.join('\n') || '  (нет данных)'
+
+		const message =
+			`🚨 <b>КАПЧА — ${data.engine.toUpperCase()}</b>\n\n` +
+			`🕐 Время: ${now} (МСК)\n` +
+			`👤 Аккаунт: ${data.userEmail}\n\n` +
+			`🔍 Запрос: <b>${data.keyword}</b>\n` +
+			`🌐 Сайт: ${data.websiteUrl}\n\n` +
+			`💻 Браузер:\n` +
+			`  UA: ${data.browserProfile.userAgent}\n` +
+			`  Экран: ${data.browserProfile.screenWidth}×${data.browserProfile.screenHeight}\n` +
+			`  GPU: ${data.browserProfile.webGLVendor}\n\n` +
+			`📋 Запросы за сегодня (${data.dailyQueryLog.length} шт):\n${historyLines}`
+
+		await this.sendAdminNotification(message)
+	}
+
 	async sendContactFormNotification(data: {
 		name: string
 		email: string
