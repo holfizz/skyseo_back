@@ -23,4 +23,8 @@ export class RegisterDto {
 	@IsOptional()
 	@IsString()
 	appVersion?: string
+
+	@IsOptional()
+	@IsString()
+	role?: string // frontend userType selection: marketer | seo | entrepreneur | startup
 }

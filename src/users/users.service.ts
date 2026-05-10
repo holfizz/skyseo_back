@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { UserType } from '@prisma/client'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -20,6 +21,7 @@ export class UsersService {
 		registrationIp?: string
 		emailVerificationToken?: string
 		appVersion?: string
+		userType?: UserType
 	}) {
 		return this.prisma.user.create({
 			data: {

@@ -6,6 +6,7 @@ import {
 	UnauthorizedException,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
+import { UserType } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
 import { randomBytes } from 'crypto'
 import { NotificationsService } from '../notifications/notifications.service'
@@ -236,6 +237,20 @@ export class AuthService {
 			if (referrer) referredBy = referrer.id
 		}
 
+		const userTypeMap: Record<string, string> = {
+			marketer: 'MARKETER',
+			seo: 'SEO',
+			entrepreneur: 'ENTREPRENEUR',
+			startup: 'STARTUP',
+		}
+		const userTypeLabelMap: Record<string, string> = {
+			MARKETER: 'Маркетолог',
+			SEO: 'SEO специалист',
+			ENTREPRENEUR: 'Предприниматель',
+			STARTUP: 'Стартапер',
+		}
+		const mappedUserType = dto.role ? userTypeMap[dto.role.toLowerCase()] as UserType : undefined
+
 		const user = await this.usersService.create({
 			email: dto.email,
 			password: hashedPassword,
@@ -247,7 +262,10 @@ export class AuthService {
 			registrationIp: ipAddress,
 			emailVerificationToken,
 			appVersion: dto.appVersion,
+			userType: mappedUserType,
 		})
+
+		const userTypeLabel = mappedUserType ? (userTypeLabelMap[mappedUserType] || mappedUserType) : 'Не указана'
 
 		// Отправка уведомления в Telegram
 		try {
@@ -258,6 +276,7 @@ export class AuthService {
 				user.referralSource || 'Не указан',
 				ipAddress || 'Не определен',
 				user.balance,
+				userTypeLabel,
 			)
 			console.log(
 				'[AuthService] ✅ Telegram registration notification sent successfully',

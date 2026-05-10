@@ -4,6 +4,7 @@ import {
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common'
+import { TelegramService } from '../telegram/telegram.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { CreateWebsiteDto, UpdateWebsiteDto } from './dto'
 
@@ -23,9 +24,12 @@ function validateWebsiteUrl(url: string): void {
 
 @Injectable()
 export class WebsitesService {
-	constructor(private prisma: PrismaService) {}
+	constructor(
+		private prisma: PrismaService,
+		private telegram: TelegramService,
+	) {}
 
-	async create(userId: string, dto: CreateWebsiteDto) {
+	async create(userId: string, userEmail: string, dto: CreateWebsiteDto) {
 		validateWebsiteUrl(dto.url)
 
 		// Проверка на существующий сайт с таким же URL у этого пользователя
@@ -42,7 +46,7 @@ export class WebsitesService {
 			)
 		}
 
-		return this.prisma.website.create({
+		const website = await this.prisma.website.create({
 			data: {
 				userId,
 				name: dto.name,
@@ -50,6 +54,16 @@ export class WebsitesService {
 				city: dto.city,
 			},
 		})
+
+		try {
+			await this.telegram.sendWebsiteCreatedNotification({
+				userEmail,
+				websiteName: dto.name,
+				websiteUrl: dto.url,
+			})
+		} catch (_) {}
+
+		return website
 	}
 
 	async findAll(userId: string) {

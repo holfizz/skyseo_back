@@ -20,7 +20,7 @@ export class WebsitesController {
 
 	@Post()
 	async create(@Request() req, @Body() dto: CreateWebsiteDto) {
-		return this.websitesService.create(req.user.id, dto)
+		return this.websitesService.create(req.user.id, req.user.email, dto)
 	}
 
 	@Get()

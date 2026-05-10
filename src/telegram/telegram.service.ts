@@ -9,6 +9,13 @@ export class TelegramService {
 	private adminId: string
 	private isEnabled: boolean = false
 
+	private readonly GROUP_CHAT_ID = '-1003723547668'
+	private readonly TOPIC_REGISTRATIONS = 2
+	private readonly TOPIC_WEBSITES = 4
+	private readonly TOPIC_CAPTCHA = 7
+	private readonly TOPIC_PAYMENTS = 9
+	private readonly TOPIC_COMPLAINTS = 14
+
 	constructor(
 		private configService: ConfigService,
 		private prisma: PrismaService,
@@ -112,25 +119,22 @@ export class TelegramService {
 		})
 	}
 
-	async sendAdminNotification(message: string) {
-		console.log('[TelegramService] Attempting to send notification...')
-		console.log('[TelegramService] Bot enabled:', this.isEnabled)
-		console.log('[TelegramService] Admin ID:', this.adminId ? 'set' : 'not set')
-		console.log('[TelegramService] Bot instance:', this.bot ? 'exists' : 'null')
-
-		if (!this.isEnabled || !this.adminId || !this.bot) {
+	async sendAdminNotification(message: string, threadId?: number) {
+		if (!this.isEnabled || !this.bot) {
 			console.log('[Telegram disabled]:', message)
 			return
 		}
 
+		const targetId = threadId ? this.GROUP_CHAT_ID : this.adminId
+		if (!targetId) {
+			console.log('[Telegram] No target ID configured, skipping:', message)
+			return
+		}
+
 		try {
-			console.log(
-				'[TelegramService] Sending message to admin ID:',
-				this.adminId,
-			)
-			await this.bot.telegram.sendMessage(this.adminId, message, {
-				parse_mode: 'HTML',
-			})
+			const extra: any = { parse_mode: 'HTML' }
+			if (threadId) extra.message_thread_id = threadId
+			await this.bot.telegram.sendMessage(targetId, message, extra)
 			console.log('[TelegramService] Message sent successfully')
 		} catch (error) {
 			console.error(
@@ -164,16 +168,18 @@ export class TelegramService {
 		source: string,
 		ipAddress: string,
 		balance: number,
+		userType: string,
 	) {
 		const message =
 			`🆕 <b>Новая регистрация</b>\n\n` +
 			`📧 Email: ${email}\n` +
+			`👤 Роль: ${userType}\n` +
 			`🌍 Город: ${city || 'Не указан'}\n` +
 			`📍 Источник: ${source || 'Не указан'}\n` +
 			`🌐 IP: ${ipAddress || 'Не определен'}\n` +
 			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
-		await this.sendAdminNotification(message)
+		await this.sendAdminNotification(message, this.TOPIC_REGISTRATIONS)
 	}
 
 	async sendPaymentNotification(email: string, amount: number, points: number) {
@@ -184,7 +190,7 @@ export class TelegramService {
 			`⭐ Начислено баллов: ${points}\n` +
 			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
-		await this.sendAdminNotification(message)
+		await this.sendAdminNotification(message, this.TOPIC_PAYMENTS)
 	}
 
 	async sendAppInstallNotification(email: string, appVersion?: string) {
@@ -214,7 +220,7 @@ export class TelegramService {
 			`📧 Email пользователя: ${userEmail || 'Не авторизован'}\n` +
 			`📞 Контакт для связи: ${contact || 'Не указан'}`
 
-		await this.sendAdminNotification(message)
+		await this.sendAdminNotification(message, this.TOPIC_COMPLAINTS)
 	}
 
 	async sendCaptchaAlertNotification(data: {
@@ -242,7 +248,22 @@ export class TelegramService {
 			`  GPU: ${data.browserProfile.webGLVendor}\n\n` +
 			`📋 Запросы за сегодня (${data.dailyQueryLog.length} шт):\n${historyLines}`
 
-		await this.sendAdminNotification(message)
+		await this.sendAdminNotification(message, this.TOPIC_CAPTCHA)
+	}
+
+	async sendWebsiteCreatedNotification(data: {
+		userEmail: string
+		websiteName: string
+		websiteUrl: string
+	}) {
+		const message =
+			`🌐 <b>Новый сайт добавлен</b>\n\n` +
+			`👤 Аккаунт: ${data.userEmail}\n` +
+			`📌 Название: ${data.websiteName}\n` +
+			`🔗 Ссылка: ${data.websiteUrl}\n` +
+			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+
+		await this.sendAdminNotification(message, this.TOPIC_WEBSITES)
 	}
 
 	async sendContactFormNotification(data: {
