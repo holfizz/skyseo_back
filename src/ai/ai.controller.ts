@@ -8,9 +8,9 @@ export class AiController {
 	constructor(private aiService: AiService) {}
 
 	@Post('analyze-site')
-	analyzeSite(@Body('url') url: string) {
+	analyzeSite(@Body('url') url: string, @Body('context') context?: string) {
 		if (!url) throw new Error('url is required')
-		return this.aiService.analyzeSite(url)
+		return this.aiService.analyzeSite(url, context)
 	}
 
 	@Get('sitemap')

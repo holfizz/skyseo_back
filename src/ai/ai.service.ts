@@ -43,7 +43,7 @@ const FORBIDDEN_URL_PATTERNS = [
 export class AiService {
 	private openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-	async analyzeSite(url: string): Promise<AnalyzeResult> {
+	async analyzeSite(url: string, context?: string): Promise<AnalyzeResult> {
 		const siteUrl = this.normalizeUrl(url)
 
 		// Check forbidden URL
@@ -58,25 +58,29 @@ export class AiService {
 			}
 		}
 
-		// Fetch main page
-		const mainPage = await this.fetchPageContent(siteUrl).catch(() => null)
+		// Fetch main page + indexing check + sitemap in parallel
+		const [mainPage, warning, sitemapPages] = await Promise.all([
+			this.fetchPageContent(siteUrl).catch(() => null),
+			this.checkIndexingWarning(siteUrl),
+			this.getSitemapUrls(siteUrl).catch(() => [] as string[]),
+		])
 
-		// Check indexing
-		const warning = await this.checkIndexingWarning(siteUrl)
+		// Fetch content for top inner pages to give GPT real signal
+		const innerUrls = sitemapPages
+			.filter(u => u !== siteUrl && !u.endsWith('.xml'))
+			.slice(0, 4)
+		const innerPages = await Promise.all(
+			innerUrls.map(u => this.fetchPageContent(u).catch(() => null))
+		).then(pages => pages.filter(Boolean) as PageContent[])
 
-		// Get sitemap pages
-		const sitemapPages = await this.getSitemapUrls(siteUrl).catch(() => [])
+		const prompt = this.buildPrompt(siteUrl, mainPage, sitemapPages, innerPages, context)
 
-		// Build prompt
-		const prompt = this.buildPrompt(siteUrl, mainPage, sitemapPages)
-
-		// Call OpenAI
 		try {
 			const response = await this.openai.chat.completions.create({
 				model: 'gpt-4o-mini',
 				messages: [{ role: 'user', content: prompt }],
 				response_format: { type: 'json_object' },
-				max_tokens: 2500,
+				max_tokens: 4000,
 				temperature: 0.3,
 			})
 
@@ -120,57 +124,90 @@ export class AiService {
 		return []
 	}
 
-	private buildPrompt(siteUrl: string, mainPage: PageContent | null, sitemapPages: string[]): string {
-		const pagesInfo = sitemapPages.slice(0, 20).join('\n')
+	private buildPrompt(
+		siteUrl: string,
+		mainPage: PageContent | null,
+		sitemapPages: string[],
+		innerPages: PageContent[],
+		context?: string,
+	): string {
+		const formatPage = (p: PageContent) =>
+			`URL: ${p.url}\nTitle: ${p.title}\nH1: ${p.h1.slice(0, 2).join(' | ')}\nH2: ${p.h2.slice(0, 4).join(' | ')}`
 
-		return `Ты — SEO AI assistant внутри приложения SkySEO.
+		const mainBlock = mainPage ? `=== Главная страница ===\n${formatPage(mainPage)}` : ''
 
-Проанализируй сайт и предложи релевантные SEO-ключевые слова.
+		const innerBlock = innerPages.length
+			? innerPages.map((p, i) => `=== Внутренняя страница ${i + 1} ===\n${formatPage(p)}`).join('\n\n')
+			: sitemapPages.length
+				? `Найдены страницы (контент недоступен):\n${sitemapPages.slice(0, 15).join('\n')}`
+				: ''
+
+		const contextBlock = context?.trim()
+			? `\n=== Комментарий владельца сайта ===\n"${context.trim()}"\nУчти этот контекст при подборе ключей — он важнее автоматического анализа.\n`
+			: ''
+
+		const pagesList = [
+			mainPage ? { url: mainPage.url, title: mainPage.title } : null,
+			...innerPages.map(p => ({ url: p.url, title: p.title })),
+		].filter(Boolean)
+
+		const pagesJsonExample = pagesList
+			.map(p => `    { "url": "${p!.url}", "title": "${p!.title}", "keywords": [...] }`)
+			.join(',\n')
+
+		return `Ты — SEO-специалист. Твоя задача — подобрать ключевые слова для привлечения покупателей и клиентов через Яндекс и Google.
 
 Сайт: ${siteUrl}
+${contextBlock}
+${mainBlock}
 
-${mainPage ? `Главная страница:
-- Title: ${mainPage.title}
-- Description: ${mainPage.description}
-- H1: ${mainPage.h1.slice(0, 3).join(' | ')}
-- H2: ${mainPage.h2.slice(0, 5).join(' | ')}` : ''}
+${innerBlock}
 
-${pagesInfo ? `Страницы сайта (из sitemap):
-${pagesInfo}` : ''}
+=== ГЛАВНОЕ ПРАВИЛО ===
+Подбирай ТОЛЬКО запросы с коммерческим или транзакционным намерением — те, которые вводит человек, готовый купить, заказать или найти конкретный товар/услугу.
 
-Задача:
-1. Определи тематику сайта и язык контента
-2. Предложи 8-15 SEO-ключевиков для продвижения
-3. Сосредоточься на: long-tail запросах, low-competition, реальных запросах людей
-4. Проверь: если сайт связан с порно/казино/наркотиками/мошенничеством → reject_site: true
+ЗАПРЕЩЕНО включать:
+- "зачем купить", "почему стоит", "что такое", "как работает", "история бренда" — никто не гуглит это перед покупкой
+- абстрактные информационные запросы без привязки к конкретному действию
+- запросы-вопросы ("как", "зачем", "почему"), если они не ведут напрямую к покупке
 
-Для каждого ключа:
-- keyword: сам запрос (как люди реально ищут)
-- competition: 1-10 (1=очень низкая, 10=очень высокая конкуренция)
-- keyword_type: primary/secondary/long_tail/informational/commercial
-- reason: 1 предложение почему этот ключ хорош
+ХОРОШИЕ примеры (покупательский intent):
+- "golden goose купить москва"
+- "кроссовки golden goose цена"
+- "golden goose superstar женские"
+- "купить golden goose оригинал"
+- "golden goose интернет магазин"
 
-Верни строго JSON:
+ПЛОХИЕ примеры (никто не покупает через эти запросы):
+- "зачем покупать golden goose"
+- "что такое golden goose"
+- "история бренда golden goose"
+- "почему golden goose стоит дорого"
+
+=== Задача ===
+Для каждой страницы подбери 4-7 ключей. Итого по сайту: 10-25 уникальных запросов.
+
+Приоритет по типам:
+1. commercial — "купить X", "X цена", "заказать X", "X со скидкой", "X интернет-магазин"
+2. long_tail — конкретные запросы: модель + характеристика + действие, например "golden goose superstar 38 размер купить"
+3. secondary — уточняющие: бренд + категория, материал, цвет, город
+4. primary — общий брендовый/категорийный запрос, только если он реально конкурентоспособен
+
+Запрещённый тип: НЕ включай informational запросы — они не приводят покупателей.
+
+Поля:
+- keyword: запрос строчными буквами, как реальный покупатель вводит в Яндексе
+- competition: 1-10 (1 = почти нет конкуренции, 10 = огромная)
+- keyword_type: primary | secondary | long_tail | commercial
+- reason: одно предложение — почему этот запрос приведёт покупателя именно на эту страницу
+
+Проверь: если сайт связан с порно/казино/наркотиками/мошенничеством — верни reject_site: true.
+
+Верни строго JSON (без markdown, без пояснений):
 {
-  "site": {
-    "topic": "тематика сайта",
-    "language": "ru",
-    "warning": false,
-    "reject_site": false
-  },
+  "site": { "topic": "тематика сайта одной фразой", "language": "ru", "warning": false, "reject_site": false },
   "pages": [
-    {
-      "url": "${siteUrl}",
-      "title": "${mainPage?.title || ''}",
-      "keywords": [
-        {
-          "keyword": "пример запроса",
-          "competition": 3,
-          "keyword_type": "long_tail",
-          "reason": "Низкая конкуренция, реальный запрос"
-        }
-      ]
-    }
+${pagesJsonExample || `    { "url": "${siteUrl}", "title": "", "keywords": [] }`}
   ]
 }`
 	}
