@@ -55,13 +55,11 @@ export class WebsitesService {
 			},
 		})
 
-		try {
-			await this.telegram.sendWebsiteCreatedNotification({
-				userEmail,
-				websiteName: dto.name,
-				websiteUrl: dto.url,
-			})
-		} catch (_) {}
+		this.telegram.sendWebsiteCreatedNotification({
+			userEmail,
+			websiteName: dto.name,
+			websiteUrl: dto.url,
+		}).catch(() => {})
 
 		return website
 	}

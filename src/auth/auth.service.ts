@@ -219,7 +219,7 @@ export class AuthService {
 			}
 		}
 
-		const hashedPassword = await bcrypt.hash(dto.password, 10)
+		const hashedPassword = await bcrypt.hash(dto.password, 8)
 
 		// Генерируем токен для подтверждения email
 		const emailVerificationToken = randomBytes(32).toString('hex')
@@ -267,40 +267,20 @@ export class AuthService {
 
 		const userTypeLabel = mappedUserType ? (userTypeLabelMap[mappedUserType] || mappedUserType) : 'Не указана'
 
-		// Отправка уведомления в Telegram
-		try {
-			console.log('[AuthService] Sending Telegram registration notification...')
-			await this.telegramService.sendRegistrationNotification(
-				user.email,
-				user.city || 'Не указан',
-				user.referralSource || 'Не указан',
-				ipAddress || 'Не определен',
-				user.balance,
-				userTypeLabel,
-			)
-			console.log(
-				'[AuthService] ✅ Telegram registration notification sent successfully',
-			)
-		} catch (error) {
-			console.error(
-				'[AuthService] ❌ Failed to send Telegram notification:',
-				error,
-			)
-			console.error('[AuthService] Error details:', error.message)
-		}
+		// Уведомления отправляем в фоне — не блокируем ответ
+		this.telegramService.sendRegistrationNotification(
+			user.email,
+			user.city || 'Не указан',
+			user.referralSource || 'Не указан',
+			ipAddress || 'Не определен',
+			user.balance,
+			userTypeLabel,
+		).catch(err => console.error('[AuthService] Telegram notification failed:', err.message))
 
-		// Отправка объединенного приветственного письма с подтверждением email
-		try {
-			await this.notificationsService.sendWelcomeAndVerificationEmail(
-				user.email,
-				emailVerificationToken,
-			)
-			console.log(
-				`[AuthService] Welcome + verification email sent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
-			)
-		} catch (error) {
-			console.error('[AuthService] Failed to send welcome email:', error)
-		}
+		this.notificationsService.sendWelcomeAndVerificationEmail(
+			user.email,
+			emailVerificationToken,
+		).catch(err => console.error('[AuthService] Welcome email failed:', err.message))
 
 		const token = this.generateToken(user.id, user.email)
 
@@ -382,15 +362,8 @@ export class AuthService {
 			},
 		})
 
-		// Отправляем email
-		try {
-			await this.notificationsService.sendPasswordResetEmail(email, resetToken)
-			console.log(
-				`[AuthService] Password reset email sent to: ${email.split('@')[0]}***@${email.split('@')[1]}`,
-			)
-		} catch (error) {
-			console.error('[AuthService] Failed to send password reset email:', error)
-		}
+		this.notificationsService.sendPasswordResetEmail(email, resetToken)
+			.catch(err => console.error('[AuthService] Password reset email failed:', err.message))
 
 		return {
 			message: 'Если email существует, письмо с инструкциями отправлено',
@@ -483,19 +456,10 @@ export class AuthService {
 			data: { emailVerificationToken },
 		})
 
-		// Отправляем email
-		try {
-			await this.notificationsService.sendEmailVerification(
-				user.email,
-				emailVerificationToken,
-			)
-			console.log(
-				`[AuthService] Verification email resent to: ${user.email.split('@')[0]}***@${user.email.split('@')[1]}`,
-			)
-		} catch (error) {
-			console.error('[AuthService] Failed to resend verification email:', error)
-			throw new BadRequestException('Не удалось отправить письмо')
-		}
+		this.notificationsService.sendEmailVerification(
+			user.email,
+			emailVerificationToken,
+		).catch(err => console.error('[AuthService] Verification email failed:', err.message))
 
 		return {
 			success: true,
