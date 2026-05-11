@@ -481,13 +481,6 @@ export class NotificationsService {
 				</div>`
 				}
 
-				<!-- CTA Button -->
-				<div style="text-align: center; margin: 50px 0;">
-					<a href="https://skyseo.site/dashboard" style="display: inline-block; background: #007dff; color: #ffffff; padding: 16px 40px; text-decoration: none; font-weight: 500; font-size: 14px; letter-spacing: 1px; text-transform: uppercase; border: 2px solid #181818;">
-						Открыть панель управления
-					</a>
-				</div>
-
 				<!-- Unsubscribe Notice -->
 				<p style="color: #666666; font-size: 12px; text-align: center; margin: 30px 0 0 0;">
 					Вы получаете этот отчёт каждый понедельник. Отписаться можно в настройках профиля.
