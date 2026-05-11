@@ -32,6 +32,10 @@ export class WebsitesService {
 	private async checkSiteReachable(url: string): Promise<void> {
 		const normalized = url.trim().replace(/\/$/, '')
 		const siteUrl = /^https?:\/\//i.test(normalized) ? normalized : 'https://' + normalized
+
+		// Localhost пропускаем — нужен для локальной разработки
+		if (/^https?:\/\/localhost(:\d+)?/i.test(siteUrl)) return
+
 		const controller = new AbortController()
 		const timeout = setTimeout(() => controller.abort(), 8000)
 		try {

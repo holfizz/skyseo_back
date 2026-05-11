@@ -111,6 +111,7 @@ export class AiService {
 	}
 
 	private async assertSiteReachable(siteUrl: string): Promise<void> {
+		if (process.env.NODE_ENV !== 'production') return
 		const controller = new AbortController()
 		const timeout = setTimeout(() => controller.abort(), 6000)
 		try {
