@@ -4,7 +4,7 @@ import helmet from 'helmet'
 import { AppModule } from './app.module'
 
 async function bootstrap() {
-	const app = await NestFactory.create(AppModule, { logger: false })
+	const app = await NestFactory.create(AppModule)
 
 	// Trust proxy для получения реального IP через заголовки
 	// Доверяем всем прокси в Docker сети (172.x.x.x) и локальным адресам
@@ -50,4 +50,7 @@ async function bootstrap() {
 	console.log(`🚀 Server running on http://localhost:${port}/v1/api`)
 }
 
-bootstrap()
+bootstrap().catch(err => {
+	console.error('❌ Failed to start application:', err)
+	process.exit(1)
+})
