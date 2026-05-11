@@ -54,27 +54,6 @@ export class TelegramService {
 			console.log(
 				`✅ Telegram bot connected successfully: @${(botInfo as any).username}`,
 			)
-
-			// Запускаем бота для обработки команд
-			this.bot.launch().catch(err => {
-				console.error('❌ Failed to launch bot:', err)
-			})
-
-			// Отправляем тестовое сообщение при инициализации (только в dev режиме)
-			if (
-				this.configService.get('NODE_ENV') === 'development' &&
-				this.adminId
-			) {
-				try {
-					console.log('✅ Test message sent to admin')
-				} catch (testError) {
-					console.error('❌ Failed to send test message:', testError.message)
-				}
-			}
-
-			// Graceful shutdown
-			process.once('SIGINT', () => this.bot?.stop('SIGINT'))
-			process.once('SIGTERM', () => this.bot?.stop('SIGTERM'))
 		} catch (error) {
 			console.log('⚠️ Telegram bot connection failed:', error.message)
 			console.log('⚠️ Telegram notifications disabled')
@@ -134,31 +113,13 @@ export class TelegramService {
 		try {
 			const extra: any = { parse_mode: 'HTML' }
 			if (threadId) extra.message_thread_id = threadId
-			await this.bot.telegram.sendMessage(targetId, message, extra)
-			console.log('[TelegramService] Message sent successfully')
-		} catch (error) {
-			console.error(
-				'[TelegramService] Failed to send notification:',
-				error.message,
+			const sendPromise = this.bot.telegram.sendMessage(targetId, message, extra)
+			const timeoutPromise = new Promise((_, reject) =>
+				setTimeout(() => reject(new Error('send timeout')), 5000),
 			)
-			console.error('[TelegramService] Full error:', error)
-
-			// Если ошибка связана с сетью, пытаемся переподключиться
-			if (
-				error.message.includes('ECONNRESET') ||
-				error.message.includes('ENOTFOUND') ||
-				error.message.includes('timeout')
-			) {
-				console.log('🔄 Telegram: Network error, attempting reconnect...')
-
-				// Переинициализируем бота
-				const token = this.configService.get('TELEGRAM_BOT_TOKEN')
-				if (token) {
-					setTimeout(() => {
-						this.initializeBot(token)
-					}, 5000) // Ждем 5 секунд перед переподключением
-				}
-			}
+			await Promise.race([sendPromise, timeoutPromise])
+		} catch (error) {
+			console.error('[TelegramService] Failed to send notification:', error.message)
 		}
 	}
 
