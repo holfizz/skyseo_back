@@ -30,6 +30,7 @@ model User {
   lastFailedLogin        DateTime? // Последняя неудачная попытка
   appVersion             String? // Версия приложения пользователя
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
+  aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -40,6 +41,7 @@ model User {
   passwordResetTokens PasswordResetToken[]
   captchaEvents       CaptchaEvent[]
 
+  @@index([registrationIp, createdAt])
   @@map("users")
 }
 
@@ -57,6 +59,7 @@ model Website {
   tasks      Task[]
   statistics Statistic[]
 
+  @@index([userId])
   @@map("websites")
 }
 
@@ -185,6 +188,7 @@ model BalanceHistory {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, createdAt])
   @@map("balance_history")
 }
 
@@ -202,6 +206,7 @@ model Payment {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@map("payments")
 }
 

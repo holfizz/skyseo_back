@@ -29,8 +29,32 @@ export class WebsitesService {
 		private telegram: TelegramService,
 	) {}
 
+	private async checkSiteReachable(url: string): Promise<void> {
+		const normalized = url.trim().replace(/\/$/, '')
+		const siteUrl = /^https?:\/\//i.test(normalized) ? normalized : 'https://' + normalized
+		const controller = new AbortController()
+		const timeout = setTimeout(() => controller.abort(), 8000)
+		try {
+			const res = await fetch(siteUrl, {
+				method: 'HEAD',
+				signal: controller.signal,
+				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SkySEO-Bot/1.0)' },
+			})
+			if (res.status === 404 || res.status >= 500) {
+				throw new BadRequestException(`Сайт недоступен (HTTP ${res.status}). Проверьте URL.`)
+			}
+		} catch (err) {
+			if (err instanceof BadRequestException) throw err
+			throw new BadRequestException('Сайт не отвечает. Проверьте правильность URL.')
+		} finally {
+			clearTimeout(timeout)
+		}
+	}
+
 	async create(userId: string, userEmail: string, dto: CreateWebsiteDto) {
 		validateWebsiteUrl(dto.url)
+
+		await this.checkSiteReachable(dto.url)
 
 		// Проверка на существующий сайт с таким же URL у этого пользователя
 		const existingWebsite = await this.prisma.website.findFirst({

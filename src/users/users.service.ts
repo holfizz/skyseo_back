@@ -92,12 +92,8 @@ export class UsersService {
 			},
 		})
 
-		// Проверка низкого баланса
 		if (user.balance < 100 && amount < 0) {
-			await this.notificationsService.sendLowBalanceEmail(
-				user.email,
-				user.balance,
-			)
+			this.notificationsService.sendLowBalanceEmail(user.email, user.balance).catch(() => {})
 		}
 
 		return user

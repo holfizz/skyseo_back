@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { AiService } from './ai.service'
 
@@ -8,9 +8,9 @@ export class AiController {
 	constructor(private aiService: AiService) {}
 
 	@Post('analyze-site')
-	analyzeSite(@Body('url') url: string, @Body('context') context?: string) {
+	analyzeSite(@Request() req, @Body('url') url: string, @Body('context') context?: string) {
 		if (!url) throw new Error('url is required')
-		return this.aiService.analyzeSite(url, context)
+		return this.aiService.analyzeSite(url, context, req.user.id)
 	}
 
 	@Get('sitemap')

@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
 import OpenAI from 'openai'
+import { PrismaService } from '../prisma/prisma.service'
 
 interface PageContent {
 	url: string
@@ -43,7 +44,9 @@ const FORBIDDEN_URL_PATTERNS = [
 export class AiService {
 	private openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-	async analyzeSite(url: string, context?: string): Promise<AnalyzeResult> {
+	constructor(private prisma: PrismaService) {}
+
+	async analyzeSite(url: string, context?: string, userId?: string): Promise<AnalyzeResult> {
 		const siteUrl = this.normalizeUrl(url)
 
 		// Check forbidden URL
@@ -57,6 +60,9 @@ export class AiService {
 				}
 			}
 		}
+
+		// Сначала быстрая проверка — существует ли сайт вообще
+		await this.assertSiteReachable(siteUrl)
 
 		// Fetch main page + indexing check + sitemap in parallel
 		const [mainPage, warning, sitemapPages] = await Promise.all([
@@ -90,9 +96,43 @@ export class AiService {
 			const parsed = JSON.parse(raw) as AnalyzeResult
 			parsed.site.warning = warning
 			parsed.sitemapPages = sitemapPages.slice(0, 50)
+
+			if (userId) {
+				this.prisma.user.update({
+					where: { id: userId },
+					data: { aiAnalysesCount: { increment: 1 } },
+				}).catch(() => {})
+			}
+
 			return parsed
 		} catch (err) {
 			throw new BadRequestException('Ошибка анализа сайта через AI: ' + (err as Error).message)
+		}
+	}
+
+	private async assertSiteReachable(siteUrl: string): Promise<void> {
+		const controller = new AbortController()
+		const timeout = setTimeout(() => controller.abort(), 6000)
+		try {
+			const res = await fetch(siteUrl, {
+				method: 'HEAD',
+				signal: controller.signal,
+				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SkySEO-Bot/1.0)' },
+			})
+			// 4xx клиентские ошибки (кроме 404) могут быть редиректами или защитой — пропускаем
+			// 404 и 5xx — сайт не работает
+			if (res.status === 404 || res.status >= 500) {
+				throw new BadRequestException(
+					`Сайт недоступен (HTTP ${res.status}). Проверьте URL и убедитесь, что сайт работает.`,
+				)
+			}
+		} catch (err) {
+			if (err instanceof BadRequestException) throw err
+			throw new BadRequestException(
+				'Сайт не отвечает. Проверьте правильность URL и убедитесь, что сайт работает.',
+			)
+		} finally {
+			clearTimeout(timeout)
 		}
 	}
 

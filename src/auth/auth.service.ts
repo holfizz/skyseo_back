@@ -307,15 +307,13 @@ export class AuthService {
 			throw new UnauthorizedException('Account is disabled')
 		}
 
-		// Сброс счетчика неудачных попыток
-		await this.usersService.resetFailedLogin(user.id)
-
-		// Обновляем версию приложения если передана
+		// Не блокируем ответ — обновляем в фоне
+		this.usersService.resetFailedLogin(user.id).catch(() => {})
 		if (dto.appVersion) {
-			await this.prisma.user.update({
+			this.prisma.user.update({
 				where: { id: user.id },
 				data: { appVersion: dto.appVersion },
-			})
+			}).catch(() => {})
 		}
 
 		const token = this.generateToken(user.id, user.email)
