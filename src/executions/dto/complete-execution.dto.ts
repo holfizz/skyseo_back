@@ -25,6 +25,22 @@ export class CompleteExecutionDto {
 	@Min(1)
 	googlePosition?: number
 
+	@IsOptional()
+	@IsBoolean()
+	yandexCompleted?: boolean
+
+	@IsOptional()
+	@IsBoolean()
+	googleCompleted?: boolean
+
+	@IsOptional()
+	@IsBoolean()
+	yandexFoundInTop?: boolean
+
+	@IsOptional()
+	@IsBoolean()
+	googleFoundInTop?: boolean
+
 	@IsInt()
 	@Min(0)
 	pagesVisited: number

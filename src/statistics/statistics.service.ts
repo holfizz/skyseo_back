@@ -99,88 +99,159 @@ export class StatisticsService {
 		const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
 
 		// Получаем статистику из executions (выполненные задачи)
-		const [
-			searchesCompleted24h,
-			searchesCompletedTotal,
-			searchesReceived24h,
-			searchesReceivedTotal,
-			visitsCompleted24h,
-			visitsCompletedTotal,
-		] = await Promise.all([
-			// Поиски выполнил за 24 часа
-			this.prisma.execution.count({
-				where: {
-					executorId: userId,
-					status: 'COMPLETED',
-					createdAt: { gte: oneDayAgo },
-				},
-			}),
-			// Поиски выполнил всего
-			this.prisma.execution.count({
-				where: {
-					executorId: userId,
-					status: 'COMPLETED',
-				},
-			}),
-			// Поиски получил за 24 часа (через задачи пользователя)
-			this.prisma.execution.count({
-				where: {
+			const [
+				yandexCompleted24h,
+				googleCompleted24h,
+				yandexCompletedTotal,
+				googleCompletedTotal,
+				yandexReceived24h,
+				googleReceived24h,
+				yandexReceivedTotal,
+				googleReceivedTotal,
+				yandexVisits24h,
+				googleVisits24h,
+				yandexVisitsTotal,
+				googleVisitsTotal,
+			] = await Promise.all([
+				// Поиски выполнил за 24 часа — считаем каждый движок отдельно
+				this.prisma.execution.count({
+					where: {
+						executorId: userId,
+						status: 'COMPLETED',
+						yandexFoundInTop: { not: null },
+						createdAt: { gte: oneDayAgo },
+					},
+				}),
+				this.prisma.execution.count({
+					where: {
+						executorId: userId,
+						status: 'COMPLETED',
+						googleFoundInTop: { not: null },
+						createdAt: { gte: oneDayAgo },
+					},
+				}),
+				// Поиски выполнил всего
+				this.prisma.execution.count({
+					where: {
+						executorId: userId,
+						status: 'COMPLETED',
+						yandexFoundInTop: { not: null },
+					},
+				}),
+				this.prisma.execution.count({
+					where: {
+						executorId: userId,
+						status: 'COMPLETED',
+						googleFoundInTop: { not: null },
+					},
+				}),
+				// Поиски получил за 24 часа (через задачи пользователя)
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
+						},
+						status: 'COMPLETED',
+						yandexFoundInTop: { not: null },
+						createdAt: { gte: oneDayAgo },
+					},
+				}),
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
+						},
+						status: 'COMPLETED',
+						googleFoundInTop: { not: null },
+						createdAt: { gte: oneDayAgo },
+					},
+				}),
+				// Поиски получил всего
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
+						},
+						status: 'COMPLETED',
+						yandexFoundInTop: { not: null },
+					},
+				}),
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
+						},
+						status: 'COMPLETED',
+						googleFoundInTop: { not: null },
+					},
+				}),
+				// Посещения получил за 24 часа (считаем как задачи с найденными сайтами)
+				this.prisma.execution.count({
+					where: {
 					task: {
 						website: {
 							userId: userId,
 						},
-					},
-					status: 'COMPLETED',
-					createdAt: { gte: oneDayAgo },
-				},
-			}),
-			// Поиски получил всего
-			this.prisma.execution.count({
-				where: {
-					task: {
-						website: {
-							userId: userId,
 						},
+						status: 'COMPLETED',
+						yandexFoundInTop: true,
+						createdAt: { gte: oneDayAgo },
 					},
-					status: 'COMPLETED',
-				},
-			}),
-			// Посещения получил за 24 часа (считаем как задачи с найденными сайтами)
-			this.prisma.execution.count({
-				where: {
-					task: {
-						website: {
-							userId: userId,
+				}),
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
 						},
+						status: 'COMPLETED',
+						googleFoundInTop: true,
+						createdAt: { gte: oneDayAgo },
 					},
-					status: 'COMPLETED',
-					foundInTop: true,
-					createdAt: { gte: oneDayAgo },
-				},
-			}),
-			// Посещения получил всего
-			this.prisma.execution.count({
-				where: {
-					task: {
-						website: {
-							userId: userId,
+				}),
+				// Посещения получил всего
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
 						},
+						status: 'COMPLETED',
+						yandexFoundInTop: true,
 					},
-					status: 'COMPLETED',
-					foundInTop: true,
-				},
-			}),
-		])
+				}),
+				this.prisma.execution.count({
+					where: {
+						task: {
+							website: {
+								userId: userId,
+							},
+						},
+						status: 'COMPLETED',
+						googleFoundInTop: true,
+					},
+				}),
+			])
 
-		return {
-			searchesCompleted24h,
-			searchesReceived24h,
-			visitsCompleted24h,
-			searchesCompletedTotal,
-			searchesReceivedTotal,
-			visitsCompletedTotal,
+			return {
+				searchesCompleted24h: yandexCompleted24h + googleCompleted24h,
+				searchesReceived24h: yandexReceived24h + googleReceived24h,
+				visitsCompleted24h: yandexVisits24h + googleVisits24h,
+				searchesCompletedTotal: yandexCompletedTotal + googleCompletedTotal,
+				searchesReceivedTotal: yandexReceivedTotal + googleReceivedTotal,
+				visitsCompletedTotal: yandexVisitsTotal + googleVisitsTotal,
+			}
 		}
-	}
 
 	async getWebsiteSeoStats(websiteId: string, userId: string) {
 		const website = await this.prisma.website.findUnique({

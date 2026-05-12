@@ -142,6 +142,12 @@ export class TasksService {
 			where: {
 				isActive: true,
 				status: 'PENDING',
+				executions: {
+					none: {
+						executorId,
+						status: 'COMPLETED',
+					},
+				},
 				website: {
 					isActive: true,
 					userId: { not: executorId },
@@ -185,24 +191,22 @@ export class TasksService {
 		return task
 	}
 
-	// Получить начало текущей недели (понедельник 00:00)
-	private getWeekStart(date: Date = new Date()): Date {
-		const d = new Date(date)
-		const day = d.getDay()
-		const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Понедельник
-		d.setDate(diff)
-		d.setHours(0, 0, 0, 0)
-		return d
-	}
-
 	async getAvailableTasks(executorId: string, limit: number = 10) {
-		const weekStart = this.getWeekStart()
+		const safeLimit = Math.max(1, Math.min(limit, 100))
 
-		// Получаем все активные задачи со статусом PENDING, отсортированные по дате создания (FIFO)
+		// Получаем только задачи, которые этот исполнитель ещё не закрывал.
+		// Если task уже был выполнен пользователем в браузере, он больше не должен
+		// попадать ни в счётчик, ни в очередь автоматизации.
 		const allTasks = await this.prisma.task.findMany({
 			where: {
 				isActive: true,
 				status: 'PENDING',
+				executions: {
+					none: {
+						executorId,
+						status: 'COMPLETED',
+					},
+				},
 				website: {
 					isActive: true,
 					userId: { not: executorId },
@@ -215,55 +219,34 @@ export class TasksService {
 						user: true,
 					},
 				},
-				executions: {
-					where: {
-						executorId: executorId,
-						weekStart: weekStart,
-						status: 'COMPLETED',
-					},
-				},
 			},
 			orderBy: { createdAt: 'asc' }, // FIFO - кто первый создал
+			take: safeLimit,
 		})
 
-		// Группируем задачи по websiteId и считаем выполнения за текущую неделю
-		const websiteExecutionCount = new Map<string, number>()
 		const availableTasks = []
 
 		for (const task of allTasks) {
 			// Дополнительная защита: никогда не возвращаем собственные задачи
 			if (task.website.userId === executorId) continue
-			const websiteId = task.websiteId
-
-			// Проверяем: сколько раз пользователь выполнял задачи этого сайта на этой неделе
-			const executionsThisWeek = task.executions.length
-
-			// Максимум 2 выполнения на сайт в неделю
-			if (executionsThisWeek < 2) {
-				availableTasks.push({
-					id: task.id,
-					websiteId: task.websiteId,
-					websiteName: task.website.name,
-					websiteUrl: task.website.url,
-					keyword: task.keyword,
-					type: task.type,
-						geo: task.geo,
-						pointsEarned: 15, // Максимальная награда (если найдено)
-						minPointsEarned: 5, // Минимальная награда (если не найдено)
-						maxYandexVisits: task.maxYandexVisits,
-						maxGoogleVisits: task.maxGoogleVisits,
-						useYandex: task.useYandex,
-						useGoogle: task.useGoogle,
-						createdAt: task.createdAt,
-						executionsThisWeek: executionsThisWeek,
-					remainingExecutions: 2 - executionsThisWeek,
-				})
-
-				// Ограничиваем количество задач
-				if (availableTasks.length >= limit) {
-					break
-				}
-			}
+			availableTasks.push({
+				id: task.id,
+				websiteId: task.websiteId,
+				websiteName: task.website.name,
+				websiteUrl: task.website.url,
+				keyword: task.keyword,
+				type: task.type,
+				geo: task.geo,
+				pointsEarned: 15, // Максимальная награда за один поисковик (если найдено)
+				minPointsEarned: 5, // Минимальная награда за один поисковик (если не найдено)
+				maxYandexVisits: task.maxYandexVisits,
+				maxGoogleVisits: task.maxGoogleVisits,
+				useYandex: task.useYandex,
+				useGoogle: task.useGoogle,
+				createdAt: task.createdAt,
+				alreadyCompleted: false,
+				remainingExecutions: 1,
+			})
 		}
 
 		return availableTasks
@@ -362,6 +345,18 @@ export class TasksService {
 
 				if (task.website.userId === executorId) {
 					throw new BadRequestException('Cannot assign own task')
+				}
+
+				const alreadyCompleted = await prisma.execution.count({
+					where: {
+						taskId,
+						executorId,
+						status: 'COMPLETED',
+					},
+				})
+
+				if (alreadyCompleted > 0) {
+					throw new BadRequestException('Task already completed by this user')
 				}
 
 				// Обновляем статус задачи на ASSIGNED
