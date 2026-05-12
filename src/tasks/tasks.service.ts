@@ -247,13 +247,15 @@ export class TasksService {
 					websiteUrl: task.website.url,
 					keyword: task.keyword,
 					type: task.type,
-					geo: task.geo,
-					pointsEarned: 15, // Максимальная награда (если найдено)
-					minPointsEarned: 5, // Минимальная награда (если не найдено)
-					maxYandexVisits: task.maxYandexVisits,
-					maxGoogleVisits: task.maxGoogleVisits,
-					createdAt: task.createdAt,
-					executionsThisWeek: executionsThisWeek,
+						geo: task.geo,
+						pointsEarned: 15, // Максимальная награда (если найдено)
+						minPointsEarned: 5, // Минимальная награда (если не найдено)
+						maxYandexVisits: task.maxYandexVisits,
+						maxGoogleVisits: task.maxGoogleVisits,
+						useYandex: task.useYandex,
+						useGoogle: task.useGoogle,
+						createdAt: task.createdAt,
+						executionsThisWeek: executionsThisWeek,
 					remainingExecutions: 2 - executionsThisWeek,
 				})
 

@@ -12,7 +12,12 @@ import {
 } from '@nestjs/common'
 import { SkipThrottle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
-import { CompleteExecutionDto, StartExecutionDto } from './dto'
+import {
+	CompleteExecutionDto,
+	FailExecutionDto,
+	LogExecutionEventDto,
+	StartExecutionDto,
+} from './dto'
 import { ExecutionsService } from './executions.service'
 
 @SkipThrottle({ short: true, medium: true })
@@ -39,6 +44,20 @@ export class ExecutionsController {
 	@Put(':id/complete')
 	async complete(@Param('id') id: string, @Body() dto: CompleteExecutionDto) {
 		return this.executionsService.completeExecution(id, dto)
+	}
+
+	@Put(':id/fail')
+	async fail(@Param('id') id: string, @Body() dto: FailExecutionDto) {
+		return this.executionsService.failExecution(id, dto)
+	}
+
+	@Post(':id/events')
+	async logEvent(
+		@Param('id') id: string,
+		@Request() req,
+		@Body() dto: LogExecutionEventDto,
+	) {
+		return this.executionsService.logExecutionEvent(id, req.user.id, dto)
 	}
 
 	@Get('history')

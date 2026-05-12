@@ -110,6 +110,9 @@ model Execution {
   yandexPosition   Int?
   googlePosition   Int?
   failureReason    FailureReason?
+  targetVisited     Boolean         @default(false)
+  directNavigationUsed Boolean      @default(false)
+  completionKind    ExecutionCompletionKind?
   pagesVisited  Int             @default(0)
   duration      Int             @default(0)
   ipAddress     String?
@@ -120,9 +123,29 @@ model Execution {
 
   task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   executor User @relation(fields: [executorId], references: [id], onDelete: Cascade)
+  events   ExecutionEvent[]
 
   @@index([executorId, websiteId, weekStart])
   @@map("executions")
+}
+
+model ExecutionEvent {
+  id          String   @id @default(uuid())
+  executionId String?
+  taskId      String?
+  executorId  String?
+  engine      String?
+  type        String
+  stage       String
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  execution Execution? @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId, createdAt])
+  @@index([taskId, createdAt])
+  @@index([executorId, createdAt])
+  @@map("execution_events")
 }
 
 model CaptchaEvent {
@@ -270,6 +293,12 @@ enum ExecutionStatus {
   IN_PROGRESS
   COMPLETED
   FAILED
+}
+
+enum ExecutionCompletionKind {
+  NORMAL
+  DEGRADED
+  SKIPPED
 }
 
 enum BalanceHistoryType {

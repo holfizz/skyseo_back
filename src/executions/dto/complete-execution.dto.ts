@@ -1,4 +1,10 @@
-import { IsBoolean, IsInt, IsOptional, Min } from 'class-validator'
+import { IsBoolean, IsEnum, IsInt, IsOptional, Min } from 'class-validator'
+
+export enum ExecutionCompletionKindDto {
+	NORMAL = 'NORMAL',
+	DEGRADED = 'DEGRADED',
+	SKIPPED = 'SKIPPED',
+}
 
 export class CompleteExecutionDto {
 	@IsBoolean()
@@ -22,6 +28,18 @@ export class CompleteExecutionDto {
 	@IsInt()
 	@Min(0)
 	pagesVisited: number
+
+	@IsOptional()
+	@IsBoolean()
+	targetVisited?: boolean
+
+	@IsOptional()
+	@IsBoolean()
+	directNavigationUsed?: boolean
+
+	@IsOptional()
+	@IsEnum(ExecutionCompletionKindDto)
+	completionKind?: ExecutionCompletionKindDto
 
 	@IsInt()
 	@Min(0)

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
-import { CompleteExecutionDto } from './dto'
+import { CompleteExecutionDto, FailExecutionDto, LogExecutionEventDto } from './dto'
 
 @Injectable()
 export class ExecutionsService {
@@ -84,9 +84,13 @@ export class ExecutionsService {
 			},
 		})
 
-		if (!execution) {
-			throw new Error('Execution not found')
-		}
+			if (!execution) {
+				throw new Error('Execution not found')
+			}
+
+			if (execution.status !== 'IN_PROGRESS') {
+				return execution
+			}
 
 		// ЗАЩИТА: Проверка минимальной длительности
 		if (dto.duration < 30) {
@@ -140,86 +144,192 @@ export class ExecutionsService {
 			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
 			: `Переход по ссылке ${execution.task.externalUrl}`
 
-		const ownerBalance = execution.task.website.user.balance
-		if (ownerBalance < pointsSpent) {
-			console.log(
-				`[ExecutionsService] Недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Задача деактивируется.`,
-			)
-			await this.prisma.task.update({
-				where: { id: execution.taskId },
-				data: { isActive: false, status: 'PENDING' },
+			const earnedDescription = dto.foundInTop
+				? `${taskDescription} (найдено в поиске)`
+				: `${taskDescription} (не найдено в поиске)`
+			const spentDescription = dto.foundInTop
+				? `Задача выполнена: ${taskDescription} (найдено в поиске)`
+				: `Задача выполнена: ${taskDescription} (не найдено в поиске)`
+
+			const shouldSavePosition =
+				execution.task.type === 'SEARCH_KEYWORD' ||
+				execution.task.type === 'SEARCH_AND_VISIT'
+
+			const updatedExecution = await this.prisma.$transaction(async tx => {
+				const owner = await tx.user.findUnique({
+					where: { id: execution.task.website.userId },
+					select: { balance: true },
+				})
+				const ownerBalance = owner?.balance ?? 0
+				if (ownerBalance < pointsSpent) {
+					console.log(
+						`[ExecutionsService] Недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Задача деактивируется.`,
+					)
+					await tx.task.update({
+						where: { id: execution.taskId },
+						data: { isActive: false, status: 'PENDING' },
+					})
+					throw new Error('Недостаточно баллов у владельца сайта. Задача деактивирована.')
+				}
+
+				const claimed = await tx.execution.updateMany({
+					where: { id: executionId, status: 'IN_PROGRESS' },
+					data: {
+						status: 'COMPLETED',
+						foundInTop: dto.foundInTop,
+						position: dto.position,
+						yandexFoundInTop: dto.yandexPosition != null,
+						googleFoundInTop: dto.googlePosition != null,
+						yandexPosition: dto.yandexPosition,
+						googlePosition: dto.googlePosition,
+						targetVisited: dto.targetVisited ?? false,
+						directNavigationUsed: dto.directNavigationUsed ?? false,
+						completionKind: dto.completionKind ?? 'NORMAL',
+						pagesVisited: dto.pagesVisited,
+						duration: dto.duration,
+						completedAt: new Date(),
+						pointsEarned,
+						pointsSpent,
+					},
+				})
+
+				if (claimed.count !== 1) {
+					return tx.execution.findUnique({ where: { id: executionId } })
+				}
+
+				await tx.user.update({
+					where: { id: execution.executorId },
+					data: { balance: { increment: pointsEarned } },
+				})
+				await tx.balanceHistory.create({
+					data: {
+						userId: execution.executorId,
+						amount: pointsEarned,
+						type: 'TASK_EARNED',
+						description: earnedDescription,
+						taskId: execution.taskId,
+					},
+				})
+
+				await tx.user.update({
+					where: { id: execution.task.website.userId },
+					data: { balance: { increment: -pointsSpent } },
+				})
+				await tx.balanceHistory.create({
+					data: {
+						userId: execution.task.website.userId,
+						amount: -pointsSpent,
+						type: 'TASK_SPENT',
+						description: spentDescription,
+						taskId: execution.taskId,
+					},
+				})
+
+				await tx.task.update({
+					where: { id: execution.taskId },
+					data: { status: 'PENDING' },
+				})
+
+				if (
+					shouldSavePosition &&
+					(dto.yandexPosition || dto.googlePosition || dto.position)
+				) {
+					await tx.positionHistory.create({
+						data: {
+							taskId: execution.taskId,
+							yandexPosition: dto.yandexPosition ?? dto.position ?? null,
+							googlePosition: dto.googlePosition ?? dto.position ?? null,
+						},
+					})
+				}
+
+				return tx.execution.findUnique({ where: { id: executionId } })
 			})
-			throw new Error('Недостаточно баллов у владельца сайта. Задача деактивирована.')
+
+			console.log(`[ExecutionsService] Execution ${executionId} completed idempotently`)
+			return updatedExecution
 		}
 
-		const updatedExecution = await this.prisma.execution.update({
-			where: { id: executionId },
-			data: {
-				status: 'COMPLETED',
-				foundInTop: dto.foundInTop,
-				position: dto.position,
-				pagesVisited: dto.pagesVisited,
-				duration: dto.duration,
-				completedAt: new Date(),
-				pointsEarned,
-				pointsSpent,
+		async failExecution(executionId: string, dto: FailExecutionDto) {
+			const execution = await this.prisma.execution.findUnique({
+				where: { id: executionId },
+				select: { id: true, taskId: true, status: true },
+			})
+
+			if (!execution) {
+				throw new Error('Execution not found')
+			}
+
+			if (execution.status !== 'IN_PROGRESS') {
+				return execution
+			}
+
+			const updatedExecution = await this.prisma.$transaction(async tx => {
+				const claimed = await tx.execution.updateMany({
+					where: { id: executionId, status: 'IN_PROGRESS' },
+					data: {
+						status: 'FAILED',
+						foundInTop: false,
+						failureReason: dto.failureReason,
+						targetVisited: dto.targetVisited ?? false,
+						directNavigationUsed: dto.directNavigationUsed ?? false,
+						completionKind: 'SKIPPED',
+						pagesVisited: dto.pagesVisited ?? 0,
+						duration: dto.duration ?? 0,
+						completedAt: new Date(),
+					},
+				})
+
+				if (claimed.count !== 1) {
+					return tx.execution.findUnique({ where: { id: executionId } })
+				}
+
+				await tx.task.update({
+					where: { id: execution.taskId },
+					data: { status: 'PENDING' },
+				})
+
+				return tx.execution.findUnique({ where: { id: executionId } })
+			})
+
+			console.log(
+			`[ExecutionsService] Execution ${executionId} FAILED (${dto.failureReason}), task ${execution.taskId} returned to PENDING`,
+		)
+
+		return updatedExecution
+	}
+
+	async logExecutionEvent(
+		executionId: string,
+		executorId: string,
+		dto: LogExecutionEventDto,
+	) {
+		const execution = await this.prisma.execution.findFirst({
+			where: {
+				id: executionId,
+				executorId,
+			},
+			select: {
+				id: true,
+				taskId: true,
 			},
 		})
 
-		const earnedDescription = dto.foundInTop
-			? `${taskDescription} (найдено в поиске)`
-			: `${taskDescription} (не найдено в поиске)`
-
-		await this.usersService.updateBalance(
-			execution.executorId,
-			pointsEarned,
-			'TASK_EARNED',
-			earnedDescription,
-			execution.taskId,
-		)
-		console.log(`[ExecutionsService] Начислено ${pointsEarned} баллов исполнителю`)
-
-		const spentDescription = dto.foundInTop
-			? `Задача выполнена: ${taskDescription} (найдено в поиске)`
-			: `Задача выполнена: ${taskDescription} (не найдено в поиске)`
-
-		await this.usersService.updateBalance(
-			execution.task.website.userId,
-			-pointsSpent,
-			'TASK_SPENT',
-			spentDescription,
-			execution.taskId,
-		)
-		console.log(`[ExecutionsService] Списано ${pointsSpent} баллов с владельца`)
-
-		await this.prisma.task.update({
-			where: { id: execution.taskId },
-			data: { status: 'PENDING' },
-		})
-		console.log(`[ExecutionsService] Задача ${execution.taskId} сброшена в PENDING`)
-
-		// Сохраняем историю позиций (для SEARCH_KEYWORD и SEARCH_AND_VISIT)
-		const shouldSavePosition =
-			execution.task.type === 'SEARCH_KEYWORD' ||
-			execution.task.type === 'SEARCH_AND_VISIT'
-
-		if (
-			shouldSavePosition &&
-			(dto.yandexPosition || dto.googlePosition || dto.position)
-		) {
-			await this.prisma.positionHistory.create({
-				data: {
-					taskId: execution.taskId,
-					yandexPosition: dto.yandexPosition ?? dto.position ?? null,
-					googlePosition: dto.googlePosition ?? dto.position ?? null,
-				},
-			})
-			console.log(
-				`[ExecutionsService] ✅ История позиций сохранена: Яндекс=${dto.yandexPosition ?? dto.position ?? 'нет'}, Google=${dto.googlePosition ?? dto.position ?? 'нет'}`,
-			)
+		if (!execution) {
+			throw new Error('Execution not found')
 		}
 
-		return updatedExecution
+		return this.prisma.executionEvent.create({
+			data: {
+				executionId,
+				taskId: dto.taskId ?? execution.taskId,
+				executorId,
+				engine: dto.engine,
+				type: dto.type,
+				stage: dto.stage,
+				details: dto.details as any,
+			},
+		})
 	}
 
 	async getExecutionHistory(userId: string, limit = 50) {
