@@ -1,12 +1,14 @@
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { TelegramService } from '../telegram/telegram.service'
 
 @Injectable()
 export class TaskSchedulerService implements OnModuleInit {
 	constructor(
 		private prisma: PrismaService,
 		private notifications: NotificationsService,
+		private telegram: TelegramService,
 	) {}
 
 	onModuleInit() {
@@ -19,19 +21,22 @@ export class TaskSchedulerService implements OnModuleInit {
 
 		// Еженедельный отчёт — каждый понедельник в 09:00
 		this.scheduleWeeklyReports()
+
+		// Дневной TG-отчёт — каждый день в 23:00 МСК (20:00 UTC)
+		this.scheduleDailyTelegramReport()
 	}
 
-	private async resetStuckTasks() {
-		const cutoff = new Date(Date.now() - 15 * 60 * 1000)
-		try {
-			const result = await this.prisma.task.updateMany({
-				where: {
-					status: { in: ['ASSIGNED', 'IN_PROGRESS'] },
-					isActive: true,
-					updatedAt: { lt: cutoff },
-				},
-				data: { status: 'PENDING' },
-			})
+		private async resetStuckTasks() {
+			const cutoff = new Date(Date.now() - 15 * 60 * 1000)
+			try {
+				const result = await this.prisma.task.updateMany({
+					where: {
+						status: { in: ['ASSIGNED', 'IN_PROGRESS'] },
+						isActive: true,
+						updatedAt: { lt: cutoff },
+					},
+					data: { status: 'PENDING', assignedAt: null, assignedExecutorId: null },
+				})
 			if (result.count > 0) {
 				console.log(`[TaskScheduler] Сброшено ${result.count} зависших задач в PENDING`)
 			}
@@ -65,18 +70,32 @@ export class TaskSchedulerService implements OnModuleInit {
 					failureReason: 'LOCK_TIMEOUT',
 					completedAt: new Date(),
 				},
-			})
+				})
 
-			// Возвращаем задачи в PENDING (retry)
-			await this.prisma.task.updateMany({
-				where: { id: { in: taskIds }, status: 'IN_PROGRESS' },
-				data: { status: 'PENDING' },
-			})
+				// Возвращаем задачи в PENDING (retry)
+				await this.prisma.task.updateMany({
+					where: { id: { in: taskIds }, status: 'IN_PROGRESS' },
+					data: { status: 'PENDING', assignedAt: null, assignedExecutorId: null },
+				})
 
 			console.log(`[TaskScheduler] Сброшено ${stuck.length} зависших execution, ${taskIds.length} задач → PENDING`)
 		} catch (error) {
 			console.error('[TaskScheduler] Ошибка сброса execution:', error)
 		}
+	}
+
+	private scheduleDailyTelegramReport() {
+		const dailyReportSentDate: { value: string } = { value: '' }
+		const checkAndSend = async () => {
+			const now = new Date()
+			const today = now.toDateString()
+			// 23:00 МСК = 20:00 UTC
+			if (now.getUTCHours() === 20 && dailyReportSentDate.value !== today) {
+				dailyReportSentDate.value = today
+				await this.telegram.sendDailyTelegramReport()
+			}
+		}
+		setInterval(checkAndSend, 10 * 60 * 1000)
 	}
 
 	private scheduleWeeklyReports() {

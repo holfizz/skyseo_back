@@ -489,4 +489,26 @@ export class TelegramService {
 
 		return message
 	}
+
+	async sendDailyTelegramReport() {
+		const now = new Date()
+		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+		const [sitesFoundToday, activePCsToday] = await Promise.all([
+			this.prisma.execution.count({
+				where: { status: 'COMPLETED', foundInTop: true, completedAt: { gte: startOfToday } },
+			}),
+			this.prisma.execution
+				.groupBy({ by: ['executorId'], where: { completedAt: { gte: startOfToday } } })
+				.then(r => r.length),
+		])
+
+		const message =
+			`📅 <b>Дневной отчёт SkySEO</b>\n\n` +
+			`🖥 ПК в сети: <b>${activePCsToday}</b>\n` +
+			`🎯 Сайтов найдено в топе: <b>${sitesFoundToday}</b>\n\n` +
+			`🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+
+		await this.sendAdminNotification(message)
+	}
 }

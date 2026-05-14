@@ -1,42 +1,13 @@
 import {
 	IsBoolean,
-	IsEnum,
 	IsInt,
 	IsOptional,
-	IsString,
-	IsUUID,
 	IsUrl,
 	MaxLength,
 	Min,
 } from 'class-validator'
 
-export class CreateTaskDto {
-	@IsUUID()
-	websiteId: string
-
-	@IsEnum(['SEARCH_KEYWORD', 'EXTERNAL_LINK', 'SEARCH_AND_VISIT'])
-	type: 'SEARCH_KEYWORD' | 'EXTERNAL_LINK' | 'SEARCH_AND_VISIT'
-
-	@IsOptional()
-	@IsString()
-	@MaxLength(200)
-	keyword?: string
-
-	@IsOptional()
-	@IsUrl()
-	@MaxLength(500)
-	externalUrl?: string
-
-	@IsOptional()
-	@IsUrl()
-	@MaxLength(500)
-	targetUrl?: string
-
-	@IsOptional()
-	@IsString()
-	@MaxLength(100)
-	geo?: string
-
+export class UpdateTaskDto {
 	@IsOptional()
 	@IsInt()
 	@Min(1)
@@ -74,4 +45,13 @@ export class CreateTaskDto {
 	@IsInt()
 	@Min(10)
 	pageDurationTo?: number
+
+	@IsOptional()
+	@IsBoolean()
+	isActive?: boolean
+
+	@IsOptional()
+	@IsUrl()
+	@MaxLength(500)
+	targetUrl?: string
 }

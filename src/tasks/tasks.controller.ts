@@ -5,13 +5,14 @@ import {
 	Get,
 	Param,
 	Post,
+	Put,
 	Query,
 	Request,
 	UseGuards,
 } from '@nestjs/common'
 import { SkipThrottle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
-import { CreateTaskDto } from './dto'
+import { CreateTaskDto, UpdateTaskDto } from './dto'
 import { TasksService } from './tasks.service'
 
 @SkipThrottle({ short: true, medium: true })
@@ -28,11 +29,6 @@ export class TasksController {
 	@Get('my')
 	async getUserTasks(@Request() req, @Query('websiteId') websiteId?: string) {
 		return this.tasksService.getUserTasks(req.user.id, websiteId)
-	}
-
-	@Get('available')
-	async getAvailableTask(@Request() req) {
-		return this.tasksService.getAvailableTask(req.user.id)
 	}
 
 	@Get('available-queue')
@@ -66,6 +62,11 @@ export class TasksController {
 			body.yandexPosition,
 			body.googlePosition ?? null,
 		)
+	}
+
+	@Put(':id')
+	async updateTask(@Request() req, @Param('id') taskId: string, @Body() dto: UpdateTaskDto) {
+		return this.tasksService.updateTask(req.user.id, taskId, dto)
 	}
 
 	@Delete(':id')

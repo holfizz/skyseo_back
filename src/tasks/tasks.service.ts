@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
-import { CreateTaskDto } from './dto'
+import { CreateTaskDto, UpdateTaskDto } from './dto'
 
 const DOMAIN_BLACKLIST = [
 	'skyseo.site',
@@ -101,7 +101,12 @@ export class TasksService {
 				// Переактивируем мягко удалённый ключевик
 				return this.prisma.task.update({
 					where: { id: existingTask.id },
-					data: { isActive: true, status: 'PENDING' },
+					data: {
+						isActive: true,
+						status: 'PENDING',
+						assignedAt: null,
+						assignedExecutorId: null,
+					},
 				})
 			}
 			throw new BadRequestException(
@@ -110,7 +115,11 @@ export class TasksService {
 		}
 
 		// Расчет стоимости задачи
-		const pointsCost = this.calculateTaskCost(dto.type)
+		const pointsCost = this.calculateTaskCost(
+			dto.type,
+			dto.useYandex !== false,
+			dto.useGoogle !== false,
+		)
 
 		// Создание задачи
 		const task = await this.prisma.task.create({
@@ -135,76 +144,32 @@ export class TasksService {
 		return task
 	}
 
-	async getAvailableTask(executorId: string) {
-		// Получаем задачу для выполнения (не свою)
-		// Если у задачи несколько ключевых слов, выбираем случайные 1-2
-		const task = await this.prisma.task.findFirst({
-			where: {
-				isActive: true,
-				status: 'PENDING',
-				executions: {
-					none: {
-						executorId,
-						status: 'COMPLETED',
-					},
-				},
-				website: {
-					isActive: true,
-					userId: { not: executorId },
-					NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
-				},
-			},
-			orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-			include: {
-				website: true,
-			},
-		})
-
-		if (!task) {
-			return null
-		}
-
-		// Обновляем статус задачи
-		await this.prisma.task.update({
-			where: { id: task.id },
-			data: {
-				status: 'ASSIGNED',
-				assignedAt: new Date(),
-			},
-		})
-
-		// Если есть несколько ключевых слов (разделенных запятой или переносом)
-		// Выбираем случайные 1-2 для этого исполнителя
-		if (task.keyword && task.keyword.includes(',')) {
-			const keywords = task.keyword.split(',').map(k => k.trim())
-			const selectedCount = Math.floor(Math.random() * 2) + 1 // 1 или 2
-			const shuffled = keywords.sort(() => 0.5 - Math.random())
-			const selectedKeywords = shuffled.slice(0, selectedCount)
-
-			return {
-				...task,
-				keyword: selectedKeywords.join(', '),
-				_originalKeywords: keywords, // Для логирования
-			}
-		}
-
-		return task
-	}
-
 	async getAvailableTasks(executorId: string, limit: number = 10) {
 		const safeLimit = Math.max(1, Math.min(limit, 100))
 
-		// Получаем только задачи, которые этот исполнитель ещё не закрывал.
-		// Если task уже был выполнен пользователем в браузере, он больше не должен
-		// попадать ни в счётчик, ни в очередь автоматизации.
+		// Cooldown: позволяем выполнять одну задачу не чаще 2 раз в неделю (3.5 дня)
+		const cooldownDate = new Date(Date.now() - 3.5 * 24 * 60 * 60 * 1000)
+
+		// Задачи, где ключевик не найден у этого исполнителя — больше не показывать
+		const notInSerpTaskIds = await this.prisma.execution
+			.findMany({
+				where: { executorId, status: 'FAILED', failureReason: 'NOT_IN_SERP' },
+				select: { taskId: true },
+				distinct: ['taskId'],
+			})
+			.then(r => r.map(e => e.taskId))
+
 		const allTasks = await this.prisma.task.findMany({
 			where: {
 				isActive: true,
+				keywordStatus: 'ACTIVE',
 				status: 'PENDING',
+				...(notInSerpTaskIds.length > 0 ? { id: { notIn: notInSerpTaskIds } } : {}),
 				executions: {
 					none: {
 						executorId,
 						status: 'COMPLETED',
+						completedAt: { gte: cooldownDate },
 					},
 				},
 				website: {
@@ -221,7 +186,7 @@ export class TasksService {
 				},
 			},
 			orderBy: { createdAt: 'asc' }, // FIFO - кто первый создал
-			take: safeLimit,
+			take: Math.min(safeLimit * 3, 300),
 		})
 
 		const availableTasks = []
@@ -229,16 +194,19 @@ export class TasksService {
 		for (const task of allTasks) {
 			// Дополнительная защита: никогда не возвращаем собственные задачи
 			if (task.website.userId === executorId) continue
+			if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) continue
+			const reward = this.getTaskRewardBounds(task)
 			availableTasks.push({
 				id: task.id,
 				websiteId: task.websiteId,
 				websiteName: task.website.name,
 				websiteUrl: task.website.url,
 				keyword: task.keyword,
+				targetUrl: task.targetUrl,
 				type: task.type,
 				geo: task.geo,
-				pointsEarned: 15, // Максимальная награда за один поисковик (если найдено)
-				minPointsEarned: 5, // Минимальная награда за один поисковик (если не найдено)
+				pointsEarned: reward.max,
+				minPointsEarned: reward.min,
 				maxYandexVisits: task.maxYandexVisits,
 				maxGoogleVisits: task.maxGoogleVisits,
 				useYandex: task.useYandex,
@@ -247,6 +215,7 @@ export class TasksService {
 				alreadyCompleted: false,
 				remainingExecutions: 1,
 			})
+			if (availableTasks.length >= safeLimit) break
 		}
 
 		return availableTasks
@@ -286,26 +255,22 @@ export class TasksService {
 		const tasksWithStats = await Promise.all(
 			tasks.map(async task => {
 				// Считаем выполнения по поисковым системам
-				const yandexSearches = await this.prisma.execution.count({
-					where: {
-						taskId: task.id,
-						status: 'COMPLETED',
-						// Предполагаем, что в userAgent или другом поле есть информация о поисковой системе
-						// Пока используем случайное распределение 50/50
-					},
-				})
-
-				const googleSearches = await this.prisma.execution.count({
-					where: {
-						taskId: task.id,
-						status: 'COMPLETED',
-					},
-				})
-
-				// Для демонстрации делим поровну
-				const totalExecutions = task.executions.length
-				const yandexCount = Math.floor(totalExecutions / 2)
-				const googleCount = totalExecutions - yandexCount
+				const [yandexCount, googleCount] = await Promise.all([
+					this.prisma.execution.count({
+						where: {
+							taskId: task.id,
+							status: 'COMPLETED',
+							yandexFoundInTop: { not: null },
+						},
+					}),
+					this.prisma.execution.count({
+						where: {
+							taskId: task.id,
+							status: 'COMPLETED',
+							googleFoundInTop: { not: null },
+						},
+					}),
+				])
 
 				const latestPosition = task.positionHistory[0] ?? null
 				return {
@@ -332,7 +297,15 @@ export class TasksService {
 				// Проверяем что задача существует и доступна для назначения
 				const task = await prisma.task.findUnique({
 					where: { id: taskId },
-					include: { website: true },
+					include: {
+						website: {
+							include: {
+								user: {
+									select: { balance: true },
+								},
+							},
+						},
+					},
 				})
 
 				if (!task) {
@@ -347,16 +320,34 @@ export class TasksService {
 					throw new BadRequestException('Cannot assign own task')
 				}
 
+				const cooldownDate = new Date(Date.now() - 3.5 * 24 * 60 * 60 * 1000)
 				const alreadyCompleted = await prisma.execution.count({
 					where: {
 						taskId,
 						executorId,
 						status: 'COMPLETED',
+						completedAt: { gte: cooldownDate },
 					},
 				})
 
 				if (alreadyCompleted > 0) {
-					throw new BadRequestException('Task already completed by this user')
+					throw new BadRequestException('Task already completed by this user recently')
+				}
+
+				if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) {
+					await prisma.task.update({
+						where: { id: taskId },
+						data: {
+							isActive: false,
+							status: 'PENDING',
+							assignedAt: null,
+							assignedExecutorId: null,
+						},
+					})
+					return {
+						task: null,
+						insufficientBalance: true,
+					}
 				}
 
 				// Обновляем статус задачи на ASSIGNED
@@ -368,13 +359,21 @@ export class TasksService {
 					data: {
 						status: 'ASSIGNED',
 						assignedAt: new Date(),
+						assignedExecutorId: executorId,
 					},
 				})
 
-				return updatedTask
+				return {
+					task: updatedTask,
+					insufficientBalance: false,
+				}
 			})
 
-			return result
+			if (result.insufficientBalance) {
+				throw new BadRequestException('Task owner has insufficient balance')
+			}
+
+			return result.task
 		} catch (error) {
 			// Если задача уже была назначена между проверкой и обновлением
 			if (error.code === 'P2025') {
@@ -437,6 +436,33 @@ export class TasksService {
 		return record
 	}
 
+	async updateTask(userId: string, taskId: string, dto: UpdateTaskDto) {
+		const task = await this.prisma.task.findUnique({
+			where: { id: taskId },
+			include: { website: true },
+		})
+
+		if (!task || task.website.userId !== userId) {
+			throw new NotFoundException('Task not found')
+		}
+
+		return this.prisma.task.update({
+			where: { id: taskId },
+			data: {
+				...(dto.maxYandexVisits !== undefined && { maxYandexVisits: dto.maxYandexVisits }),
+				...(dto.maxGoogleVisits !== undefined && { maxGoogleVisits: dto.maxGoogleVisits }),
+				...(dto.useYandex !== undefined && { useYandex: dto.useYandex }),
+				...(dto.useGoogle !== undefined && { useGoogle: dto.useGoogle }),
+				...(dto.pagesDepthFrom !== undefined && { pagesDepthFrom: dto.pagesDepthFrom }),
+				...(dto.pagesDepthTo !== undefined && { pagesDepthTo: dto.pagesDepthTo }),
+				...(dto.pageDurationFrom !== undefined && { pageDurationFrom: dto.pageDurationFrom }),
+				...(dto.pageDurationTo !== undefined && { pageDurationTo: dto.pageDurationTo }),
+				...(dto.isActive !== undefined && { isActive: dto.isActive }),
+				...(dto.targetUrl !== undefined && { targetUrl: dto.targetUrl || null }),
+			},
+		})
+	}
+
 	async deleteTask(userId: string, taskId: string) {
 		const task = await this.prisma.task.findUnique({
 			where: { id: taskId },
@@ -450,16 +476,60 @@ export class TasksService {
 		// Мягкое удаление — не трогаем executions других пользователей и историю позиций
 		await this.prisma.task.update({
 			where: { id: taskId },
-			data: { isActive: false, status: 'PENDING' },
+			data: {
+				isActive: false,
+				status: 'PENDING',
+				assignedAt: null,
+				assignedExecutorId: null,
+			},
 		})
 		return { success: true }
 	}
 
-	private calculateTaskCost(type: string): number {
+	private getTaskRewardBounds(task: {
+		type: string
+		useYandex?: boolean | null
+		useGoogle?: boolean | null
+	}) {
+		if (task.type === 'EXTERNAL_LINK') {
+			return { min: 5, max: 5 }
+		}
+
+		const enabledEngines =
+			(task.useYandex !== false ? 1 : 0) + (task.useGoogle !== false ? 1 : 0)
+		const engines = Math.max(1, enabledEngines)
+
+		return {
+			min: engines * 5,
+			max: engines * 15,
+		}
+	}
+
+	private getTaskOwnerMaxCost(task: {
+		type: string
+		useYandex?: boolean | null
+		useGoogle?: boolean | null
+	}) {
+		if (task.type === 'EXTERNAL_LINK') {
+			return 10
+		}
+
+		const enabledEngines =
+			(task.useYandex !== false ? 1 : 0) + (task.useGoogle !== false ? 1 : 0)
+
+		return Math.max(1, enabledEngines) * 30
+	}
+
+	private calculateTaskCost(
+		type: string,
+		useYandex: boolean = true,
+		useGoogle: boolean = true,
+	): number {
 		// Стоимость будет списана при выполнении
 		// Здесь возвращаем примерную стоимость для проверки баланса
-		if (type === 'SEARCH_KEYWORD') {
-			return 30 // Максимальная стоимость если сайт в топ-50
+		if (type === 'SEARCH_KEYWORD' || type === 'SEARCH_AND_VISIT') {
+			const enabledEngines = (useYandex ? 1 : 0) + (useGoogle ? 1 : 0)
+			return Math.max(1, enabledEngines) * 30
 		}
 		return 10 // Для внешних ссылок
 	}

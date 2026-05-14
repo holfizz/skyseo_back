@@ -68,6 +68,7 @@ model Task {
   websiteId        String
   type             TaskType
   keyword          String? // Для поиска
+  targetUrl        String? // Точный URL страницы для поиска (если задан — матчим по нему, иначе по домену)
   externalUrl      String? // Для внешних ссылок
   geo              String     @default("Москва") // Город для выполнения
   status           TaskStatus @default(PENDING)
@@ -82,16 +83,19 @@ model Task {
   pageDurationFrom Int        @default(60) // Минимальная длительность просмотра страницы (сек)
   pageDurationTo   Int        @default(180) // Максимальная длительность просмотра страницы (сек)
   isActive         Boolean    @default(true)
+  keywordStatus    KeywordRestrictionStatus @default(ACTIVE)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
-  assignedAt       DateTime?
-  completedAt      DateTime?
+  assignedAt         DateTime?
+  assignedExecutorId String?
+  completedAt        DateTime?
 
   website         Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   executions      Execution[]
   positionHistory PositionHistory[]
 
   @@index([status, priority])
+  @@index([assignedExecutorId])
   @@map("tasks")
 }
 
@@ -316,6 +320,11 @@ enum FailureReason {
   SCRIPT_ERROR
   NOT_IN_SERP
   LOCK_TIMEOUT
+}
+
+enum KeywordRestrictionStatus {
+  ACTIVE
+  RESTRICTED
 }
 
 enum PaymentStatus {
