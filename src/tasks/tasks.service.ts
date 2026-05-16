@@ -147,8 +147,45 @@ export class TasksService {
 	async getAvailableTasks(executorId: string, limit: number = 10) {
 		const safeLimit = Math.max(1, Math.min(limit, 100))
 
-		// Cooldown: позволяем выполнять одну задачу не чаще 2 раз в неделю (3.5 дня)
+		// Cooldown: один и тот же ключевик не чаще 2 раз в неделю (3.5 дня)
 		const cooldownDate = new Date(Date.now() - 3.5 * 24 * 60 * 60 * 1000)
+
+		// ПФ-маскировка: один executor не должен находить один и тот же сайт по
+		// многим разным ключевикам — Яндекс кластеризует юзеров и ловит паттерн.
+		// Лимиты на уровне сайта:
+		//   • max 2 выполнения одного сайта за неделю на одного executor
+		//   • spacing: следующий визит того же сайта не раньше чем через 24ч
+		const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+		const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+
+		const weeklyHitsBySite = await this.prisma.execution.groupBy({
+			by: ['websiteId'],
+			where: {
+				executorId,
+				status: 'COMPLETED',
+				completedAt: { gte: weekAgo },
+			},
+			_count: { _all: true },
+		})
+		const sitesAtWeeklyLimit = weeklyHitsBySite
+			.filter(s => s._count._all >= 2)
+			.map(s => s.websiteId)
+
+		const sitesVisitedToday = await this.prisma.execution
+			.findMany({
+				where: {
+					executorId,
+					status: 'COMPLETED',
+					completedAt: { gte: dayAgo },
+				},
+				select: { websiteId: true },
+				distinct: ['websiteId'],
+			})
+			.then(r => r.map(e => e.websiteId))
+
+		const blockedWebsiteIds = Array.from(
+			new Set([...sitesAtWeeklyLimit, ...sitesVisitedToday]),
+		)
 
 		// Задачи, где ключевик не найден у этого исполнителя — больше не показывать
 		const notInSerpTaskIds = await this.prisma.execution
@@ -175,6 +212,7 @@ export class TasksService {
 				website: {
 					isActive: true,
 					userId: { not: executorId },
+					...(blockedWebsiteIds.length > 0 ? { id: { notIn: blockedWebsiteIds } } : {}),
 					NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
 				},
 			},
@@ -332,6 +370,34 @@ export class TasksService {
 
 				if (alreadyCompleted > 0) {
 					throw new BadRequestException('Task already completed by this user recently')
+				}
+
+				// ПФ-маскировка: лимиты на сайт от одного executor
+				const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+				const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+
+				const siteVisitsThisWeek = await prisma.execution.count({
+					where: {
+						websiteId: task.websiteId,
+						executorId,
+						status: 'COMPLETED',
+						completedAt: { gte: weekAgo },
+					},
+				})
+				if (siteVisitsThisWeek >= 2) {
+					throw new BadRequestException('Weekly site limit reached for this user')
+				}
+
+				const siteVisitToday = await prisma.execution.count({
+					where: {
+						websiteId: task.websiteId,
+						executorId,
+						status: 'COMPLETED',
+						completedAt: { gte: dayAgo },
+					},
+				})
+				if (siteVisitToday > 0) {
+					throw new BadRequestException('Daily site spacing — try again in 24h')
 				}
 
 				if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) {

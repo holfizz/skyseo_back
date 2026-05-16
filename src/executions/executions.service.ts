@@ -82,6 +82,7 @@ export class ExecutionsService {
 	}
 
 	async completeExecution(executionId: string, dto: CompleteExecutionDto) {
+		console.log(`[completeExecution] id=${executionId} dto=`, JSON.stringify(dto))
 		const execution = await this.prisma.execution.findUnique({
 			where: { id: executionId },
 			include: {
@@ -107,12 +108,12 @@ export class ExecutionsService {
 			throw new Error('Execution duration too short (minimum 30 seconds)')
 		}
 
-		if (dto.duration > 600) {
-			throw new Error('Execution duration too long (maximum 10 minutes)')
+		if (dto.duration > 3600) {
+			throw new Error('Execution duration too long (maximum 1 hour)')
 		}
 
-		if (dto.pagesVisited < 2 || dto.pagesVisited > 10) {
-			throw new Error('Invalid pages visited count (2-10)')
+		if (dto.pagesVisited < 2 || dto.pagesVisited > 30) {
+			throw new Error('Invalid pages visited count (2-30)')
 		}
 
 		if (dto.position && (dto.position < 1 || dto.position > 50)) {

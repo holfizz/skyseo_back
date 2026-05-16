@@ -43,7 +43,12 @@ export class ExecutionsController {
 
 	@Put(':id/complete')
 	async complete(@Param('id') id: string, @Body() dto: CompleteExecutionDto) {
-		return this.executionsService.completeExecution(id, dto)
+		try {
+			return await this.executionsService.completeExecution(id, dto)
+		} catch (e: any) {
+			console.error('[complete] ERROR:', e?.message, e?.stack?.split('\n')[1])
+			throw e
+		}
 	}
 
 	@Put(':id/fail')
