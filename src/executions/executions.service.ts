@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
-import { CompleteExecutionDto, FailExecutionDto, LogExecutionEventDto } from './dto'
+import { CompleteExecutionDto, CreditEngineDto, FailExecutionDto, LogExecutionEventDto } from './dto'
 
 @Injectable()
 export class ExecutionsService {
@@ -146,14 +146,21 @@ export class ExecutionsService {
 			pointsSpent: number
 		}> = []
 
+		// Движки, уже начисленные через creditEngine — пропускаем чтобы не задвоить.
+		const yandexAlreadyCredited = !!execution.yandexCreditedAt
+		const googleAlreadyCredited = !!execution.googleCreditedAt
+		const anyEnginePreCredited = yandexAlreadyCredited || googleAlreadyCredited
+
 		if (isSearchTask) {
 			if (hasPerEngineResult) {
 				const addEngineReward = (
 					engine: 'yandex' | 'google',
 					completed: boolean | undefined,
 					foundInTop: boolean | undefined,
+					alreadyCredited: boolean,
 				) => {
 					if (!completed) return
+					if (alreadyCredited) return // балл уже начислен через creditEngine
 
 					const earned = foundInTop ? 15 : 5
 					const spent = foundInTop ? 30 : 10
@@ -168,8 +175,8 @@ export class ExecutionsService {
 					pointsSpent += spent
 				}
 
-				addEngineReward('yandex', dto.yandexCompleted, dto.yandexFoundInTop)
-				addEngineReward('google', dto.googleCompleted, dto.googleFoundInTop)
+				addEngineReward('yandex', dto.yandexCompleted, dto.yandexFoundInTop, yandexAlreadyCredited)
+				addEngineReward('google', dto.googleCompleted, dto.googleFoundInTop, googleAlreadyCredited)
 			} else if (dto.foundInTop) {
 				pointsEarned = 15
 				pointsSpent = 30
@@ -182,7 +189,13 @@ export class ExecutionsService {
 			pointsSpent = 10
 		}
 
-		if (isSearchTask && hasPerEngineResult && engineRewards.length === 0) {
+		// Если все движки уже начислены — это нормально, не падаем.
+		if (
+			isSearchTask &&
+			hasPerEngineResult &&
+			engineRewards.length === 0 &&
+			!anyEnginePreCredited
+		) {
 			throw new Error('No completed search engine results')
 		}
 
@@ -191,8 +204,12 @@ export class ExecutionsService {
 			: `Переход по ссылке ${execution.task.externalUrl}`
 		const resultText = (foundInTop: boolean) =>
 			foundInTop ? 'найдено в поиске' : 'не найдено в поиске'
+		// Аггрегаты: учитываем результат каждого движка по dto (creditEngine
+		// сохранил флаги в execution, но они должны совпадать с тем что приходит сейчас).
+		const yandexFoundResult = dto.yandexCompleted ? !!dto.yandexFoundInTop : false
+		const googleFoundResult = dto.googleCompleted ? !!dto.googleFoundInTop : false
 		const overallFoundInTop = hasPerEngineResult
-			? engineRewards.some(reward => reward.foundInTop)
+			? (yandexFoundResult || googleFoundResult)
 			: dto.foundInTop
 		const primaryPosition = hasPerEngineResult
 			? dto.yandexPosition ?? dto.googlePosition ?? dto.position ?? null
@@ -205,18 +222,24 @@ export class ExecutionsService {
 			: dto.googlePosition != null
 		const earnedDescription = `${taskDescription} (${resultText(overallFoundInTop)})`
 		const spentDescription = `Задача выполнена: ${taskDescription} (${resultText(overallFoundInTop)})`
+		// Записи в balance history создаём ТОЛЬКО для движков что начисляем
+		// именно сейчас. Уже начисленные через creditEngine имеют свои записи.
 		const earnedHistoryItems = engineRewards.length > 0
 			? engineRewards.map(reward => ({
 				amount: reward.pointsEarned,
 				description: `${taskDescription} — ${reward.label} (${resultText(reward.foundInTop)})`,
 			}))
-			: [{ amount: pointsEarned, description: earnedDescription }]
+			: (anyEnginePreCredited || !hasPerEngineResult
+				? (pointsEarned > 0 ? [{ amount: pointsEarned, description: earnedDescription }] : [])
+				: [])
 		const spentHistoryItems = engineRewards.length > 0
 			? engineRewards.map(reward => ({
 				amount: -reward.pointsSpent,
 				description: `Задача выполнена: ${taskDescription} — ${reward.label} (${resultText(reward.foundInTop)})`,
 			}))
-			: [{ amount: -pointsSpent, description: spentDescription }]
+			: (anyEnginePreCredited || !hasPerEngineResult
+				? (pointsSpent > 0 ? [{ amount: -pointsSpent, description: spentDescription }] : [])
+				: [])
 		const shouldSavePosition =
 			execution.task.type === 'SEARCH_KEYWORD' ||
 			execution.task.type === 'SEARCH_AND_VISIT'
@@ -262,6 +285,27 @@ export class ExecutionsService {
 				}
 			}
 
+			// Итоговые pointsEarned/pointsSpent для execution-строки:
+			// учитываем И уже начисленные через creditEngine движки тоже.
+			const yandexTotalEarned = dto.yandexCompleted
+				? (dto.yandexFoundInTop ? 15 : 5)
+				: 0
+			const googleTotalEarned = dto.googleCompleted
+				? (dto.googleFoundInTop ? 15 : 5)
+				: 0
+			const yandexTotalSpent = dto.yandexCompleted
+				? (dto.yandexFoundInTop ? 30 : 10)
+				: 0
+			const googleTotalSpent = dto.googleCompleted
+				? (dto.googleFoundInTop ? 30 : 10)
+				: 0
+			const totalEarnedOnRow = hasPerEngineResult
+				? yandexTotalEarned + googleTotalEarned
+				: pointsEarned
+			const totalSpentOnRow = hasPerEngineResult
+				? yandexTotalSpent + googleTotalSpent
+				: pointsSpent
+
 			const claimed = await tx.execution.updateMany({
 				where: { id: executionId, status: 'IN_PROGRESS' },
 				data: {
@@ -278,8 +322,8 @@ export class ExecutionsService {
 					pagesVisited: dto.pagesVisited,
 					duration: dto.duration,
 					completedAt: new Date(),
-					pointsEarned,
-					pointsSpent,
+					pointsEarned: totalEarnedOnRow,
+					pointsSpent: totalSpentOnRow,
 				},
 			})
 
@@ -358,6 +402,127 @@ export class ExecutionsService {
 
 		console.log(`[ExecutionsService] Execution ${executionId} completed idempotently`)
 		return completion.execution
+	}
+
+	/**
+	 * Начисляет баллы за один поисковик СРАЗУ после его завершения, не дожидаясь
+	 * второго движка. Идемпотентно: повторный вызов с тем же engine — no-op.
+	 * Состояние execution не трогается (остаётся IN_PROGRESS до completeExecution).
+	 */
+	async creditEngine(executionId: string, dto: CreditEngineDto) {
+		const execution = await this.prisma.execution.findUnique({
+			where: { id: executionId },
+			include: {
+				task: { include: { website: { include: { user: true } } } },
+			},
+		})
+		if (!execution) throw new Error('Execution not found')
+
+		const isYandex = dto.engine === 'yandex'
+		const creditedAt = isYandex
+			? execution.yandexCreditedAt
+			: execution.googleCreditedAt
+
+		// Идемпотентность — уже начислено
+		if (creditedAt) {
+			return { execution, alreadyCredited: true }
+		}
+
+		// Если позиция передана — валидация
+		if (dto.position != null && (dto.position < 1 || dto.position > 50)) {
+			throw new Error('Invalid position (1-50)')
+		}
+
+		const pointsEarned = dto.foundInTop ? 15 : 5
+		const pointsSpent = dto.foundInTop ? 30 : 10
+		const taskDescription = execution.task.keyword
+			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
+			: `Переход по ссылке ${execution.task.externalUrl}`
+		const label = isYandex ? 'Яндекс' : 'Google'
+		const resultText = dto.foundInTop ? 'найдено в поиске' : 'не найдено в поиске'
+
+		const result = await this.prisma.$transaction(async tx => {
+			// Атомарно ставим creditedAt — если кто-то параллельно уже начислил,
+			// updateMany.count будет 0 и мы выйдем без двойного начисления.
+			const claimed = await tx.execution.updateMany({
+				where: isYandex
+					? { id: executionId, yandexCreditedAt: null }
+					: { id: executionId, googleCreditedAt: null },
+				data: isYandex
+					? {
+						yandexCreditedAt: new Date(),
+						yandexFoundInTop: dto.foundInTop,
+						yandexPosition: dto.position ?? null,
+					}
+					: {
+						googleCreditedAt: new Date(),
+						googleFoundInTop: dto.foundInTop,
+						googlePosition: dto.position ?? null,
+					},
+			})
+			if (claimed.count !== 1) {
+				return { alreadyCredited: true as const }
+			}
+
+			const owner = await tx.user.findUnique({
+				where: { id: execution.task.website.userId },
+				select: { balance: true },
+			})
+			const ownerBalance = owner?.balance ?? 0
+
+			if (ownerBalance < pointsSpent) {
+				console.log(
+					`[ExecutionsService] creditEngine: недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Откатываем флаг кредита.`,
+				)
+				// Откатываем флаг чтобы не считаться «начисленным»
+				await tx.execution.update({
+					where: { id: executionId },
+					data: isYandex ? { yandexCreditedAt: null } : { googleCreditedAt: null },
+				})
+				return { insufficientBalance: true as const }
+			}
+
+			// Начисление исполнителю
+			await tx.user.update({
+				where: { id: execution.executorId },
+				data: { balance: { increment: pointsEarned } },
+			})
+			await tx.balanceHistory.create({
+				data: {
+					userId: execution.executorId,
+					amount: pointsEarned,
+					type: 'TASK_EARNED',
+					description: `${taskDescription} — ${label} (${resultText})`,
+					taskId: execution.taskId,
+				},
+			})
+
+			// Списание с владельца сайта
+			await tx.user.update({
+				where: { id: execution.task.website.userId },
+				data: { balance: { increment: -pointsSpent } },
+			})
+			await tx.balanceHistory.create({
+				data: {
+					userId: execution.task.website.userId,
+					amount: -pointsSpent,
+					type: 'TASK_SPENT',
+					description: `Задача выполнена: ${taskDescription} — ${label} (${resultText})`,
+					taskId: execution.taskId,
+				},
+			})
+
+			return { credited: true as const }
+		})
+
+		if ('alreadyCredited' in result) return { alreadyCredited: true }
+		if ('insufficientBalance' in result) {
+			throw new Error('Недостаточно баллов у владельца сайта')
+		}
+		console.log(
+			`[ExecutionsService] creditEngine: ${label} +${pointsEarned} для exec ${executionId}`,
+		)
+		return { credited: true, pointsEarned }
 	}
 
 	async failExecution(executionId: string, dto: FailExecutionDto) {

@@ -113,6 +113,8 @@ model Execution {
   googleFoundInTop Boolean?
   yandexPosition   Int?
   googlePosition   Int?
+  yandexCreditedAt DateTime?
+  googleCreditedAt DateTime?
   failureReason    FailureReason?
   targetVisited     Boolean         @default(false)
   directNavigationUsed Boolean      @default(false)

@@ -14,6 +14,7 @@ import { SkipThrottle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import {
 	CompleteExecutionDto,
+	CreditEngineDto,
 	FailExecutionDto,
 	LogExecutionEventDto,
 	StartExecutionDto,
@@ -47,6 +48,16 @@ export class ExecutionsController {
 			return await this.executionsService.completeExecution(id, dto)
 		} catch (e: any) {
 			console.error('[complete] ERROR:', e?.message, e?.stack?.split('\n')[1])
+			throw e
+		}
+	}
+
+	@Post(':id/credit-engine')
+	async creditEngine(@Param('id') id: string, @Body() dto: CreditEngineDto) {
+		try {
+			return await this.executionsService.creditEngine(id, dto)
+		} catch (e: any) {
+			console.error('[credit-engine] ERROR:', e?.message, e?.stack?.split('\n')[1])
 			throw e
 		}
 	}
