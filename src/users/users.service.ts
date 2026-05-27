@@ -16,6 +16,7 @@ export class UsersService {
 		referralSource?: string
 		referralCode?: string
 		referredBy?: string
+		promoCode?: string
 		city?: string
 		lastLoginIp?: string
 		registrationIp?: string

@@ -18,6 +18,10 @@ export class RegisterDto {
 
 	@IsOptional()
 	@IsString()
+	promoCode?: string
+
+	@IsOptional()
+	@IsString()
 	city?: string
 
 	@IsOptional()

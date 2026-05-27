@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
 import { LoginDto, RegisterDto } from './dto'
+import { lookupPromoCode } from './promo-codes'
 
 @Injectable()
 export class AuthService {
@@ -251,12 +252,15 @@ export class AuthService {
 		}
 		const mappedUserType = dto.role ? userTypeMap[dto.role.toLowerCase()] as UserType : undefined
 
+		const promo = await lookupPromoCode(this.prisma, dto.promoCode)
+
 		const user = await this.usersService.create({
 			email: dto.email,
 			password: hashedPassword,
 			referralSource: dto.referralSource,
 			referralCode,
 			referredBy,
+			promoCode: promo?.code,
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
 			registrationIp: ipAddress,
@@ -264,6 +268,22 @@ export class AuthService {
 			appVersion: dto.appVersion,
 			userType: mappedUserType,
 		})
+
+		// Бонус по промокоду — отдельная запись в balance_history для отчётности
+		if (promo) {
+			await this.prisma.user.update({
+				where: { id: user.id },
+				data: { balance: { increment: promo.bonusPoints } },
+			})
+			await this.prisma.balanceHistory.create({
+				data: {
+					userId: user.id,
+					amount: promo.bonusPoints,
+					type: 'REFERRAL_BONUS',
+					description: `Промокод ${promo.code}${promo.description ? ': ' + promo.description : ''}`,
+				},
+			})
+		}
 
 		const userTypeLabel = mappedUserType ? (userTypeLabelMap[mappedUserType] || mappedUserType) : 'Не указана'
 

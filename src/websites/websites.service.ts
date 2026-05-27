@@ -80,6 +80,7 @@ export class WebsitesService {
 				name: dto.name,
 				url: dto.url,
 				city: dto.city,
+				dailyVisitsTarget: dto.dailyVisitsTarget,
 			},
 		})
 

@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsUrl } from 'class-validator'
+import { IsBoolean, IsInt, IsOptional, IsUrl, Max, Min } from 'class-validator'
 
 export class UpdateWebsiteDto {
 	@IsOptional()
@@ -8,4 +8,10 @@ export class UpdateWebsiteDto {
 	@IsOptional()
 	@IsBoolean()
 	isActive?: boolean
+
+	@IsOptional()
+	@IsInt()
+	@Min(3)
+	@Max(500)
+	dailyVisitsTarget?: number
 }

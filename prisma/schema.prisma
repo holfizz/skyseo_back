@@ -19,6 +19,7 @@ model User {
   referralSource         String? // Откуда узнал
   referralCode           String?   @unique // Реферальный код пользователя
   referredBy             String? // ID пользователя, который пригласил
+  promoCode              String? // Промокод, введённый при регистрации (для трекинга источников/партнёров)
   city                   String? // Город пользователя
   isActive               Boolean   @default(true)
   isSuspicious           Boolean   @default(false) // Флаг подозрительной активности
@@ -46,14 +47,15 @@ model User {
 }
 
 model Website {
-  id        String   @id @default(uuid())
-  userId    String
-  name      String
-  url       String
-  city      String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String   @id @default(uuid())
+  userId            String
+  name              String
+  url               String
+  city              String?
+  isActive          Boolean  @default(true)
+  dailyVisitsTarget Int? // Опциональный явный потолок визитов на сайт в сутки. Null = сумма target'ов всех активных ключей.
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   tasks      Task[]
@@ -256,6 +258,25 @@ model AppVersion {
   @@map("app_versions")
 }
 
+model PageEvent {
+  id          String   @id @default(uuid())
+  type        String   // "visit" | "download" | "register"
+  page        String?  // "/" | "/promo" | etc.
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+  referrer    String?
+  platform    String?  // "mac-arm64" | "mac-x64" | "windows"
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@index([utmSource, createdAt])
+  @@map("page_events")
+}
+
 model PasswordResetToken {
   id        String   @id @default(uuid())
   userId    String
@@ -334,6 +355,114 @@ enum PaymentStatus {
   SUCCEEDED
   CANCELED
   FAILED
+}
+
+model PromoCode {
+  id          String   @id @default(uuid())
+  code        String   @unique // uppercase, без пробелов
+  bonusPoints Int      @default(500) // сколько баллов накидывается при регистрации
+  description String? // источник трафика — для напоминания себе
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("promo_codes")
+}
+
+// Яндекс РСЯ / Direct — управление кампаниями
+model YandexAdCampaign {
+  id                 String   @id @default(uuid())
+  name               String?
+  geo                String?
+  landingUrl         String?
+  dailyBudget        Int      @default(0)
+  adsHeadlines       String? // multiline
+  adsDescriptions    String? // multiline
+  avatarOk           Boolean  @default(false)
+  keywordsResearchOk Boolean  @default(false)
+  analyticsOk        Boolean  @default(false)
+  triadLinkOk        Boolean  @default(false) // связь ключ-объявление-лендинг
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  keywords YandexAdKeyword[]
+
+  @@map("yandex_ad_campaigns")
+}
+
+model YandexAdKeyword {
+  id           String   @id @default(uuid())
+  campaignId   String
+  keyword      String
+  frequency    Int      @default(0)
+  estimatedCpc Int      @default(0) // прогноз стоимости клика в рублях
+  competition  String? // "низкая" / "средняя" / "высокая"
+  shouldLaunch Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  campaign YandexAdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@map("yandex_ad_keywords")
+}
+
+// Telegram посевы
+model TelegramAdCampaign {
+  id             String   @id @default(uuid())
+  name           String?
+  postText       String?
+  landingUrl     String? // ссылка на лендинг или TG-бот
+  budget         Int      @default(0)
+  expectedViews  Int      @default(0)
+  expectedClicks Int      @default(0)
+  expectedLeads  Int      @default(0)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  channels TelegramAdChannel[]
+
+  @@map("telegram_ad_campaigns")
+}
+
+model TelegramAdChannel {
+  id          String   @id @default(uuid())
+  campaignId  String
+  link        String
+  name        String?
+  adReturn    Int? // рекламная отдача
+  subscribers Int?
+  reach24     Int? // охваты за 24ч
+  err24       Int? // ERR в сотых процента (5985 = 59.85%)
+  postCost    Int? // стоимость поста ₽
+  isAuthor    Boolean  @default(false)
+  shouldBuy   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  campaign TelegramAdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@map("telegram_ad_channels")
+}
+
+// Ручной учёт воронки по каналам. Заполняется в админке.
+model FunnelEntry {
+  id            String   @id @default(uuid())
+  date          DateTime @db.Date
+  channel       String // "Instagram реклама", "TG канал", "Habr"
+  views         Int      @default(0)
+  cost          Int      @default(0) // рублей потрачено
+  registrations Int      @default(0)
+  purchases     Int      @default(0)
+  revenue       Int      @default(0) // рублей пришло
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([channel])
+  @@index([date])
+  @@map("funnel_entries")
 }
 
 enum Platform {

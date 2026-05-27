@@ -43,18 +43,6 @@ export class ExecutionsService {
 				throw new Error('Task not available')
 			}
 
-			const completedBefore = await tx.execution.count({
-				where: {
-					executorId,
-					taskId,
-					status: 'COMPLETED',
-				},
-			})
-
-			if (completedBefore > 0) {
-				throw new Error('Вы уже выполнили эту задачу')
-			}
-
 			const claimed = await tx.task.updateMany({
 				where: {
 					id: taskId,

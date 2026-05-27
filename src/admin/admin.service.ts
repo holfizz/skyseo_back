@@ -210,6 +210,320 @@ export class AdminService {
 		})
 	}
 
+	async getPromoCodesStats() {
+		// Все юзеры с промокодом (используем raw чтобы избежать рекурсивных типов Prisma groupBy)
+		const usersByCode = await this.prisma.$queryRaw<Array<{
+			id: string
+			email: string
+			balance: number
+			promoCode: string
+			createdAt: Date
+		}>>`
+			SELECT id, email, balance, "promoCode", "createdAt"
+			FROM users
+			WHERE "promoCode" IS NOT NULL
+			ORDER BY "createdAt" DESC
+		`
+
+		// Сумма бонусов по userId
+		const bonusesByUser = await this.prisma.balanceHistory.groupBy({
+			by: ['userId'],
+			where: { type: 'REFERRAL_BONUS', description: { startsWith: 'Промокод' } },
+			_sum: { amount: true },
+		})
+		const bonusMap = new Map(bonusesByUser.map(b => [b.userId, b._sum.amount ?? 0]))
+
+		const stats: Record<string, {
+			code: string
+			usersCount: number
+			totalBonusGiven: number
+			users: Array<{ id: string; email: string; balance: number; joinedAt: Date }>
+		}> = {}
+
+		for (const u of usersByCode) {
+			const code = u.promoCode
+			if (!stats[code]) {
+				stats[code] = { code, usersCount: 0, totalBonusGiven: 0, users: [] }
+			}
+			stats[code].usersCount++
+			stats[code].totalBonusGiven += bonusMap.get(u.id) ?? 0
+			stats[code].users.push({
+				id: u.id,
+				email: u.email,
+				balance: u.balance,
+				joinedAt: u.createdAt,
+			})
+		}
+
+		return {
+			total: usersByCode.length,
+			codes: Object.values(stats).sort((a, b) => b.usersCount - a.usersCount),
+		}
+	}
+
+	// ─── Промокоды CRUD ───
+
+	async listPromoCodes() {
+		const codes = await this.prisma.promoCode.findMany({
+			orderBy: { createdAt: 'desc' },
+		})
+		// Сразу подтягиваем количество юзеров по каждому коду
+		const usersByCode = await this.prisma.$queryRaw<Array<{ promoCode: string; count: bigint }>>`
+			SELECT "promoCode", COUNT(*)::bigint AS count
+			FROM users
+			WHERE "promoCode" IS NOT NULL
+			GROUP BY "promoCode"
+		`
+		const countMap = new Map(usersByCode.map(r => [r.promoCode, Number(r.count)]))
+		return codes.map(c => ({ ...c, usersCount: countMap.get(c.code) ?? 0 }))
+	}
+
+	async createPromoCode(data: { code: string; bonusPoints: number; description?: string; isActive?: boolean }) {
+		const code = data.code.trim().toUpperCase()
+		if (!code || code.length < 2) {
+			throw new Error('Промокод должен быть минимум 2 символа')
+		}
+		if (!/^[A-Z0-9_-]+$/.test(code)) {
+			throw new Error('Промокод: только латиница, цифры, _ и -')
+		}
+		const bonusPoints = Math.max(0, Math.floor(data.bonusPoints))
+		return this.prisma.promoCode.create({
+			data: {
+				code,
+				bonusPoints,
+				description: data.description?.trim() || null,
+				isActive: data.isActive !== false,
+			},
+		})
+	}
+
+	async updatePromoCode(id: string, data: { code?: string; bonusPoints?: number; description?: string | null; isActive?: boolean }) {
+		const patch: any = {}
+		if (data.code !== undefined) {
+			const code = data.code.trim().toUpperCase()
+			if (!/^[A-Z0-9_-]+$/.test(code)) {
+				throw new Error('Промокод: только латиница, цифры, _ и -')
+			}
+			patch.code = code
+		}
+		if (data.bonusPoints !== undefined) patch.bonusPoints = Math.max(0, Math.floor(data.bonusPoints))
+		if (data.description !== undefined) patch.description = data.description?.trim() || null
+		if (data.isActive !== undefined) patch.isActive = data.isActive
+		return this.prisma.promoCode.update({ where: { id }, data: patch })
+	}
+
+	async deletePromoCode(id: string) {
+		return this.prisma.promoCode.delete({ where: { id } })
+	}
+
+	// ─── Воронка CRUD ───
+
+	async listFunnelEntries(limit: number = 200) {
+		return this.prisma.funnelEntry.findMany({
+			orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+			take: Math.min(limit, 1000),
+		})
+	}
+
+	async listFunnelChannels(): Promise<string[]> {
+		const rows = await this.prisma.$queryRaw<Array<{ channel: string }>>`
+			SELECT DISTINCT channel FROM funnel_entries ORDER BY channel ASC
+		`
+		return rows.map(r => r.channel)
+	}
+
+	async createFunnelEntry(data: {
+		date: string
+		channel: string
+		views?: number
+		cost?: number
+		registrations?: number
+		purchases?: number
+		revenue?: number
+		note?: string
+	}) {
+		const channel = data.channel.trim()
+		if (!channel) throw new Error('Канал не указан')
+		return this.prisma.funnelEntry.create({
+			data: {
+				date: new Date(data.date),
+				channel,
+				views: Math.max(0, Math.floor(data.views ?? 0)),
+				cost: Math.max(0, Math.floor(data.cost ?? 0)),
+				registrations: Math.max(0, Math.floor(data.registrations ?? 0)),
+				purchases: Math.max(0, Math.floor(data.purchases ?? 0)),
+				revenue: Math.max(0, Math.floor(data.revenue ?? 0)),
+				note: data.note?.trim() || null,
+			},
+		})
+	}
+
+	async updateFunnelEntry(id: string, data: {
+		date?: string
+		channel?: string
+		views?: number
+		cost?: number
+		registrations?: number
+		purchases?: number
+		revenue?: number
+		note?: string | null
+	}) {
+		const patch: any = {}
+		if (data.date) patch.date = new Date(data.date)
+		if (data.channel !== undefined) patch.channel = data.channel.trim()
+		if (data.views !== undefined) patch.views = Math.max(0, Math.floor(data.views))
+		if (data.cost !== undefined) patch.cost = Math.max(0, Math.floor(data.cost))
+		if (data.registrations !== undefined) patch.registrations = Math.max(0, Math.floor(data.registrations))
+		if (data.purchases !== undefined) patch.purchases = Math.max(0, Math.floor(data.purchases))
+		if (data.revenue !== undefined) patch.revenue = Math.max(0, Math.floor(data.revenue))
+		if (data.note !== undefined) patch.note = data.note?.trim() || null
+		return this.prisma.funnelEntry.update({ where: { id }, data: patch })
+	}
+
+	async deleteFunnelEntry(id: string) {
+		return this.prisma.funnelEntry.delete({ where: { id } })
+	}
+
+	// ─── Яндекс РСЯ кампании ───
+
+	async listYandexCampaigns() {
+		return this.prisma.yandexAdCampaign.findMany({
+			orderBy: { createdAt: 'desc' },
+			include: { keywords: { orderBy: { createdAt: 'asc' } } },
+		})
+	}
+
+	async createYandexCampaign(data: any) {
+		return this.prisma.yandexAdCampaign.create({
+			data: {
+				name: data.name?.trim() || null,
+				geo: data.geo?.trim() || null,
+				landingUrl: data.landingUrl?.trim() || null,
+				dailyBudget: Math.max(0, Math.floor(data.dailyBudget ?? 0)),
+				adsHeadlines: data.adsHeadlines ?? null,
+				adsDescriptions: data.adsDescriptions ?? null,
+				notes: data.notes ?? null,
+			},
+			include: { keywords: true },
+		})
+	}
+
+	async updateYandexCampaign(id: string, data: any) {
+		const patch: any = {}
+		for (const k of ['name', 'geo', 'landingUrl', 'adsHeadlines', 'adsDescriptions', 'notes']) {
+			if (data[k] !== undefined) patch[k] = data[k]?.trim?.() ?? data[k] ?? null
+		}
+		if (data.dailyBudget !== undefined) patch.dailyBudget = Math.max(0, Math.floor(data.dailyBudget))
+		for (const k of ['avatarOk', 'keywordsResearchOk', 'analyticsOk', 'triadLinkOk']) {
+			if (data[k] !== undefined) patch[k] = !!data[k]
+		}
+		return this.prisma.yandexAdCampaign.update({ where: { id }, data: patch })
+	}
+
+	async deleteYandexCampaign(id: string) {
+		return this.prisma.yandexAdCampaign.delete({ where: { id } })
+	}
+
+	async addYandexKeyword(campaignId: string, data: any) {
+		return this.prisma.yandexAdKeyword.create({
+			data: {
+				campaignId,
+				keyword: (data.keyword ?? '').trim(),
+				frequency: Math.max(0, Math.floor(data.frequency ?? 0)),
+				estimatedCpc: Math.max(0, Math.floor(data.estimatedCpc ?? 0)),
+				competition: data.competition?.trim() || null,
+				shouldLaunch: !!data.shouldLaunch,
+			},
+		})
+	}
+
+	async updateYandexKeyword(id: string, data: any) {
+		const patch: any = {}
+		if (data.keyword !== undefined) patch.keyword = String(data.keyword).trim()
+		if (data.frequency !== undefined) patch.frequency = Math.max(0, Math.floor(data.frequency))
+		if (data.estimatedCpc !== undefined) patch.estimatedCpc = Math.max(0, Math.floor(data.estimatedCpc))
+		if (data.competition !== undefined) patch.competition = data.competition?.trim() || null
+		if (data.shouldLaunch !== undefined) patch.shouldLaunch = !!data.shouldLaunch
+		return this.prisma.yandexAdKeyword.update({ where: { id }, data: patch })
+	}
+
+	async deleteYandexKeyword(id: string) {
+		return this.prisma.yandexAdKeyword.delete({ where: { id } })
+	}
+
+	// ─── Telegram посевы ───
+
+	async listTelegramCampaigns() {
+		return this.prisma.telegramAdCampaign.findMany({
+			orderBy: { createdAt: 'desc' },
+			include: { channels: { orderBy: { createdAt: 'asc' } } },
+		})
+	}
+
+	async createTelegramCampaign(data: any) {
+		return this.prisma.telegramAdCampaign.create({
+			data: {
+				name: data.name?.trim() || null,
+				postText: data.postText ?? null,
+				landingUrl: data.landingUrl?.trim() || null,
+				budget: Math.max(0, Math.floor(data.budget ?? 0)),
+				expectedViews: Math.max(0, Math.floor(data.expectedViews ?? 0)),
+				expectedClicks: Math.max(0, Math.floor(data.expectedClicks ?? 0)),
+				expectedLeads: Math.max(0, Math.floor(data.expectedLeads ?? 0)),
+				notes: data.notes ?? null,
+			},
+			include: { channels: true },
+		})
+	}
+
+	async updateTelegramCampaign(id: string, data: any) {
+		const patch: any = {}
+		for (const k of ['name', 'postText', 'landingUrl', 'notes']) {
+			if (data[k] !== undefined) patch[k] = data[k] ?? null
+		}
+		for (const k of ['budget', 'expectedViews', 'expectedClicks', 'expectedLeads']) {
+			if (data[k] !== undefined) patch[k] = Math.max(0, Math.floor(data[k]))
+		}
+		return this.prisma.telegramAdCampaign.update({ where: { id }, data: patch })
+	}
+
+	async deleteTelegramCampaign(id: string) {
+		return this.prisma.telegramAdCampaign.delete({ where: { id } })
+	}
+
+	async addTelegramChannel(campaignId: string, data: any) {
+		return this.prisma.telegramAdChannel.create({
+			data: {
+				campaignId,
+				link: (data.link ?? '').trim(),
+				name: data.name?.trim() || null,
+				adReturn: data.adReturn != null ? Math.floor(data.adReturn) : null,
+				subscribers: data.subscribers != null ? Math.floor(data.subscribers) : null,
+				reach24: data.reach24 != null ? Math.floor(data.reach24) : null,
+				err24: data.err24 != null ? Math.floor(data.err24) : null,
+				postCost: data.postCost != null ? Math.floor(data.postCost) : null,
+				isAuthor: !!data.isAuthor,
+				shouldBuy: !!data.shouldBuy,
+			},
+		})
+	}
+
+	async updateTelegramChannel(id: string, data: any) {
+		const patch: any = {}
+		if (data.link !== undefined) patch.link = String(data.link).trim()
+		if (data.name !== undefined) patch.name = data.name?.trim() || null
+		for (const k of ['adReturn', 'subscribers', 'reach24', 'err24', 'postCost']) {
+			if (data[k] !== undefined) patch[k] = data[k] === null ? null : Math.max(0, Math.floor(data[k]))
+		}
+		if (data.isAuthor !== undefined) patch.isAuthor = !!data.isAuthor
+		if (data.shouldBuy !== undefined) patch.shouldBuy = !!data.shouldBuy
+		return this.prisma.telegramAdChannel.update({ where: { id }, data: patch })
+	}
+
+	async deleteTelegramChannel(id: string) {
+		return this.prisma.telegramAdChannel.delete({ where: { id } })
+	}
+
 	async getActiveUsersNow() {
 		const fiveMinutesAgo = new Date()
 		fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5)
@@ -279,21 +593,48 @@ export class AdminService {
 			this.prisma.balanceHistory.aggregate({ where: { type: 'PAYMENT', createdAt: { gte: from, lte: to } }, _sum: { amount: true } }),
 		])
 
-		// По дням
+		// По дням — CTE вместо коррелированных подзапросов
 		const byDay = await this.prisma.$queryRaw<Array<{
 			date: string; found: bigint; not_found: bigint; errors: bigint; new_users: bigint; captchas: bigint
 		}>>`
+			WITH exec_dates AS (
+				SELECT DISTINCT DATE(e."createdAt") AS date
+				FROM executions e
+				WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
+			),
+			exec_stats AS (
+				SELECT
+					DATE(e."createdAt") AS date,
+					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = true  THEN 1 END) AS found,
+					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = false THEN 1 END) AS not_found,
+					COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) AS errors
+				FROM executions e
+				WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
+				GROUP BY DATE(e."createdAt")
+			),
+			user_stats AS (
+				SELECT DATE(u."createdAt") AS date, COUNT(*) AS new_users
+				FROM users u
+				WHERE DATE(u."createdAt") IN (SELECT date FROM exec_dates)
+				GROUP BY DATE(u."createdAt")
+			),
+			captcha_stats AS (
+				SELECT DATE(c."createdAt") AS date, COUNT(*) AS captchas
+				FROM captcha_events c
+				WHERE DATE(c."createdAt") IN (SELECT date FROM exec_dates)
+				GROUP BY DATE(c."createdAt")
+			)
 			SELECT
-				DATE(e."createdAt") as date,
-				COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = true THEN 1 END) as found,
-				COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = false THEN 1 END) as not_found,
-				COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) as errors,
-				(SELECT COUNT(*) FROM users u WHERE DATE(u."createdAt") = DATE(e."createdAt")) as new_users,
-				(SELECT COUNT(*) FROM captcha_events c WHERE DATE(c."createdAt") = DATE(e."createdAt")) as captchas
-			FROM executions e
-			WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
-			GROUP BY DATE(e."createdAt")
-			ORDER BY date DESC
+				es.date::text AS date,
+				es.found,
+				es.not_found,
+				es.errors,
+				COALESCE(us.new_users, 0) AS new_users,
+				COALESCE(cs.captchas, 0) AS captchas
+			FROM exec_stats es
+			LEFT JOIN user_stats   us ON us.date = es.date
+			LEFT JOIN captcha_stats cs ON cs.date = es.date
+			ORDER BY es.date DESC
 			LIMIT 30
 		`
 
@@ -377,5 +718,17 @@ export class AdminService {
 				totalPaymentPoints: totalPayments._sum.amount ?? 0,
 			},
 		}
+	}
+
+	async deleteUser(userId: string) {
+		return this.prisma.user.delete({ where: { id: userId } })
+	}
+
+	async deleteWebsite(websiteId: string) {
+		return this.prisma.website.delete({ where: { id: websiteId } })
+	}
+
+	async deleteAdminTask(taskId: string) {
+		return this.prisma.task.delete({ where: { id: taskId } })
 	}
 }

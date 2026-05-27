@@ -147,36 +147,36 @@ export class TasksService {
 	async getAvailableTasks(executorId: string, limit: number = 10) {
 		const safeLimit = Math.max(1, Math.min(limit, 100))
 
-		// Cooldown: один и тот же ключевик не чаще 2 раз в неделю (3.5 дня)
-		const cooldownDate = new Date(Date.now() - 3.5 * 24 * 60 * 60 * 1000)
+		// Cooldown: один и тот же ключевик не чаще раза в 15 дней на исполнителя
+		const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
 
 		// ПФ-маскировка: один executor не должен находить один и тот же сайт по
 		// многим разным ключевикам — Яндекс кластеризует юзеров и ловит паттерн.
 		// Лимиты на уровне сайта:
-		//   • max 2 выполнения одного сайта за неделю на одного executor
-		//   • spacing: следующий визит того же сайта не раньше чем через 24ч
-		const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-		const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+		//   • max 2 выполнения одного сайта за 30 дней на одного executor
+		//   • spacing: следующий визит того же сайта не раньше чем через 10 дней
+		const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		const minGapAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
 
-		const weeklyHitsBySite = await this.prisma.execution.groupBy({
+		const monthlyHitsBySite = await this.prisma.execution.groupBy({
 			by: ['websiteId'],
 			where: {
 				executorId,
 				status: 'COMPLETED',
-				completedAt: { gte: weekAgo },
+				completedAt: { gte: monthAgo },
 			},
 			_count: { _all: true },
 		})
-		const sitesAtWeeklyLimit = weeklyHitsBySite
+		const sitesAtMonthlyLimit = monthlyHitsBySite
 			.filter(s => s._count._all >= 2)
 			.map(s => s.websiteId)
 
-		const sitesVisitedToday = await this.prisma.execution
+		const sitesVisitedRecently = await this.prisma.execution
 			.findMany({
 				where: {
 					executorId,
 					status: 'COMPLETED',
-					completedAt: { gte: dayAgo },
+					completedAt: { gte: minGapAgo },
 				},
 				select: { websiteId: true },
 				distinct: ['websiteId'],
@@ -184,7 +184,7 @@ export class TasksService {
 			.then(r => r.map(e => e.websiteId))
 
 		const blockedWebsiteIds = Array.from(
-			new Set([...sitesAtWeeklyLimit, ...sitesVisitedToday]),
+			new Set([...sitesAtMonthlyLimit, ...sitesVisitedRecently]),
 		)
 
 		// Задачи, где ключевик не найден у этого исполнителя — больше не показывать
@@ -227,12 +227,67 @@ export class TasksService {
 			take: Math.min(safeLimit * 3, 300),
 		})
 
+		// Дневной cap считается на УРОВНЕ САЙТА (не ключевика).
+		// Антифрод Яндекса смотрит на трафик на домен — 10 ключей × 20 визитов = 200/день
+		// на один домен = красный флаг. Нужен общий site-cap.
+		const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+		const candidateSiteIds = Array.from(new Set(allTasks.map(t => t.websiteId)))
+
+		// Сегодняшние выполнения по сайтам
+		const todayCountsBySite = candidateSiteIds.length > 0
+			? await this.prisma.execution.groupBy({
+				by: ['websiteId'],
+				where: {
+					websiteId: { in: candidateSiteIds },
+					status: 'COMPLETED',
+					completedAt: { gte: dayAgo24h },
+				},
+				_count: { _all: true },
+			})
+			: []
+		const todayCountBySite = new Map(todayCountsBySite.map(c => [c.websiteId, c._count._all]))
+
+		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
+		const allSiteTasks = candidateSiteIds.length > 0
+			? await this.prisma.task.findMany({
+				where: { websiteId: { in: candidateSiteIds }, isActive: true, keywordStatus: 'ACTIVE' },
+				select: { websiteId: true, type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
+			})
+			: []
+		const siteTargetMap = new Map<string, number>()
+		for (const t of allSiteTasks) {
+			const cur = siteTargetMap.get(t.websiteId) ?? 0
+			siteTargetMap.set(t.websiteId, cur + this.getTaskDailyTarget(t))
+		}
+		// Явный override из website.dailyVisitsTarget (если задан пользователем)
+		const websiteOverrides = candidateSiteIds.length > 0
+			? await this.prisma.website.findMany({
+				where: { id: { in: candidateSiteIds }, dailyVisitsTarget: { not: null } },
+				select: { id: true, dailyVisitsTarget: true },
+			})
+			: []
+		for (const w of websiteOverrides) {
+			if (w.dailyVisitsTarget != null) siteTargetMap.set(w.id, w.dailyVisitsTarget)
+		}
+
+		// Потолок от размера сети (кэш 5 мин)
+		const networkCap = await this.getNetworkPerSiteCapacity()
+
 		const availableTasks = []
 
 		for (const task of allTasks) {
 			// Дополнительная защита: никогда не возвращаем собственные задачи
 			if (task.website.userId === executorId) continue
 			if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) continue
+
+			// Site daily cap: эффективный target = min(пользовательский, network),
+			// потом warm-up разгон от website.createdAt
+			const userSiteTarget = siteTargetMap.get(task.websiteId) ?? 0
+			const cappedTarget = Math.min(userSiteTarget, networkCap)
+			const rampedCap = this.rampedDailyCap(cappedTarget, task.website.createdAt)
+			const todayOnSite = todayCountBySite.get(task.websiteId) ?? 0
+			if (todayOnSite >= rampedCap) continue
+
 			const reward = this.getTaskRewardBounds(task)
 			availableTasks.push({
 				id: task.id,
@@ -358,7 +413,7 @@ export class TasksService {
 					throw new BadRequestException('Cannot assign own task')
 				}
 
-				const cooldownDate = new Date(Date.now() - 3.5 * 24 * 60 * 60 * 1000)
+				const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
 				const alreadyCompleted = await prisma.execution.count({
 					where: {
 						taskId,
@@ -373,31 +428,56 @@ export class TasksService {
 				}
 
 				// ПФ-маскировка: лимиты на сайт от одного executor
-				const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-				const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+				const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+				const minGapAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
 
-				const siteVisitsThisWeek = await prisma.execution.count({
+				const siteVisitsThisMonth = await prisma.execution.count({
 					where: {
 						websiteId: task.websiteId,
 						executorId,
 						status: 'COMPLETED',
-						completedAt: { gte: weekAgo },
+						completedAt: { gte: monthAgo },
 					},
 				})
-				if (siteVisitsThisWeek >= 2) {
-					throw new BadRequestException('Weekly site limit reached for this user')
+				if (siteVisitsThisMonth >= 2) {
+					throw new BadRequestException('Monthly site limit reached for this user')
 				}
 
-				const siteVisitToday = await prisma.execution.count({
+				const siteVisitRecently = await prisma.execution.count({
 					where: {
 						websiteId: task.websiteId,
 						executorId,
 						status: 'COMPLETED',
-						completedAt: { gte: dayAgo },
+						completedAt: { gte: minGapAgo },
 					},
 				})
-				if (siteVisitToday > 0) {
-					throw new BadRequestException('Daily site spacing — try again in 24h')
+				if (siteVisitRecently > 0) {
+					throw new BadRequestException('Site spacing — try again in 10 days')
+				}
+
+				// Site daily cap с warm-up: считается на УРОВНЕ САЙТА (не ключа).
+				// target = сумма target'ов всех активных ключей сайта, кэп min(target, network),
+				// потом плавный разгон от 3 в первый день до полного потолка за 14 дней.
+				const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+				const todayOnSite = await prisma.execution.count({
+					where: { websiteId: task.websiteId, status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+				})
+				// Site target: явный override из website.dailyVisitsTarget или сумма ключей
+				const userSiteTarget = task.website.dailyVisitsTarget ?? await (async () => {
+					const siteTasksForTarget = await prisma.task.findMany({
+						where: { websiteId: task.websiteId, isActive: true, keywordStatus: 'ACTIVE' },
+						select: { type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
+					})
+					return siteTasksForTarget.reduce(
+						(sum, t) => sum + this.getTaskDailyTarget(t),
+						0,
+					)
+				})()
+				const networkCap = await this.getNetworkPerSiteCapacity()
+				const cappedTarget = Math.min(userSiteTarget, networkCap)
+				const rampedCap = this.rampedDailyCap(cappedTarget, task.website.createdAt)
+				if (todayOnSite >= rampedCap) {
+					throw new BadRequestException('Daily site cap reached (warm-up / network limit)')
 				}
 
 				if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) {
@@ -550,6 +630,62 @@ export class TasksService {
 			},
 		})
 		return { success: true }
+	}
+
+	// Целевой дневной лимит задачи: сумма maxYandexVisits + maxGoogleVisits с учётом
+	// какие движки реально включены. Это потолок, к которому ramp-up разгоняется.
+	private getTaskDailyTarget(task: {
+		type: string
+		maxYandexVisits?: number | null
+		maxGoogleVisits?: number | null
+		useYandex?: boolean | null
+		useGoogle?: boolean | null
+	}): number {
+		if (task.type === 'EXTERNAL_LINK') {
+			return Math.max(1, task.maxYandexVisits ?? 5)
+		}
+		const yandex = task.useYandex !== false ? (task.maxYandexVisits ?? 5) : 0
+		const google = task.useGoogle !== false ? (task.maxGoogleVisits ?? 5) : 0
+		return Math.max(1, yandex + google)
+	}
+
+	// Сколько визитов в день на ОДИН сайт физически может выдать сеть.
+	// Каждая нода: max 2 визита на сайт за 30 дней → 2/30 в день на сайт.
+	// Если активных нод 500 → ~33/день/сайт. Если 5000 → ~333/день/сайт.
+	// Кэш 5 минут — запрос на distinct executors недешёвый.
+	private networkCapCache: { value: number; expiresAt: number } | null = null
+	private async getNetworkPerSiteCapacity(): Promise<number> {
+		const now = Date.now()
+		if (this.networkCapCache && this.networkCapCache.expiresAt > now) {
+			return this.networkCapCache.value
+		}
+		const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
+		const distinctExecutors = await this.prisma.execution.findMany({
+			where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
+			select: { executorId: true },
+			distinct: ['executorId'],
+		})
+		const activeCount = distinctExecutors.length
+		const capacity = Math.max(3, Math.floor((activeCount * 2) / 30))
+		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
+		return capacity
+	}
+
+	// Плавный warm-up: первый день — 3 визита, к 14-му дню — target.
+	// Кривая ease-in (x²) — медленный старт, ускорение к концу.
+	// Защищает новые сайты от резкого всплеска трафика, который ловит антифрод Яндекса.
+	private rampedDailyCap(targetMax: number, createdAt: Date): number {
+		const START_CAP = 3
+		const RAMP_DAYS = 14
+		const daysActive = Math.max(
+			0,
+			Math.floor((Date.now() - createdAt.getTime()) / (24 * 60 * 60 * 1000)),
+		)
+		if (daysActive >= RAMP_DAYS) return targetMax
+		if (targetMax <= START_CAP) return targetMax
+		const progress = daysActive / RAMP_DAYS
+		const eased = progress * progress
+		return Math.max(START_CAP, Math.floor(START_CAP + (targetMax - START_CAP) * eased))
 	}
 
 	private getTaskRewardBounds(task: {
