@@ -135,6 +135,9 @@ model Execution {
   events   ExecutionEvent[]
 
   @@index([executorId, websiteId, weekStart])
+  @@index([executorId, status, completedAt])
+  @@index([websiteId, status, completedAt])
+  @@index([taskId, executorId, status])
   @@map("executions")
 }
 

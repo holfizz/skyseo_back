@@ -197,106 +197,112 @@ export class TasksService {
 			})
 			.then(r => r.map(e => e.taskId))
 
-		const allTasks = await this.prisma.task.findMany({
-			where: {
+		// Базовый фильтр доступных для исполнителя задач (без site-cap)
+		const eligibleTaskWhere = {
+			isActive: true,
+			keywordStatus: 'ACTIVE' as const,
+			status: 'PENDING' as const,
+			...(notInSerpTaskIds.length > 0 ? { id: { notIn: notInSerpTaskIds } } : {}),
+			executions: {
+				none: {
+					executorId,
+					status: 'COMPLETED' as const,
+					completedAt: { gte: cooldownDate },
+				},
+			},
+			website: {
 				isActive: true,
-				keywordStatus: 'ACTIVE',
-				status: 'PENDING',
-				...(notInSerpTaskIds.length > 0 ? { id: { notIn: notInSerpTaskIds } } : {}),
-				executions: {
-					none: {
-						executorId,
-						status: 'COMPLETED',
-						completedAt: { gte: cooldownDate },
-					},
-				},
-				website: {
-					isActive: true,
-					userId: { not: executorId },
-					...(blockedWebsiteIds.length > 0 ? { id: { notIn: blockedWebsiteIds } } : {}),
-					NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
-				},
+				userId: { not: executorId },
+				...(blockedWebsiteIds.length > 0 ? { id: { notIn: blockedWebsiteIds } } : {}),
+				NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
 			},
-			include: {
-				website: {
-					include: {
-						user: true,
-					},
-				},
-			},
-			orderBy: { createdAt: 'asc' }, // FIFO - кто первый создал
-			// Окно кандидатов ФИКСИРОВАННОЕ (не зависит от limit). Иначе count
-			// (limit=100 → окно 300) и loop (limit=5 → окно 150) сканируют разное
-			// число задач: если первые 150 сидят на сайтах в дневном капе, count
-			// видит свободные на позициях 150-300 и пишет «99 доступно», а loop
-			// возвращает 0 → «нет задач» при реально доступных. Одинаковое окно
-			// гарантирует, что результат loop — всегда префикс результата count.
-			take: 300,
-		})
+		}
+
+		// Сайты, у которых вообще есть eligible-задачи (distinct — ограничено числом сайтов)
+		const eligibleSiteIds = await this.prisma.task
+			.findMany({ where: eligibleTaskWhere, select: { websiteId: true }, distinct: ['websiteId'] })
+			.then(r => r.map(t => t.websiteId))
+
+		if (eligibleSiteIds.length === 0) return []
 
 		// Дневной cap считается на УРОВНЕ САЙТА (не ключевика).
 		// Антифрод Яндекса смотрит на трафик на домен — 10 ключей × 20 визитов = 200/день
 		// на один домен = красный флаг. Нужен общий site-cap.
+		// Считаем cap для ВСЕХ eligible-сайтов ДО окна кандидатов — иначе закапанные
+		// сайты съедают окно и реально доступные задачи (за позицией 300) не выдаются.
 		const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
-		const candidateSiteIds = Array.from(new Set(allTasks.map(t => t.websiteId)))
 
-		// Сегодняшние выполнения по сайтам
-		const todayCountsBySite = candidateSiteIds.length > 0
-			? await this.prisma.execution.groupBy({
-				by: ['websiteId'],
-				where: {
-					websiteId: { in: candidateSiteIds },
-					status: 'COMPLETED',
-					completedAt: { gte: dayAgo24h },
-				},
-				_count: { _all: true },
-			})
-			: []
+		const todayCountsBySite = await this.prisma.execution.groupBy({
+			by: ['websiteId'],
+			where: { websiteId: { in: eligibleSiteIds }, status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+			_count: { _all: true },
+		})
 		const todayCountBySite = new Map(todayCountsBySite.map(c => [c.websiteId, c._count._all]))
 
 		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
-		const allSiteTasks = candidateSiteIds.length > 0
-			? await this.prisma.task.findMany({
-				where: { websiteId: { in: candidateSiteIds }, isActive: true, keywordStatus: 'ACTIVE' },
-				select: { websiteId: true, type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
-			})
-			: []
+		const allSiteTasks = await this.prisma.task.findMany({
+			where: { websiteId: { in: eligibleSiteIds }, isActive: true, keywordStatus: 'ACTIVE' },
+			select: { websiteId: true, type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
+		})
 		const siteTargetMap = new Map<string, number>()
 		for (const t of allSiteTasks) {
 			const cur = siteTargetMap.get(t.websiteId) ?? 0
 			siteTargetMap.set(t.websiteId, cur + this.getTaskDailyTarget(t))
 		}
-		// Явный override из website.dailyVisitsTarget (если задан пользователем)
-		const websiteOverrides = candidateSiteIds.length > 0
-			? await this.prisma.website.findMany({
-				where: { id: { in: candidateSiteIds }, dailyVisitsTarget: { not: null } },
-				select: { id: true, dailyVisitsTarget: true },
+
+		// Метаданные сайтов: createdAt (warm-up), override target, владелец (платный приоритет)
+		const websiteMeta = await this.prisma.website.findMany({
+			where: { id: { in: eligibleSiteIds } },
+			select: { id: true, createdAt: true, dailyVisitsTarget: true, userId: true },
+		})
+
+		const networkCap = await this.getNetworkPerSiteCapacity()
+		const paidOwners = await this.getPaidPriorityOwners()
+
+		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
+		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean }>()
+		for (const site of websiteMeta) {
+			const userSiteTarget = site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
+			const cappedTarget = Math.min(userSiteTarget, networkCap)
+			const rampedCap = this.rampedDailyCap(cappedTarget, site.createdAt)
+			const todayOnSite = todayCountBySite.get(site.id) ?? 0
+			if (todayOnSite >= rampedCap) continue // сайт упёрся в дневной cap
+			siteInfo.set(site.id, {
+				fillRatio: rampedCap > 0 ? todayOnSite / rampedCap : 1,
+				isPaid: paidOwners.has(site.userId),
 			})
-			: []
-		for (const w of websiteOverrides) {
-			if (w.dailyVisitsTarget != null) siteTargetMap.set(w.id, w.dailyVisitsTarget)
 		}
 
-		// Потолок от размера сети (кэш 5 мин)
-		const networkCap = await this.getNetworkPerSiteCapacity()
+		const availableSiteIds = Array.from(siteInfo.keys())
+		if (availableSiteIds.length === 0) return []
 
-		const availableTasks = []
+		// Окно кандидатов только по НЕзакапанным сайтам → все 300 реально доступны.
+		const allTasks = await this.prisma.task.findMany({
+			where: { ...eligibleTaskWhere, website: { ...eligibleTaskWhere.website, id: { in: availableSiteIds } } },
+			include: { website: { include: { user: true } } },
+			orderBy: { createdAt: 'asc' }, // FIFO внутри равных по нагрузке/приоритету
+			take: 300,
+		})
 
+		const candidates = []
 		for (const task of allTasks) {
-			// Дополнительная защита: никогда не возвращаем собственные задачи
-			if (task.website.userId === executorId) continue
+			if (task.website.userId === executorId) continue // защита: не свои
 			if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) continue
+			const info = siteInfo.get(task.websiteId)
+			if (!info) continue
+			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio })
+		}
 
-			// Site daily cap: эффективный target = min(пользовательский, network),
-			// потом warm-up разгон от website.createdAt
-			const userSiteTarget = siteTargetMap.get(task.websiteId) ?? 0
-			const cappedTarget = Math.min(userSiteTarget, networkCap)
-			const rampedCap = this.rampedDailyCap(cappedTarget, task.website.createdAt)
-			const todayOnSite = todayCountBySite.get(task.websiteId) ?? 0
-			if (todayOnSite >= rampedCap) continue
+		// Приоритет выдачи: платные сайты → наименее загруженные сегодня → FIFO.
+		candidates.sort((a, b) => {
+			if (a.isPaid !== b.isPaid) return a.isPaid ? -1 : 1
+			if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
+			return a.task.createdAt.getTime() - b.task.createdAt.getTime()
+		})
 
+		return candidates.slice(0, safeLimit).map(({ task }) => {
 			const reward = this.getTaskRewardBounds(task)
-			availableTasks.push({
+			return {
 				id: task.id,
 				websiteId: task.websiteId,
 				websiteName: task.website.name,
@@ -314,11 +320,8 @@ export class TasksService {
 				createdAt: task.createdAt,
 				alreadyCompleted: false,
 				remainingExecutions: 1,
-			})
-			if (availableTasks.length >= safeLimit) break
-		}
-
-		return availableTasks
+			}
+		})
 	}
 
 	async getUserTasks(userId: string, websiteId?: string) {
@@ -676,6 +679,61 @@ export class TasksService {
 		const capacity = Math.max(3, Math.floor((activeCount * 2) / 30))
 		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
 		return capacity
+	}
+
+	// Владельцы с «живыми» купленными баллами — их сайты идут в приоритет выдачи.
+	// Приоритет держится, пока купленные баллы не израсходованы. Бесплатные баллы
+	// (welcome 1000 + referral + earned + refund + положительный admin) тратятся
+	// первыми, купленные — последними (favourable к покупателю):
+	//   paidConsumed = max(0, потрачено − бесплатные);  paidRemaining = куплено − paidConsumed
+	// Кэш 5 мин — пересчёт по всей балансовой истории недёшев, а набор меняется редко.
+	private static readonly WELCOME_BASELINE = 1000 // User.balance @default(1000), без записи в history
+	private paidOwnersCache: { value: Set<string>; expiresAt: number } | null = null
+	private async getPaidPriorityOwners(): Promise<Set<string>> {
+		const now = Date.now()
+		if (this.paidOwnersCache && this.paidOwnersCache.expiresAt > now) {
+			return this.paidOwnersCache.value
+		}
+
+		// Только покупатели (есть запись PAYMENT) — остальных считать незачем
+		const buyers = await this.prisma.balanceHistory.findMany({
+			where: { type: 'PAYMENT' },
+			select: { userId: true },
+			distinct: ['userId'],
+		})
+		const buyerIds = buyers.map(b => b.userId)
+
+		const set = new Set<string>()
+		if (buyerIds.length > 0) {
+			const sums = await this.prisma.balanceHistory.groupBy({
+				by: ['userId', 'type'],
+				where: { userId: { in: buyerIds } },
+				_sum: { amount: true },
+			})
+			const perUser = new Map<string, { purchased: number; free: number; spent: number }>()
+			for (const row of sums) {
+				const acc = perUser.get(row.userId) ?? { purchased: 0, free: 0, spent: 0 }
+				const amt = row._sum.amount ?? 0
+				if (row.type === 'PAYMENT') {
+					acc.purchased += amt
+				} else if (row.type === 'TASK_SPENT') {
+					acc.spent += -amt // TASK_SPENT хранится отрицательным
+				} else {
+					// WELCOME_BONUS / REFERRAL_BONUS / TASK_EARNED / REFUND / ADMIN_ADJUSTMENT
+					if (amt >= 0) acc.free += amt
+					else acc.spent += -amt // отрицательная admin-корректировка = списание
+				}
+				perUser.set(row.userId, acc)
+			}
+			for (const [uid, acc] of perUser) {
+				const free = acc.free + TasksService.WELCOME_BASELINE
+				const paidConsumed = Math.max(0, acc.spent - free)
+				if (acc.purchased - paidConsumed > 0) set.add(uid)
+			}
+		}
+
+		this.paidOwnersCache = { value: set, expiresAt: now + 5 * 60 * 1000 }
+		return set
 	}
 
 	// Плавный warm-up: первый день — 3 визита, к 14-му дню — target.
