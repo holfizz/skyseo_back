@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Request, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import {
 	ForgotPasswordDto,
@@ -7,10 +7,22 @@ import {
 	ResetPasswordDto,
 } from './dto'
 import { JwtAuthGuard } from './jwt-auth.guard'
+import { lookupPromoCode } from './promo-codes'
+import { PrismaService } from '../prisma/prisma.service'
 
 @Controller('auth')
 export class AuthController {
-	constructor(private authService: AuthService) {}
+	constructor(
+		private authService: AuthService,
+		private prisma: PrismaService,
+	) {}
+
+	@Get('check-promo')
+	async checkPromo(@Query('code') code: string) {
+		const promo = await lookupPromoCode(this.prisma, code)
+		if (!promo) return { valid: false }
+		return { valid: true, bonusPoints: promo.bonusPoints, description: promo.description }
+	}
 
 	@Post('register')
 	async register(@Body() dto: RegisterDto, @Request() req: any) {

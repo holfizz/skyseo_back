@@ -78,13 +78,14 @@ export class TasksService {
 			validateKeyword(dto.keyword)
 		}
 
-		// Лимит 50 ключевых слов на сайт (только активные)
+		// Лимит ключевых слов на сайт (только активные).
+		// Сеть распределяет визиты по всем ключам, так что допускаем большие списки.
 		const keywordCount = await this.prisma.task.count({
 			where: { websiteId: dto.websiteId, isActive: true },
 		})
-		if (keywordCount >= 50) {
+		if (keywordCount >= 200) {
 			throw new BadRequestException(
-				'Достигнут лимит в 50 ключевых слов для этого сайта',
+				'Достигнут лимит в 200 ключевых слов для этого сайта',
 			)
 		}
 
@@ -224,7 +225,10 @@ export class TasksService {
 				},
 			},
 			orderBy: { createdAt: 'asc' }, // FIFO - кто первый создал
-			take: Math.min(safeLimit * 3, 300),
+			// Окно кандидатов: даже при маленьком limit (loop берёт по 5) нужно
+			// просмотреть достаточно задач, иначе первые N окажутся на сайтах,
+			// уже достигших дневного капа, и вернётся 0 при реально доступных задачах.
+			take: Math.min(Math.max(safeLimit * 3, 150), 300),
 		})
 
 		// Дневной cap считается на УРОВНЕ САЙТА (не ключевика).

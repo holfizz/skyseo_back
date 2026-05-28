@@ -26,6 +26,7 @@ model User {
   emailVerified          Boolean   @default(false) // Подтверждение email
   emailVerificationToken String?   @unique // Токен для подтверждения email
   lastLoginIp            String? // Последний IP входа
+  lastSeenAt             DateTime? // Последний раз онлайн (обновляется при логине)
   registrationIp         String? // IP регистрации
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка

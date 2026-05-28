@@ -11,15 +11,6 @@ CREATE TABLE "promo_codes" (
 );
 CREATE UNIQUE INDEX "promo_codes_code_key" ON "promo_codes"("code");
 
--- Seed существующих хардкод-кодов чтобы они продолжили работать
-INSERT INTO "promo_codes" ("id", "code", "bonusPoints", "description", "isActive", "createdAt", "updatedAt") VALUES
-    (gen_random_uuid()::text, 'INSTAGRAM', 500, 'Instagram реклама', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    (gen_random_uuid()::text, 'TG', 500, 'Telegram канал SkySEO', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    (gen_random_uuid()::text, 'YOUTUBE', 1000, 'YouTube блогеры', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    (gen_random_uuid()::text, 'VC', 500, 'vc.ru статья', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    (gen_random_uuid()::text, 'HABR', 500, 'Habr статья', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-    (gen_random_uuid()::text, 'FRIEND', 300, 'От друга', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
 -- FunnelEntry table — учёт воронки по каналам
 CREATE TABLE "funnel_entries" (
     "id" TEXT NOT NULL,

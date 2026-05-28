@@ -32,6 +32,9 @@ export class MetrikaService implements OnModuleInit {
 	private get clientSecret(): string { return this.config.get('METRIKA_CLIENT_SECRET') || '' }
 
 	getAuthUrl(): string {
+		// Без client_id Яндекс вернёт «400 Отсутствует обязательный параметр client_id».
+		// Не отдаём битую ссылку — фронт покажет, что нужно настроить сервер.
+		if (!this.clientId) return ''
 		return `${OAUTH_URL}/authorize?response_type=code&client_id=${this.clientId}`
 	}
 

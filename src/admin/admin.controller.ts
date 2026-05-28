@@ -76,6 +76,16 @@ export class AdminController {
 		return this.adminService.getActiveUsersNow()
 	}
 
+	@Get('inactive-users')
+	async getInactiveUsers(@Query('days') days?: string) {
+		return this.adminService.getInactiveUsers(days ? Number(days) : 7)
+	}
+
+	@Get('promo-codes/:code/users')
+	async getPromoCodeUsers(@Param('code') code: string, @Query('inactiveDays') inactiveDays?: string) {
+		return this.adminService.getPromoCodeUsers(code, inactiveDays ? Number(inactiveDays) : undefined)
+	}
+
 	@Get('promo-codes-stats')
 	async getPromoCodesStats() {
 		return this.adminService.getPromoCodesStats()

@@ -210,6 +210,81 @@ export class AdminService {
 		})
 	}
 
+	async getInactiveUsers(days: number) {
+		const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+		// Пользователи у которых нет ни одного completed execution за последние N дней
+		// (значит приложение не работало — оно создаёт executions только когда запущено)
+		const users = await this.prisma.$queryRaw<Array<{
+			id: string
+			email: string
+			balance: number
+			promoCode: string | null
+			lastSeenAt: Date | null
+			lastExecution: Date | null
+			createdAt: Date
+			city: string | null
+			appVersion: string | null
+		}>>`
+			SELECT u.id, u.email, u.balance, u."promoCode", u."lastSeenAt",
+			       u."createdAt", u.city, u."appVersion",
+			       MAX(e."completedAt") AS "lastExecution"
+			FROM users u
+			LEFT JOIN executions e ON e."executorId" = u.id AND e.status = 'COMPLETED'
+			WHERE u.role = 'USER'
+			GROUP BY u.id
+			HAVING MAX(e."completedAt") IS NULL OR MAX(e."completedAt") < ${cutoff}
+			ORDER BY MAX(e."completedAt") DESC NULLS LAST
+			LIMIT 500
+		`
+		return {
+			days,
+			total: users.length,
+			users: users.map(u => ({
+				...u,
+				daysSinceLastExecution: u.lastExecution
+					? Math.floor((Date.now() - new Date(u.lastExecution).getTime()) / 86400000)
+					: null,
+			})),
+		}
+	}
+
+	async getPromoCodeUsers(code: string, inactiveDays?: number) {
+		const normalized = code.trim().toUpperCase()
+
+		const allUsers = await this.prisma.$queryRaw<Array<{
+			id: string
+			email: string
+			balance: number
+			lastSeenAt: Date | null
+			createdAt: Date
+			city: string | null
+		}>>`
+			SELECT id, email, balance, "lastSeenAt", "createdAt", city
+			FROM users
+			WHERE "promoCode" = ${normalized}
+			ORDER BY "createdAt" DESC
+		`
+
+		const withOffline = allUsers.map(u => ({
+			...u,
+			daysOffline: u.lastSeenAt
+				? Math.floor((Date.now() - new Date(u.lastSeenAt).getTime()) / 86400000)
+				: null,
+		}))
+
+		const filtered = inactiveDays
+			? withOffline.filter(u => u.daysOffline === null || u.daysOffline >= inactiveDays)
+			: withOffline
+
+		return {
+			code: normalized,
+			inactiveDays: inactiveDays ?? null,
+			total: filtered.length,
+			totalAll: allUsers.length,
+			users: filtered,
+		}
+	}
+
 	async getPromoCodesStats() {
 		// Все юзеры с промокодом (используем raw чтобы избежать рекурсивных типов Prisma groupBy)
 		const usersByCode = await this.prisma.$queryRaw<Array<{
