@@ -156,18 +156,7 @@ export class PaymentsService {
 			)
 
 			// Реферальный бонус — +10% пригласившему
-			if (payment.user.referredBy) {
-				const referralBonus = Math.floor(payment.points * 0.1)
-				if (referralBonus > 0) {
-					await this.usersService.updateBalance(
-						payment.user.referredBy,
-						referralBonus,
-						'REFERRAL_BONUS',
-						`Реферальный бонус 10% от пополнения друга (${payment.points} баллов)`,
-					)
-					console.log(`[Payments] Реферальный бонус ${referralBonus} баллов → ${payment.user.referredBy}`)
-				}
-			}
+			await this.grantReferralBonus(payment.user.referredBy, payment.points)
 
 			console.log('[Payments] Balance updated', {
 				paymentId: payment.id,
@@ -287,6 +276,9 @@ export class PaymentsService {
 						`Пополнение баланса на ${payment.amount} ₽`,
 					)
 
+					// Реферальный бонус — +10% пригласившему (тот же путь, что и в webhook)
+					await this.grantReferralBonus(payment.user.referredBy, payment.points)
+
 					console.log('[Payments] Balance updated for payment', {
 						paymentId: payment.id,
 					})
@@ -336,6 +328,22 @@ export class PaymentsService {
 		}
 
 		return payment
+	}
+
+	// +10% баллов пригласившему с каждого пополнения друга.
+	// Вызывается из обоих путей подтверждения платежа (webhook и polling) —
+	// они взаимоисключающие по статусу, поэтому бонус начислится ровно один раз.
+	private async grantReferralBonus(referredBy: string | null | undefined, points: number) {
+		if (!referredBy) return
+		const referralBonus = Math.floor(points * 0.1)
+		if (referralBonus <= 0) return
+		await this.usersService.updateBalance(
+			referredBy,
+			referralBonus,
+			'REFERRAL_BONUS',
+			`Реферальный бонус 10% от пополнения друга (${points} баллов)`,
+		)
+		console.log(`[Payments] Реферальный бонус ${referralBonus} баллов → ${referredBy}`)
 	}
 
 	private async createYooKassaPayment(

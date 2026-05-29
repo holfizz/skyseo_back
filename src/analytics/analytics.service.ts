@@ -11,6 +11,7 @@ export interface TrackEventDto {
 	utmContent?: string
 	referrer?: string
 	platform?: string
+	ref?: string
 }
 
 @Injectable()
@@ -30,6 +31,7 @@ export class AnalyticsService {
 				referrer: dto.referrer ?? null,
 				platform: dto.platform ?? null,
 				ip: ip ?? null,
+				ref: dto.ref ?? null,
 			},
 		})
 	}

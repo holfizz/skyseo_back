@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { UserType } from '@prisma/client'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -44,6 +44,34 @@ export class UsersService {
 		})
 	}
 
+	// Одноразовая привязка реферала из профиля — для тех, кто пропустил момент при
+	// регистрации. Привязать можно один раз: если referredBy уже стоит — изменить нельзя.
+	async claimReferral(userId: string, code: string) {
+		const normalized = code?.trim().toUpperCase()
+		if (!normalized) throw new BadRequestException('Код не указан')
+
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { referredBy: true, referralCode: true },
+		})
+		if (!user) throw new NotFoundException('Пользователь не найден')
+		if (user.referredBy) throw new BadRequestException('Реферал уже привязан — изменить нельзя')
+		if (user.referralCode === normalized) throw new BadRequestException('Нельзя указать свой код')
+
+		const referrer = await this.prisma.user.findUnique({
+			where: { referralCode: normalized },
+			select: { id: true },
+		})
+		if (!referrer) throw new BadRequestException('Код не найден')
+		if (referrer.id === userId) throw new BadRequestException('Нельзя пригласить самого себя')
+
+		await this.prisma.user.update({
+			where: { id: userId },
+			data: { referredBy: referrer.id },
+		})
+		return { ok: true }
+	}
+
 	async getProfile(userId: string) {
 		return this.prisma.user.findUnique({
 			where: { id: userId },
@@ -54,6 +82,8 @@ export class UsersService {
 				role: true,
 				emailVerified: true,
 				referralSource: true,
+				referralCode: true,
+				referredBy: true,
 				city: true,
 				createdAt: true,
 			},

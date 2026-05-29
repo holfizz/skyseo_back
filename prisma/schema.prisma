@@ -274,10 +274,12 @@ model PageEvent {
   referrer    String?
   platform    String?  // "mac-arm64" | "mac-x64" | "windows"
   ip          String?
+  ref         String?  // referralCode пригласившего (из ?ref= в реф-ссылке) — для IP-атрибуции
   createdAt   DateTime @default(now())
 
   @@index([type, createdAt])
   @@index([utmSource, createdAt])
+  @@index([ip, createdAt])
   @@map("page_events")
 }
 

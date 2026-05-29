@@ -228,14 +228,39 @@ export class AuthService {
 		// Генерируем уникальный реферальный код
 		const referralCode = randomBytes(4).toString('hex').toUpperCase()
 
-		// Ищем пригласившего по коду
+		// Единое поле «промокод или код друга»: одно значение может быть промокодом
+		// (бонус новичку + трекинг канала) ИЛИ реф-кодом друга. App шлёт одно поле,
+		// web — promoCode; берём любое присланное.
+		const enteredCode = (dto.referralCode || dto.promoCode)?.trim().toUpperCase() || undefined
+
+		// Промокод — если введённое совпало с активным промокодом
+		const promo = await lookupPromoCode(this.prisma, enteredCode)
+
+		// Реферал (кто пригласил): код в поле, если это реф-код; иначе фоллбэк по IP.
+		// При переходе по реф-ссылке /?ref=CODE мы записали PageEvent с ref и IP.
+		// Скачивание и регистрация идут с одной машины/сети → публичный IP тот же,
+		// находим последний реф-клик с этого IP за 72ч.
 		let referredBy: string | undefined
-		if (dto.referralCode) {
+		const resolveReferrer = async (code?: string) => {
+			if (!code || referredBy) return
 			const referrer = await this.prisma.user.findUnique({
-				where: { referralCode: dto.referralCode },
+				where: { referralCode: code },
 				select: { id: true },
 			})
 			if (referrer) referredBy = referrer.id
+		}
+		await resolveReferrer(enteredCode)
+		if (!referredBy && ipAddress) {
+			const recentClick = await this.prisma.pageEvent.findFirst({
+				where: {
+					ref: { not: null },
+					ip: ipAddress,
+					createdAt: { gte: new Date(Date.now() - 72 * 60 * 60 * 1000) },
+				},
+				orderBy: { createdAt: 'desc' },
+				select: { ref: true },
+			})
+			await resolveReferrer(recentClick?.ref?.trim().toUpperCase())
 		}
 
 		const userTypeMap: Record<string, string> = {
@@ -251,8 +276,6 @@ export class AuthService {
 			STARTUP: 'Стартапер',
 		}
 		const mappedUserType = dto.role ? userTypeMap[dto.role.toLowerCase()] as UserType : undefined
-
-		const promo = await lookupPromoCode(this.prisma, dto.promoCode)
 
 		const user = await this.usersService.create({
 			email: dto.email,

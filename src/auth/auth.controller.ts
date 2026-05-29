@@ -17,11 +17,52 @@ export class AuthController {
 		private prisma: PrismaService,
 	) {}
 
+	// Единое поле: код может быть промокодом (бонус новичку) ИЛИ кодом друга (реферал)
 	@Get('check-promo')
 	async checkPromo(@Query('code') code: string) {
 		const promo = await lookupPromoCode(this.prisma, code)
-		if (!promo) return { valid: false }
-		return { valid: true, bonusPoints: promo.bonusPoints, description: promo.description }
+		if (promo) {
+			return { valid: true, kind: 'promo', bonusPoints: promo.bonusPoints, description: promo.description }
+		}
+		const normalized = code?.trim().toUpperCase()
+		if (normalized) {
+			const referrer = await this.prisma.user.findUnique({
+				where: { referralCode: normalized },
+				select: { id: true },
+			})
+			if (referrer) return { valid: true, kind: 'referral' }
+		}
+		return { valid: false }
+	}
+
+	// Реф-код по IP: при переходе по реф-ссылке мы записали PageEvent(ref, ip).
+	// Приложение спрашивает на экране регистрации, чтобы подставить код в поле.
+	@Get('detect-referral')
+	async detectReferral(@Request() req: any) {
+		const ip =
+			req.headers['x-real-ip'] ||
+			req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+			req.ip
+		if (!ip) return { code: null }
+		const recentClick = await this.prisma.pageEvent.findFirst({
+			where: {
+				ref: { not: null },
+				ip,
+				createdAt: { gte: new Date(Date.now() - 72 * 60 * 60 * 1000) },
+			},
+			orderBy: { createdAt: 'desc' },
+			select: { ref: true },
+		})
+		const code = recentClick?.ref?.trim().toUpperCase()
+		if (code) {
+			// отдаём только если это реально существующий реф-код
+			const exists = await this.prisma.user.findUnique({
+				where: { referralCode: code },
+				select: { id: true },
+			})
+			if (exists) return { code }
+		}
+		return { code: null }
 	}
 
 	@Post('register')
