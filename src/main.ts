@@ -15,6 +15,7 @@ async function bootstrap() {
 		'172.16.0.0/12', // Docker networks
 		'10.0.0.0/8', // Private networks
 		'192.168.0.0/16', // Private networks
+		'193.242.106.50', // зеркало i.skyseo.site — доверяем X-Forwarded-For от него
 	])
 
 	app.use(helmet({

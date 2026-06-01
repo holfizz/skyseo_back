@@ -130,6 +130,7 @@ export class TelegramService {
 		ipAddress: string,
 		balance: number,
 		userType: string,
+		promoCode?: string,
 	) {
 		const message =
 			`🆕 <b>Новая регистрация</b>\n\n` +
@@ -137,6 +138,7 @@ export class TelegramService {
 			`👤 Роль: ${userType}\n` +
 			`🌍 Город: ${city || 'Не указан'}\n` +
 			`📍 Источник: ${source || 'Не указан'}\n` +
+			`🎟 Промокод: ${promoCode || 'Не указан'}\n` +
 			`🌐 IP: ${ipAddress || 'Не определен'}\n` +
 			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 

@@ -318,6 +318,7 @@ export class AuthService {
 			ipAddress || 'Не определен',
 			user.balance,
 			userTypeLabel,
+			user.promoCode || undefined,
 		).catch(err => console.error('[AuthService] Telegram notification failed:', err.message))
 
 		this.notificationsService.sendWelcomeAndVerificationEmail(
