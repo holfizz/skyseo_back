@@ -248,7 +248,7 @@ export class AdminService {
 		}
 	}
 
-	async getPromoCodeUsers(code: string, inactiveDays?: number) {
+	async getPromoCodeUsers(code: string, inactiveDays?: number, appStatus?: string) {
 		const normalized = code.trim().toUpperCase()
 
 		const allUsers = await this.prisma.$queryRaw<Array<{
@@ -258,8 +258,9 @@ export class AdminService {
 			lastSeenAt: Date | null
 			createdAt: Date
 			city: string | null
+			appStatus: string
 		}>>`
-			SELECT id, email, balance, "lastSeenAt", "createdAt", city
+			SELECT id, email, balance, "lastSeenAt", "createdAt", city, "appStatus"
 			FROM users
 			WHERE "promoCode" = ${normalized}
 			ORDER BY "createdAt" DESC
@@ -272,13 +273,18 @@ export class AdminService {
 				: null,
 		}))
 
-		const filtered = inactiveDays
-			? withOffline.filter(u => u.daysOffline === null || u.daysOffline >= inactiveDays)
-			: withOffline
+		let filtered = withOffline
+		if (inactiveDays) {
+			filtered = filtered.filter(u => u.daysOffline === null || u.daysOffline >= inactiveDays)
+		}
+		if (appStatus) {
+			filtered = filtered.filter(u => u.appStatus === appStatus)
+		}
 
 		return {
 			code: normalized,
 			inactiveDays: inactiveDays ?? null,
+			appStatus: appStatus ?? null,
 			total: filtered.length,
 			totalAll: allUsers.length,
 			users: filtered,

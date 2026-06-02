@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Post, Query, Request, UnauthorizedException, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import {
 	ForgotPasswordDto,
@@ -134,6 +134,19 @@ export class AuthController {
 	@Post('login')
 	async login(@Body() dto: LoginDto) {
 		return this.authService.login(dto)
+	}
+
+	// При удалении приложения — отметить что удалено (вызывается перед удалением, с токеном)
+	@Post('app-uninstalled')
+	@UseGuards(JwtAuthGuard)
+	async appUninstalled(@Request() req: any) {
+		const userId = req.user?.id
+		if (!userId) throw new UnauthorizedException('Требуется авторизация')
+		await this.prisma.user.update({
+			where: { id: userId },
+			data: { appStatus: 'uninstalled' },
+		})
+		return { ok: true }
 	}
 
 	@Post('forgot-password')

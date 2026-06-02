@@ -354,9 +354,18 @@ export class AuthService {
 		// Не блокируем ответ — обновляем в фоне
 		this.usersService.resetFailedLogin(user.id).catch(() => {})
 		if (dto.appVersion) {
+			// Логин с приложения → отслеживаем статус установки
+			const updateData: any = {
+				appVersion: dto.appVersion,
+				appLastLoginAt: new Date(), // Последний логин с приложения
+			}
+			// Если было удалено или никогда не устанавливалось → теперь active
+			if (user.appStatus !== 'active') {
+				updateData.appStatus = 'active'
+			}
 			this.prisma.user.update({
 				where: { id: user.id },
-				data: { appVersion: dto.appVersion },
+				data: updateData,
 			}).catch(() => {})
 		}
 

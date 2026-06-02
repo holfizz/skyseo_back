@@ -82,8 +82,16 @@ export class AdminController {
 	}
 
 	@Get('promo-codes/:code/users')
-	async getPromoCodeUsers(@Param('code') code: string, @Query('inactiveDays') inactiveDays?: string) {
-		return this.adminService.getPromoCodeUsers(code, inactiveDays ? Number(inactiveDays) : undefined)
+	async getPromoCodeUsers(
+		@Param('code') code: string,
+		@Query('inactiveDays') inactiveDays?: string,
+		@Query('appStatus') appStatus?: string, // фильтр: 'never' | 'active' | 'uninstalled'
+	) {
+		return this.adminService.getPromoCodeUsers(
+			code,
+			inactiveDays ? Number(inactiveDays) : undefined,
+			appStatus,
+		)
 	}
 
 	@Get('promo-codes-stats')

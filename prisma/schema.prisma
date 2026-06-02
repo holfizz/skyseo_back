@@ -31,6 +31,8 @@ model User {
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка
   appVersion             String? // Версия приложения пользователя
+  appStatus              String    @default("never") // Статус приложения: never (никогда не устанавливал), active (установлено), uninstalled (удалено)
+  appLastLoginAt         DateTime? // Последний логин с приложения (не с веб)
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
   createdAt              DateTime  @default(now())
