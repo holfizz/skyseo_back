@@ -31,8 +31,9 @@ model User {
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка
   appVersion             String? // Версия приложения пользователя
-  appStatus              String    @default("never") // Статус приложения: 'never' | 'active' | 'uninstalled' | 'reinstalled'
+  appStatus              AppStatus @default(NEVER)
   appLastLoginAt         DateTime? // Последний логин с приложения (не с веб)
+  uninstallToken         String?   @unique // Стабильный токен для beacon-пинга от деинсталлятора Windows
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
   createdAt              DateTime  @default(now())
@@ -363,6 +364,13 @@ enum PaymentStatus {
   SUCCEEDED
   CANCELED
   FAILED
+}
+
+enum AppStatus {
+  NEVER       // Никогда не запускал приложение
+  ACTIVE      // Приложение установлено и активно
+  UNINSTALLED // Приложение удалено
+  REINSTALLED // Приложение переустановлено после удаления
 }
 
 model PromoCode {

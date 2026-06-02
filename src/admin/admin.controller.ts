@@ -85,7 +85,7 @@ export class AdminController {
 	async getPromoCodeUsers(
 		@Param('code') code: string,
 		@Query('inactiveDays') inactiveDays?: string,
-		@Query('appStatus') appStatus?: string, // фильтр: 'never' | 'active' | 'uninstalled'
+		@Query('appStatus') appStatus?: string, // фильтр (enum AppStatus): 'NEVER' | 'ACTIVE' | 'UNINSTALLED' | 'REINSTALLED'
 	) {
 		return this.adminService.getPromoCodeUsers(
 			code,

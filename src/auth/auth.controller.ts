@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Request, UnauthorizedException, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import {
 	ForgotPasswordDto,
@@ -136,15 +136,25 @@ export class AuthController {
 		return this.authService.login(dto)
 	}
 
-	// При удалении приложения — отметить что удалено (вызывается перед удалением, с токеном)
-	@Post('app-uninstalled')
-	@UseGuards(JwtAuthGuard)
-	async appUninstalled(@Request() req: any) {
-		const userId = req.user?.id
-		if (!userId) throw new UnauthorizedException('Требуется авторизация')
+	// Beacon от Windows-деинсталлятора: приложение уже не запущено и JWT недоступен,
+	// поэтому эндпоинт публичный, а сам uninstallToken служит секретом-идентификатором.
+	// Токен принимаем и в query (так проще для NSIS), и в body. Статус сбросится обратно
+	// в ACTIVE при следующем логине из приложения (переустановка → REINSTALLED).
+	@Post('app-uninstall-beacon')
+	async appUninstallBeacon(
+		@Query('token') queryToken?: string,
+		@Body('token') bodyToken?: string,
+	) {
+		const token = queryToken || bodyToken
+		if (!token) return { ok: false }
+		const user = await this.prisma.user.findUnique({
+			where: { uninstallToken: token },
+			select: { id: true },
+		})
+		if (!user) return { ok: false }
 		await this.prisma.user.update({
-			where: { id: userId },
-			data: { appStatus: 'uninstalled' },
+			where: { id: user.id },
+			data: { appStatus: 'UNINSTALLED' },
 		})
 		return { ok: true }
 	}

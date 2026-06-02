@@ -359,12 +359,10 @@ export class AuthService {
 				appVersion: dto.appVersion,
 				appLastLoginAt: new Date(), // Последний логин с приложения
 			}
-			// Отслеживание переустановки: если было удалено → переустановка (reinstalled)
-			// Иначе → просто активно (active)
-			if (user.appStatus === 'uninstalled') {
-				updateData.appStatus = 'reinstalled'
-			} else if (user.appStatus !== 'active') {
-				updateData.appStatus = 'active'
+			if (user.appStatus === 'UNINSTALLED') {
+				updateData.appStatus = 'REINSTALLED'
+			} else if (user.appStatus !== 'ACTIVE') {
+				updateData.appStatus = 'ACTIVE'
 			}
 			this.prisma.user.update({
 				where: { id: user.id },
