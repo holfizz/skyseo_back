@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { UserType } from '@prisma/client'
+import { lookupPromoCode } from '../auth/promo-codes'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -46,30 +47,57 @@ export class UsersService {
 
 	// Одноразовая привязка реферала из профиля — для тех, кто пропустил момент при
 	// регистрации. Привязать можно один раз: если referredBy уже стоит — изменить нельзя.
+	// Единое поле: принимает И промокод, И код друга (как при регистрации).
 	async claimReferral(userId: string, code: string) {
 		const normalized = code?.trim().toUpperCase()
+		console.log(`[claimReferral] userId=${userId?.slice(0, 8)} received=${JSON.stringify(code)} normalized=${JSON.stringify(normalized)}`)
 		if (!normalized) throw new BadRequestException('Код не указан')
 
 		const user = await this.prisma.user.findUnique({
 			where: { id: userId },
-			select: { referredBy: true, referralCode: true },
+			select: { referredBy: true, referralCode: true, promoCode: true },
 		})
 		if (!user) throw new NotFoundException('Пользователь не найден')
-		if (user.referredBy) throw new BadRequestException('Реферал уже привязан — изменить нельзя')
-		if (user.referralCode === normalized) throw new BadRequestException('Нельзя указать свой код')
 
+		// 1) Промокод (таблица promo_codes) — бонус новичку, один раз
+		const promo = await lookupPromoCode(this.prisma, normalized)
+		if (promo) {
+			if (user.promoCode) throw new BadRequestException(`Уже активирован промокод ${user.promoCode} — другой применить нельзя`)
+			await this.prisma.user.update({
+				where: { id: userId },
+				data: { promoCode: promo.code, balance: { increment: promo.bonusPoints } },
+			})
+			await this.prisma.balanceHistory.create({
+				data: {
+					userId,
+					amount: promo.bonusPoints,
+					type: 'REFERRAL_BONUS',
+					description: `Промокод ${promo.code}${promo.description ? ': ' + promo.description : ''}`,
+				},
+			})
+			console.log(`[claimReferral] promo applied: ${promo.code} +${promo.bonusPoints}`)
+			return { ok: true, kind: 'promo', bonusPoints: promo.bonusPoints }
+		}
+
+		// 2) Реферальный код друга (users.referralCode) — привязка referredBy, один раз
+		if (user.referralCode === normalized) throw new BadRequestException('Нельзя указать свой код')
 		const referrer = await this.prisma.user.findUnique({
 			where: { referralCode: normalized },
 			select: { id: true },
 		})
-		if (!referrer) throw new BadRequestException('Код не найден')
-		if (referrer.id === userId) throw new BadRequestException('Нельзя пригласить самого себя')
+		if (referrer) {
+			if (user.referredBy) throw new BadRequestException('Реферал уже привязан — изменить нельзя')
+			if (referrer.id === userId) throw new BadRequestException('Нельзя пригласить самого себя')
+			await this.prisma.user.update({
+				where: { id: userId },
+				data: { referredBy: referrer.id },
+			})
+			console.log(`[claimReferral] referral bound: ${normalized}`)
+			return { ok: true, kind: 'referral' }
+		}
 
-		await this.prisma.user.update({
-			where: { id: userId },
-			data: { referredBy: referrer.id },
-		})
-		return { ok: true }
+		console.log(`[claimReferral] NOT FOUND: ${normalized} (нет ни в promo_codes, ни в users.referralCode)`)
+		throw new BadRequestException('Код не найден')
 	}
 
 	async getProfile(userId: string) {
