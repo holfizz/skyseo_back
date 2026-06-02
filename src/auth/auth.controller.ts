@@ -169,4 +169,5 @@ export class AuthController {
 	async resendVerification(@Request() req) {
 		return this.authService.resendVerificationEmail(req.user.id)
 	}
+
 }
