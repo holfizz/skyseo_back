@@ -1,3 +1,4 @@
+import * as https from 'https'
 import { BadRequestException, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { NotificationsService } from '../notifications/notifications.service'
@@ -346,6 +347,49 @@ export class PaymentsService {
 		console.log(`[Payments] Реферальный бонус ${referralBonus} баллов → ${referredBy}`)
 	}
 
+	// Node.js 24 built-in fetch (undici) fails on some environments — use https module directly
+	private httpsPost(path: string, body: object, headers: Record<string, string>): Promise<{ status: number; data: any }> {
+		return new Promise((resolve, reject) => {
+			const bodyStr = JSON.stringify(body)
+			const req = https.request(
+				{
+					hostname: 'api.yookassa.ru', path, method: 'POST',
+					headers: { ...headers, 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(bodyStr)) },
+					timeout: 15000,
+				},
+				res => {
+					let raw = ''
+					res.on('data', c => raw += c)
+					res.on('end', () => { try { resolve({ status: res.statusCode!, data: JSON.parse(raw) }) } catch { reject(new Error('Invalid JSON: ' + raw.slice(0, 200))) } })
+				},
+			)
+			req.on('timeout', () => { req.destroy(); reject(new Error('YooKassa request timeout')) })
+			req.on('error', reject)
+			req.write(bodyStr)
+			req.end()
+		})
+	}
+
+	private httpsGet(path: string, headers: Record<string, string>): Promise<{ status: number; data: any }> {
+		return new Promise((resolve, reject) => {
+			const req = https.request(
+				{
+					hostname: 'api.yookassa.ru', path, method: 'GET',
+					headers: { ...headers, 'Content-Type': 'application/json' },
+					timeout: 15000,
+				},
+				res => {
+					let raw = ''
+					res.on('data', c => raw += c)
+					res.on('end', () => { try { resolve({ status: res.statusCode!, data: JSON.parse(raw) }) } catch { reject(new Error('Invalid JSON')) } })
+				},
+			)
+			req.on('timeout', () => { req.destroy(); reject(new Error('YooKassa request timeout')) })
+			req.on('error', reject)
+			req.end()
+		})
+	}
+
 	private async createYooKassaPayment(
 		paymentId: string,
 		amount: number,
@@ -357,56 +401,23 @@ export class PaymentsService {
 			emailDomain: email.split('@')[1],
 		})
 
-		const auth = Buffer.from(`${this.shopId}:${this.secretKey}`).toString(
-			'base64',
-		)
+		const auth = Buffer.from(`${this.shopId}:${this.secretKey}`).toString('base64')
 
-		const response = await fetch('https://api.yookassa.ru/v3/payments', {
-			method: 'POST',
-			headers: {
-				Authorization: `Basic ${auth}`,
-				'Content-Type': 'application/json',
-				'Idempotence-Key': paymentId,
+		const { status, data } = await this.httpsPost('/v3/payments', {
+			amount: { value: amount.toFixed(2), currency: 'RUB' },
+			confirmation: {
+				type: 'redirect',
+				return_url: `${this.configService.get('FRONTEND_URL')}/payment/success`,
 			},
-			body: JSON.stringify({
-				amount: {
-					value: amount.toFixed(2),
-					currency: 'RUB',
-				},
-				confirmation: {
-					type: 'redirect',
-					return_url: `${this.configService.get('FRONTEND_URL')}/payment/success`,
-				},
-				capture: true,
-				description: `Пополнение баланса SkySEO`,
-				receipt: {
-					customer: {
-						email,
-					},
-					items: [
-						{
-							description: 'Баллы SkySEO',
-							quantity: '1',
-							amount: {
-								value: amount.toFixed(2),
-								currency: 'RUB',
-							},
-							vat_code: 1,
-						},
-					],
-				},
-			}),
-		})
+			capture: true,
+			description: 'Пополнение баланса SkySEO',
+		}, { Authorization: `Basic ${auth}`, 'Idempotence-Key': paymentId })
 
-		const data = await response.json()
+		console.log('[Payments] YooKassa response', { status, paymentId: data?.id, paymentStatus: data?.status })
 
-		if (!response.ok) {
-			console.error('[Payments] YooKassa error', {
-				status: response.status,
-				errorType: data.type,
-				errorCode: data.code,
-			})
-			throw new Error(`YooKassa error: ${data.description || 'Unknown error'}`)
+		if (status < 200 || status >= 300) {
+			console.error('[Payments] YooKassa error', { status, body: JSON.stringify(data).slice(0, 300) })
+			throw new Error(`YooKassa error: ${data?.description || data?.message || 'Unknown error'}`)
 		}
 
 		return data
@@ -415,27 +426,17 @@ export class PaymentsService {
 	private async checkYooKassaPaymentStatus(externalId: string) {
 		console.log('[Payments] Checking YooKassa payment status', { externalId })
 
-		const auth = Buffer.from(`${this.shopId}:${this.secretKey}`).toString(
-			'base64',
+		const auth = Buffer.from(`${this.shopId}:${this.secretKey}`).toString('base64')
+
+		const { status, data } = await this.httpsGet(
+			`/v3/payments/${externalId}`,
+			{ Authorization: `Basic ${auth}` },
 		)
 
-		const response = await fetch(
-			`https://api.yookassa.ru/v3/payments/${externalId}`,
-			{
-				method: 'GET',
-				headers: {
-					Authorization: `Basic ${auth}`,
-					'Content-Type': 'application/json',
-				},
-			},
-		)
-
-		const data = await response.json()
-
-		if (!response.ok) {
+		if (status < 200 || status >= 300) {
 			console.error('[Payments] YooKassa status check error', {
 				externalId,
-				status: response.status,
+				status,
 				errorType: data.type,
 				errorCode: data.code,
 				errorDescription: data.description,
