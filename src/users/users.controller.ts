@@ -28,13 +28,19 @@ export class UsersController {
 		return this.usersService.claimReferral(req.user.id, code)
 	}
 
-	// Электронное приложение шлёт этот запрос при запуске и каждый час пока работает
+	// Электронное приложение шлёт этот запрос при запуске и каждый час пока работает.
+	// Обновляем lastSeenAt; и если юзер был помечен UNINSTALLED (инференс крона или Windows-beacon),
+	// но снова шлёт heartbeat — приложение живо прямо сейчас → возвращаем ACTIVE. После реального
+	// удаления heartbeat'ов нет, поэтому UNINSTALLED не «оживёт» ложно.
 	@Post('heartbeat')
 	async heartbeat(@Request() req) {
-		await this.prisma.user.update({
-			where: { id: req.user.id },
-			data: { lastSeenAt: new Date() },
-		})
+		await this.prisma.$executeRaw`
+			UPDATE users
+			SET "lastSeenAt" = NOW(),
+				"appStatus" = CASE WHEN "appStatus" = 'UNINSTALLED'::"AppStatus"
+					THEN 'ACTIVE'::"AppStatus" ELSE "appStatus" END
+			WHERE id = ${req.user.id}
+		`
 		return { ok: true }
 	}
 

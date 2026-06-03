@@ -289,6 +289,8 @@ export class AuthService {
 			registrationIp: ipAddress,
 			emailVerificationToken,
 			appVersion: dto.appVersion,
+			// Регистрация из приложения (есть appVersion) → сразу ACTIVE, иначе дефолт NEVER (веб)
+			appStatus: dto.appVersion ? 'ACTIVE' : undefined,
 			userType: mappedUserType,
 		})
 

@@ -2,14 +2,14 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 
 // Инференс заброшенности приложения (на Mac хук удаления невозможен, поэтому считаем по активности).
-// Сигнал «жив» = свежайший из ДВУХ app-only событий:
+// Сигнал «жив» = свежайший из ТРЁХ app-only событий (GREATEST игнорит NULL):
 //   - последнее выполненное задание (Execution.completedAt при status = COMPLETED);
-//   - последний heartbeat (users.lastSeenAt — его шлёт ТОЛЬКО приложение при старте и раз в час, веб его не трогает).
-// Раз в сутки:
-//   - был ACTIVE/REINSTALLED, но оба сигнала молчат ≥7 дней (приложение не открывали и заданий нет) → UNINSTALLED;
-//   - был UNINSTALLED, но снова открыл приложение или выполнил задание за 7 дней → ACTIVE.
-// GREATEST в Postgres игнорирует NULL: у кого нет ни одного app-сигнала — под условие не попадает.
-// Логин из приложения и так ставит ACTIVE/REINSTALLED сразу; Windows-beacon ставит UNINSTALLED при удалении.
+//   - последний heartbeat (users.lastSeenAt — шлёт ТОЛЬКО приложение);
+//   - последний логин из приложения (users.appLastLoginAt — тоже app-only, надёжнее heartbeat).
+// Раз в сутки: ACTIVE/REINSTALLED, но все три сигнала молчат ≥7 дней → UNINSTALLED.
+// Возврат в ACTIVE НЕ здесь, а в heartbeat-эндпоинте (users.controller) — иначе суточный «ревайв»
+// затирал бы точный UNINSTALLED от Windows-beacon (lastSeenAt свежий за пару часов до удаления).
+// Сравнение времени делаем целиком в SQL в UTC, без JS-параметра — чтобы не зависеть от таймзоны сессии БД.
 const INACTIVE_DAYS = 7
 
 @Injectable()
@@ -25,10 +25,8 @@ export class AppStatusCronService implements OnModuleInit {
 	}
 
 	private async run() {
-		const cutoff = new Date(Date.now() - INACTIVE_DAYS * 24 * 60 * 60 * 1000)
 		try {
-			// Приложение молчит ≥7 дней (нет ни заданий, ни heartbeat) → удалил/забросил
-			const uninstalled = await this.prisma.$executeRaw`
+			const affected = await this.prisma.$executeRaw`
 				UPDATE users u
 				SET "appStatus" = 'UNINSTALLED'::"AppStatus"
 				WHERE u."appStatus" IN ('ACTIVE'::"AppStatus", 'REINSTALLED'::"AppStatus")
@@ -38,25 +36,12 @@ export class AppStatusCronService implements OnModuleInit {
 							FROM executions e
 							WHERE e."executorId" = u.id AND e.status = 'COMPLETED'::"ExecutionStatus"
 						),
-						u."lastSeenAt"
-					) < ${cutoff}
+						u."lastSeenAt",
+						u."appLastLoginAt"
+					) < (now() AT TIME ZONE 'UTC') - (${INACTIVE_DAYS}::int * interval '1 day')
 			`
-			// Снова открыл приложение или выполнил задание за последние 7 дней → вернуть в ACTIVE
-			const revived = await this.prisma.$executeRaw`
-				UPDATE users u
-				SET "appStatus" = 'ACTIVE'::"AppStatus"
-				WHERE u."appStatus" = 'UNINSTALLED'::"AppStatus"
-					AND GREATEST(
-						(
-							SELECT MAX(e."completedAt")
-							FROM executions e
-							WHERE e."executorId" = u.id AND e.status = 'COMPLETED'::"ExecutionStatus"
-						),
-						u."lastSeenAt"
-					) >= ${cutoff}
-			`
-			if (uninstalled > 0 || revived > 0) {
-				this.logger.log(`appStatus инференс: UNINSTALLED +${uninstalled}, ACTIVE +${revived}`)
+			if (affected > 0) {
+				this.logger.log(`appStatus → UNINSTALLED по тишине ≥${INACTIVE_DAYS}д: ${affected}`)
 			}
 		} catch (e) {
 			this.logger.error('Инференс appStatus не выполнен', e as Error)

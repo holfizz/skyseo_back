@@ -26,7 +26,7 @@ model User {
   emailVerified          Boolean   @default(false) // Подтверждение email
   emailVerificationToken String?   @unique // Токен для подтверждения email
   lastLoginIp            String? // Последний IP входа
-  lastSeenAt             DateTime? // Последний раз онлайн (обновляется при логине)
+  lastSeenAt             DateTime? // Обновляется ТОЛЬКО heartbeat'ом приложения (app-only), не при веб-логине. На этом строится инференс appStatus
   registrationIp         String? // IP регистрации
   failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
   lastFailedLogin        DateTime? // Последняя неудачная попытка

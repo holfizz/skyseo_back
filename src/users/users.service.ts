@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { UserType } from '@prisma/client'
+import { AppStatus, UserType } from '@prisma/client'
 import { lookupPromoCode } from '../auth/promo-codes'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
@@ -23,6 +23,7 @@ export class UsersService {
 		registrationIp?: string
 		emailVerificationToken?: string
 		appVersion?: string
+		appStatus?: AppStatus
 		userType?: UserType
 	}) {
 		return this.prisma.user.create({

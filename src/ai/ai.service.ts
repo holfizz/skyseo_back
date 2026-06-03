@@ -46,6 +46,51 @@ export class AiService {
 
 	constructor(private prisma: PrismaService) {}
 
+	// Fallback для consent-окна Google: приложение шлёт ПОЧИЩЕННЫЙ HTML модалки (без стилей/скриптов/svg
+	// и лишних атрибутов) + список кликабельных элементов с индексами. Модель решает — это окно согласия
+	// и на какой индекс нажать «Принять». Дёшево (текст, без vision), fail-safe: при ошибке — «не consent».
+	async resolveConsent(
+		html: string,
+		candidates: { i: number; text: string }[],
+	): Promise<{ isConsent: boolean; clickIndex: number | null }> {
+		const list = (candidates || []).slice(0, 40).map(c => `${c.i}: ${c.text}`).join('\n')
+		const clipped = (html || '').slice(0, 8000)
+		try {
+			const response = await this.openai.chat.completions.create({
+				model: 'gpt-5-mini-2025-08-07',
+				temperature: 0,
+				max_completion_tokens: 60,
+				messages: [
+					{
+						role: 'system',
+						content:
+							'Тебе дан упрощённый HTML модального окна со страницы Google + список кликабельных элементов с индексами. ' +
+							'Определи, это ли блокирующее окно согласия на cookie / «Прежде чем перейти к Google» / GDPR-баннер, ' +
+							'мешающее попасть на результаты поиска. Если да — верни индекс кнопки, которая ПРИНИМАЕТ/соглашается/' +
+							'продолжает (предпочитай «принять все»/«accept all», не «отклонить»). ' +
+							'Ответь строго JSON: {"isConsent": boolean, "clickIndex": number|null}. ' +
+							'Если это обычная выдача, а не окно согласия — {"isConsent": false, "clickIndex": null}.',
+					},
+					{
+						role: 'user',
+						content: `HTML:\n${clipped}\n\nКликабельные элементы:\n${list}`,
+					},
+				],
+				response_format: { type: 'json_object' },
+			})
+			const raw = response.choices[0]?.message?.content
+			if (!raw) return { isConsent: false, clickIndex: null }
+			const parsed = JSON.parse(raw)
+			return {
+				isConsent: !!parsed.isConsent,
+				clickIndex: typeof parsed.clickIndex === 'number' ? parsed.clickIndex : null,
+			}
+		} catch (e) {
+			console.error('[AiService] resolveConsent error:', (e as Error).message)
+			return { isConsent: false, clickIndex: null }
+		}
+	}
+
 	async analyzeSite(url: string, context?: string, userId?: string): Promise<AnalyzeResult> {
 		const siteUrl = this.normalizeUrl(url)
 
