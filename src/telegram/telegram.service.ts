@@ -166,22 +166,31 @@ export class TelegramService {
 		await this.sendAdminNotification(message)
 	}
 
+	private normalizeTelegramContact(raw?: string): string {
+		if (!raw?.trim()) return 'не указан'
+		let s = raw.trim()
+		// https://t.me/username, http://t.me/username, t.me/username
+		const urlMatch = s.match(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{3,})(?:\?.*)?$/)
+		if (urlMatch) return `@${urlMatch[1]}`
+		// @username или просто username (только TG-допустимые символы)
+		s = s.replace(/^@+/, '')
+		if (/^[A-Za-z0-9_]{3,}$/.test(s)) return `@${s}`
+		// Всё остальное (email, телефон и т.д.) — оставить как есть
+		return raw.trim()
+	}
+
 	async sendComplaintNotification(
 		text: string,
 		contact?: string,
 		userEmail?: string,
 	) {
-		console.log('[TelegramService] Sending complaint notification:', {
-			text,
-			contact,
-			userEmail,
-		})
+		const tg = this.normalizeTelegramContact(contact)
 
 		const message =
 			`⚠️ <b>Новая жалоба</b>\n\n` +
 			`📝 Текст: ${text || 'Не указан'}\n` +
 			`📧 Email пользователя: ${userEmail || 'Не авторизован'}\n` +
-			`📞 Контакт для связи: ${contact || 'Не указан'}`
+			`✈️ Telegram: ${tg}`
 
 		await this.sendAdminNotification(message, this.TOPIC_COMPLAINTS)
 	}
