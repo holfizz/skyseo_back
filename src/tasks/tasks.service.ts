@@ -46,10 +46,14 @@ function validateKeyword(keyword: string): void {
 		throw new BadRequestException('Ключевое слово содержит недопустимые повторения символов')
 	}
 
-	// Запрещённые слова
+	// Запрещённые слова (только целые слова, не подстроки)
 	const lower = trimmed.toLowerCase()
-	for (const word of KEYWORD_FORBIDDEN_WORDS) {
-		if (lower.includes(word)) {
+	const kwTokens = lower.split(/[\s\-_]+/)
+	for (const forbidden of KEYWORD_FORBIDDEN_WORDS) {
+		const found = forbidden.includes(' ')
+			? lower.includes(forbidden)
+			: kwTokens.includes(forbidden)
+		if (found) {
 			throw new BadRequestException('Ключевое слово содержит запрещённые слова')
 		}
 	}
