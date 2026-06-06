@@ -19,6 +19,17 @@ export class AdminController {
 		return this.adminService.getAdminStatistics()
 	}
 
+	// Куки Google (обход окна согласия) — читаются desktop-app'ом из БД
+	@Get('google-config')
+	async getGoogleConfig() {
+		return this.adminService.getGoogleConfigForAdmin()
+	}
+
+	@Put('google-config')
+	async setGoogleConfig(@Body() body: { socs?: string; consent?: string }) {
+		return this.adminService.setGoogleConfig(body)
+	}
+
 	@Get('analytics')
 	async getAnalytics(
 		@Query('from') from?: string,

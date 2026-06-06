@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler'
 import { AdminModule } from './admin/admin.module'
 import { AiModule } from './ai/ai.module'
 import { AnalyticsModule } from './analytics/analytics.module'
+import { AppConfigModule } from './app-config/app-config.module'
 import { AppVersionModule } from './app-version/app-version.module'
 import { AuthModule } from './auth/auth.module'
 import { ExecutionsModule } from './executions/executions.module'
@@ -43,6 +44,7 @@ import { WebsitesModule } from './websites/websites.module'
 		AnalyticsModule,
 		UpdatesModule,
 		AppVersionModule,
+		AppConfigModule,
 		AiModule,
 	],
 	providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

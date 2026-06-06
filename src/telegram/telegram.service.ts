@@ -8,6 +8,7 @@ export class TelegramService {
 	private bot: Telegraf | null = null
 	private adminId: string
 	private isEnabled: boolean = false
+	private lastConsentAlertAt = 0 // дебаунс алерта о протухшей куке Google (in-memory)
 
 	private readonly GROUP_CHAT_ID = '-1003723547668'
 	private readonly TOPIC_REGISTRATIONS = 2
@@ -521,5 +522,42 @@ export class TelegramService {
 			`🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		await this.sendAdminNotification(message)
+
+		await this.checkGoogleConsentHealth().catch(() => {})
+	}
+
+	// Куки SOCS протухают → Google снова показывает окно согласия. Приложение логирует
+	// событие consent/shown каждый раз, когда окно всё-таки вылезло. Если за сутки это
+	// случается в большинстве заходов на Google — шлём один алерт (просим обновить куку).
+	async checkGoogleConsentHealth() {
+		const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+		// Числитель и знаменатель считаем из ОДНОГО источника (execution_events, по createdAt),
+		// иначе ratio мог превысить 1: заход с consent часто проваливает парсинг и не попадал
+		// в прежний знаменатель (executions.googleFoundInTop != null).
+		// Знаменатель = число Google-заходов = distinct executionId среди google-событий за сутки.
+		const [consentShown, googleRunGroups] = await Promise.all([
+			this.prisma.executionEvent.count({
+				where: { type: 'consent', engine: 'google', stage: 'shown', createdAt: { gte: since } },
+			}),
+			this.prisma.executionEvent.groupBy({
+				by: ['executionId'],
+				where: { engine: 'google', executionId: { not: null }, createdAt: { gte: since } },
+			}),
+		])
+		const googleRuns = googleRunGroups.length
+
+		if (googleRuns < 5) return // мало данных — не шумим
+		const ratio = Math.min(consentShown / googleRuns, 1)
+		if (ratio < 0.5) return // куки ещё работают
+		if (Date.now() - this.lastConsentAlertAt < 24 * 60 * 60 * 1000) return // дебаунс 24ч
+		this.lastConsentAlertAt = Date.now()
+
+		const pct = Math.round(ratio * 100)
+		await this.sendAdminNotification(
+			`⚠️ <b>Google: куки согласия протухли</b>\n\n` +
+				`За сутки окно согласия вылезло в <b>${pct}%</b> заходов на Google (${consentShown}/${googleRuns}).\n` +
+				`Поиск в Google из-за этого почти не находит сайты.\n\n` +
+				`Что сделать: открой google.com в инкогнито → «Принять все» → DevTools → Application → Cookies → скопируй <b>SOCS</b> → вставь в админке: <b>/holfizz/settings</b>`,
+		)
 	}
 }

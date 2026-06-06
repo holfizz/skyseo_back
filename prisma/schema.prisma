@@ -385,6 +385,16 @@ model PromoCode {
   @@map("promo_codes")
 }
 
+// Простой key-value для рантайм-настроек, меняемых без пересборки приложения.
+// Сейчас хранит SOCS/CONSENT-куки Google для обхода окна согласия (читает desktop-app).
+model AppConfig {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("app_config")
+}
+
 // Яндекс РСЯ / Direct — управление кампаниями
 model YandexAdCampaign {
   id                 String   @id @default(uuid())

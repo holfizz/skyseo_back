@@ -10,6 +10,7 @@ export class LogExecutionEventDto {
 		'navigation',
 		'failure',
 		'completion',
+		'consent',
 	])
 	type: string
 

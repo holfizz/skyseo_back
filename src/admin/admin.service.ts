@@ -1,4 +1,11 @@
 import { Injectable } from '@nestjs/common'
+import {
+	AppConfigService,
+	DEFAULT_GOOGLE_CONSENT,
+	DEFAULT_GOOGLE_SOCS,
+	KEY_GOOGLE_CONSENT,
+	KEY_GOOGLE_SOCS,
+} from '../app-config/app-config.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 
@@ -7,7 +14,22 @@ export class AdminService {
 	constructor(
 		private prisma: PrismaService,
 		private usersService: UsersService,
+		private appConfig: AppConfigService,
 	) {}
+
+	async getGoogleConfigForAdmin() {
+		const [socs, consent] = await Promise.all([
+			this.appConfig.getWithMeta(KEY_GOOGLE_SOCS, DEFAULT_GOOGLE_SOCS),
+			this.appConfig.getWithMeta(KEY_GOOGLE_CONSENT, DEFAULT_GOOGLE_CONSENT),
+		])
+		return { socs, consent }
+	}
+
+	async setGoogleConfig(body: { socs?: string; consent?: string }) {
+		if (typeof body.socs === 'string') await this.appConfig.set(KEY_GOOGLE_SOCS, body.socs.trim())
+		if (typeof body.consent === 'string') await this.appConfig.set(KEY_GOOGLE_CONSENT, body.consent.trim())
+		return this.getGoogleConfigForAdmin()
+	}
 
 	async getAdminStatistics() {
 		const [
@@ -93,6 +115,7 @@ export class AdminService {
 				city: true,
 				referralSource: true,
 				isActive: true,
+				lastSeenAt: true,
 				createdAt: true,
 				_count: {
 					select: {
