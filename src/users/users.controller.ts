@@ -33,7 +33,7 @@ export class UsersController {
 	// но снова шлёт heartbeat — приложение живо прямо сейчас → возвращаем ACTIVE. После реального
 	// удаления heartbeat'ов нет, поэтому UNINSTALLED не «оживёт» ложно.
 	@Post('heartbeat')
-	async heartbeat(@Request() req) {
+	async heartbeat(@Request() req, @Body('appVersion') appVersion?: string) {
 		await this.prisma.$executeRaw`
 			UPDATE users
 			SET "lastSeenAt" = NOW(),
@@ -41,6 +41,12 @@ export class UsersController {
 					THEN 'ACTIVE'::"AppStatus" ELSE "appStatus" END
 			WHERE id = ${req.user.id}
 		`
+		if (appVersion) {
+			await this.prisma.user.update({
+				where: { id: req.user.id },
+				data: { appVersion },
+			})
+		}
 		return { ok: true }
 	}
 
