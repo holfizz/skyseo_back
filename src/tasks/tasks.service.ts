@@ -809,7 +809,7 @@ export class TasksService {
 			distinct: ['executorId'],
 		})
 		const activeCount = distinctExecutors.length
-		const capacity = Math.max(20, Math.floor((activeCount * 2) / 30))
+		const capacity = Math.max(5, Math.floor((activeCount * 2) / 30))
 		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
 		return capacity
 	}
