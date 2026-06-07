@@ -10,7 +10,7 @@ import {
 	Request,
 	UseGuards,
 } from '@nestjs/common'
-import { SkipThrottle } from '@nestjs/throttler'
+import { SkipThrottle, Throttle } from '@nestjs/throttler'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CreateTaskDto, UpdateTaskDto } from './dto'
 import { TasksService } from './tasks.service'
@@ -35,6 +35,14 @@ export class TasksController {
 	async getAvailableTasks(@Request() req, @Query('limit') limit?: string) {
 		const limitNum = limit ? parseInt(limit, 10) : 10
 		return this.tasksService.getAvailableTasks(req.user.id, limitNum)
+	}
+
+	// Тяжёлая диагностика (несколько агрегаций) — ограничиваем 10/мин, перебивая
+	// классовый @SkipThrottle, чтобы её нельзя было заспамить.
+	@Throttle({ short: { limit: 10, ttl: 60000 } })
+	@Get('available-queue/debug')
+	async debugAvailability(@Request() req) {
+		return this.tasksService.debugAvailability(req.user.id)
 	}
 
 	@Post(':id/assign')

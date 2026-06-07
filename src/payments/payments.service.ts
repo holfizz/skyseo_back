@@ -323,6 +323,17 @@ export class PaymentsService {
 
 					return { ...payment, status: 'SUCCEEDED' }
 				}
+
+				// Терминальная отмена/истёкший срок: фиксируем в БД, иначе статус навсегда
+				// остаётся PENDING и фронт опрашивает YooKassa бесконечно (каждые 3с).
+				if (yooKassaStatus.status === 'canceled') {
+					console.log('[Payments] Payment canceled in YooKassa, updating status')
+					await this.prisma.payment.update({
+						where: { id: payment.id },
+						data: { status: 'CANCELED' },
+					})
+					return { ...payment, status: 'CANCELED' }
+				}
 			} catch (error) {
 				console.error('[Payments] Failed to check YooKassa status:', error)
 			}

@@ -151,7 +151,35 @@ export class TasksService {
 
 	async getAvailableTasks(executorId: string, limit: number = 10) {
 		const safeLimit = Math.max(1, Math.min(limit, 100))
+		const { candidates } = await this.computeAvailability(executorId)
 
+		return candidates.slice(0, safeLimit).map(({ task }) => {
+			const reward = this.getTaskRewardBounds(task)
+			return {
+				id: task.id,
+				websiteId: task.websiteId,
+				websiteName: task.website.name,
+				websiteUrl: task.website.url,
+				keyword: task.keyword,
+				targetUrl: task.targetUrl,
+				type: task.type,
+				geo: task.geo,
+				pointsEarned: reward.max,
+				minPointsEarned: reward.min,
+				maxYandexVisits: task.maxYandexVisits,
+				maxGoogleVisits: task.maxGoogleVisits,
+				useYandex: task.useYandex,
+				useGoogle: task.useGoogle,
+				createdAt: task.createdAt,
+				alreadyCompleted: false,
+				remainingExecutions: 1,
+			}
+		})
+	}
+
+	// Единый расчёт доступности: и выдача задач, и диагностика «почему 0» берут цифры
+	// отсюда — чтобы debug всегда совпадал с реальной фильтрацией (нет двух копий логики).
+	private async computeAvailability(executorId: string) {
 		// Cooldown: один и тот же ключевик не чаще раза в 15 дней на исполнителя
 		const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
 
@@ -192,10 +220,18 @@ export class TasksService {
 			new Set([...sitesAtMonthlyLimit, ...sitesVisitedRecently]),
 		)
 
-		// Задачи, где ключевик не найден у этого исполнителя — больше не показывать
+		// Задачи, где ключевик не найден этим исполнителем — скрываем на 30 дней, затем
+		// перепроверяем (позиции меняются, в т.ч. благодаря самому ПФ). Мёртвые ключи
+		// и так уходят в keywordStatus=RESTRICTED после 10 подряд NOT_IN_SERP.
+		const notInSerpSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 		const notInSerpTaskIds = await this.prisma.execution
 			.findMany({
-				where: { executorId, status: 'FAILED', failureReason: 'NOT_IN_SERP' },
+				where: {
+					executorId,
+					status: 'FAILED',
+					failureReason: 'NOT_IN_SERP',
+					completedAt: { gte: notInSerpSince },
+				},
 				select: { taskId: true },
 				distinct: ['taskId'],
 			})
@@ -227,7 +263,20 @@ export class TasksService {
 			.findMany({ where: eligibleTaskWhere, select: { websiteId: true }, distinct: ['websiteId'] })
 			.then(r => r.map(t => t.websiteId))
 
-		if (eligibleSiteIds.length === 0) return []
+		const networkCap = await this.getNetworkPerSiteCapacity()
+
+		// Диагностика «почему 0»: executor-scoped счётчики блокировок.
+		// sitesAtDailyCap доуточняется ниже после расчёта дневных cap'ов по eligible-сайтам.
+		const diag = {
+			networkCap,
+			blockedByNotInSerp: notInSerpTaskIds.length,
+			blockedByMonthlyLimit: sitesAtMonthlyLimit.length,
+			blockedByRecentVisit10d: sitesVisitedRecently.length,
+			eligibleSiteCount: eligibleSiteIds.length,
+			sitesAtDailyCap: 0,
+		}
+
+		if (eligibleSiteIds.length === 0) return { candidates: [], diag }
 
 		// Дневной cap считается на УРОВНЕ САЙТА (не ключевика).
 		// Антифрод Яндекса смотрит на трафик на домен — 10 ключей × 20 визитов = 200/день
@@ -260,7 +309,6 @@ export class TasksService {
 			select: { id: true, createdAt: true, dailyVisitsTarget: true, userId: true },
 		})
 
-		const networkCap = await this.getNetworkPerSiteCapacity()
 		const paidOwners = await this.getPaidPriorityOwners()
 
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
@@ -278,7 +326,9 @@ export class TasksService {
 		}
 
 		const availableSiteIds = Array.from(siteInfo.keys())
-		if (availableSiteIds.length === 0) return []
+		// Сайты, отвалившиеся именно из-за дневного cap (реальный rampedDailyCap, только eligible)
+		diag.sitesAtDailyCap = eligibleSiteIds.length - availableSiteIds.length
+		if (availableSiteIds.length === 0) return { candidates: [], diag }
 
 		// Окно кандидатов только по НЕзакапанным сайтам → все 300 реально доступны.
 		const allTasks = await this.prisma.task.findMany({
@@ -304,28 +354,7 @@ export class TasksService {
 			return a.task.createdAt.getTime() - b.task.createdAt.getTime()
 		})
 
-		return candidates.slice(0, safeLimit).map(({ task }) => {
-			const reward = this.getTaskRewardBounds(task)
-			return {
-				id: task.id,
-				websiteId: task.websiteId,
-				websiteName: task.website.name,
-				websiteUrl: task.website.url,
-				keyword: task.keyword,
-				targetUrl: task.targetUrl,
-				type: task.type,
-				geo: task.geo,
-				pointsEarned: reward.max,
-				minPointsEarned: reward.min,
-				maxYandexVisits: task.maxYandexVisits,
-				maxGoogleVisits: task.maxGoogleVisits,
-				useYandex: task.useYandex,
-				useGoogle: task.useGoogle,
-				createdAt: task.createdAt,
-				alreadyCompleted: false,
-				remainingExecutions: 1,
-			}
-		})
+		return { candidates, diag }
 	}
 
 	async getUserTasks(userId: string, websiteId?: string) {
@@ -803,5 +832,31 @@ export class TasksService {
 			return Math.max(1, enabledEngines) * 30
 		}
 		return 10 // Для внешних ссылок
+	}
+
+	// SELECT-only диагностика: объясняет почему доступных задач 0 для данного исполнителя.
+	// Базовые счётчики берём из computeAvailability — те же цифры, что и в реальной выдаче.
+	async debugAvailability(executorId: string) {
+		const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
+
+		const [{ diag }, totalActivePendingTasks, blockedByCooldown15d] = await Promise.all([
+			this.computeAvailability(executorId),
+			this.prisma.task.count({ where: { isActive: true, keywordStatus: 'ACTIVE', status: 'PENDING' } }),
+			this.prisma.execution.findMany({
+				where: { executorId, status: 'COMPLETED', completedAt: { gte: cooldownDate } },
+				select: { taskId: true },
+				distinct: ['taskId'],
+			}).then(r => r.length),
+		])
+
+		return {
+			networkCap: diag.networkCap,
+			totalActivePendingTasks,
+			blockedByNotInSerp: diag.blockedByNotInSerp,
+			blockedByCooldown15d,
+			blockedByMonthlyLimit: diag.blockedByMonthlyLimit,
+			blockedByRecentVisit10d: diag.blockedByRecentVisit10d,
+			sitesAtDailyCap: diag.sitesAtDailyCap,
+		}
 	}
 }

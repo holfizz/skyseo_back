@@ -6,7 +6,7 @@ export const KEY_GOOGLE_CONSENT = 'google_consent'
 
 // Best-effort дефолты «accept all». Если в БД ничего нет — отдаём их.
 // SOCS со временем устаревает — обновляется в админке (/holfizz/settings) без пересборки app.
-export const DEFAULT_GOOGLE_SOCS = 'CAESHAgBEhJnd3NfMjAyMzA4MDktMF9SQzEaAmVuIAEaBgiAo_CmBg'
+export const DEFAULT_GOOGLE_SOCS = 'CAISHAgCEhJnd3NfMjAyNjA2MDQtMF9SQzEaAnJ1IAEaBgiAxo3RBg'
 export const DEFAULT_GOOGLE_CONSENT = 'YES+'
 
 @Injectable()
