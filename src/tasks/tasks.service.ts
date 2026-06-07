@@ -179,18 +179,6 @@ export class TasksService {
 
 	// Единый расчёт доступности: и выдача задач, и диагностика «почему 0» берут цифры
 	// отсюда — чтобы debug всегда совпадал с реальной фильтрацией (нет двух копий логики).
-	// Warm-up рамп для нового исполнителя: день 1 = 2 задачи, день 14+ = 20.
-	// Защита от резкого «спайка» трафика от нового аккаунта + плавный ввод в сеть.
-	private executorDailyLimit(executorCreatedAt: Date): number {
-		const RAMP_DAYS = 14
-		const START = 2
-		const MAX = 20
-		const days = Math.max(0, Math.floor((Date.now() - executorCreatedAt.getTime()) / (24 * 60 * 60 * 1000)))
-		if (days >= RAMP_DAYS) return MAX
-		const progress = days / RAMP_DAYS
-		return Math.max(START, Math.floor(START + (MAX - START) * progress * progress))
-	}
-
 	private async computeAvailability(executorId: string) {
 		// Cooldown: один и тот же ключевик не чаще раза в 15 дней на исполнителя
 		const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
@@ -203,24 +191,15 @@ export class TasksService {
 		const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 		const minGapAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
 
-		const dayAgo24hExec = new Date(Date.now() - 24 * 60 * 60 * 1000)
-
-		// Параллельно: данные исполнителя (для warm-up рампа) + стандартные фильтры
-		const [executorUser, executorTodayCount, monthlyHitsBySite] = await Promise.all([
-			this.prisma.user.findUnique({ where: { id: executorId }, select: { createdAt: true } }),
-			this.prisma.execution.count({
-				where: { executorId, status: 'COMPLETED', completedAt: { gte: dayAgo24hExec } },
-			}),
-			this.prisma.execution.groupBy({
-				by: ['websiteId'],
-				where: {
-					executorId,
-					status: 'COMPLETED',
-					completedAt: { gte: monthAgo },
-				},
-				_count: { _all: true },
-			}),
-		])
+		const monthlyHitsBySite = await this.prisma.execution.groupBy({
+			by: ['websiteId'],
+			where: {
+				executorId,
+				status: 'COMPLETED',
+				completedAt: { gte: monthAgo },
+			},
+			_count: { _all: true },
+		})
 		const sitesAtMonthlyLimit = monthlyHitsBySite
 			.filter(s => s._count._all >= 2)
 			.map(s => s.websiteId)
@@ -295,8 +274,6 @@ export class TasksService {
 			blockedByRecentVisit10d: sitesVisitedRecently.length,
 			eligibleSiteCount: eligibleSiteIds.length,
 			sitesAtDailyCap: 0,
-			executorDailyLimit: 0,
-			executorTodayCount: 0,
 		}
 
 		if (eligibleSiteIds.length === 0) return { candidates: [], diag }
@@ -377,15 +354,7 @@ export class TasksService {
 			return a.task.createdAt.getTime() - b.task.createdAt.getTime()
 		})
 
-		// Дневной лимит на исполнителя: warm-up рамп (день 1 = 2, день 14+ = 20).
-		// Не даём новому аккаунту занять все слоты и помогает плавно ввести в сеть.
-		const executorCreatedAt = executorUser?.createdAt ?? new Date()
-		const executorLimit = this.executorDailyLimit(executorCreatedAt)
-		const remaining = Math.max(0, executorLimit - executorTodayCount)
-		diag.executorDailyLimit = executorLimit
-		diag.executorTodayCount = executorTodayCount
-
-		return { candidates: candidates.slice(0, remaining), diag }
+		return { candidates, diag }
 	}
 
 	async getUserTasks(userId: string, websiteId?: string) {
