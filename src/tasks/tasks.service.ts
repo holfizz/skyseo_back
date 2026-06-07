@@ -7,19 +7,38 @@ import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 import { CreateTaskDto, UpdateTaskDto } from './dto'
 
-const DOMAIN_BLACKLIST = [
-	'skyseo.site',
-	'skyseo.ru',
-	'skyseo.com',
-]
+const DOMAIN_BLACKLIST = ['skyseo.site', 'skyseo.ru', 'skyseo.com']
 
 // Запрещённые слова в поисковых запросах
 const KEYWORD_FORBIDDEN_WORDS = [
-	'порно', 'porno', 'porn', 'секс', 'sex', 'эротика', 'erotic', 'xxx',
-	'наркотик', 'наркотики', 'drug', 'drugs', 'героин', 'кокаин', 'cocaine',
-	'герoin', 'мефедрон', 'закладки', 'купить наркотики',
-	'оружие', 'оружию', 'weapon', 'взрывчатка', 'бомба',
-	'хакер', 'взлом', 'hacking', 'malware',
+	'порно',
+	'porno',
+	'porn',
+	'секс',
+	'sex',
+	'эротика',
+	'erotic',
+	'xxx',
+	'наркотик',
+	'наркотики',
+	'drug',
+	'drugs',
+	'героин',
+	'кокаин',
+	'cocaine',
+	'герoin',
+	'мефедрон',
+	'закладки',
+	'купить наркотики',
+	'оружие',
+	'оружию',
+	'weapon',
+	'взрывчатка',
+	'бомба',
+	'хакер',
+	'взлом',
+	'hacking',
+	'malware',
 ]
 
 function validateKeyword(keyword: string): void {
@@ -27,7 +46,9 @@ function validateKeyword(keyword: string): void {
 
 	// Минимальная длина
 	if (trimmed.length < 3) {
-		throw new BadRequestException('Ключевое слово слишком короткое (минимум 3 символа)')
+		throw new BadRequestException(
+			'Ключевое слово слишком короткое (минимум 3 символа)',
+		)
 	}
 
 	// Нет ни одной буквы (включая кириллицу)
@@ -38,12 +59,16 @@ function validateKeyword(keyword: string): void {
 	// Слишком много цифр (не осмысленный запрос типа "123 456")
 	const digits = (trimmed.match(/\d/g) || []).length
 	if (digits > trimmed.length * 0.6) {
-		throw new BadRequestException('Ключевое слово не должно состоять преимущественно из цифр')
+		throw new BadRequestException(
+			'Ключевое слово не должно состоять преимущественно из цифр',
+		)
 	}
 
 	// Один символ повторяется больше половины (ааааааа, 111111)
 	if (/(.)\1{4,}/.test(trimmed)) {
-		throw new BadRequestException('Ключевое слово содержит недопустимые повторения символов')
+		throw new BadRequestException(
+			'Ключевое слово содержит недопустимые повторения символов',
+		)
 	}
 
 	// Запрещённые слова (только целые слова, не подстроки)
@@ -242,7 +267,9 @@ export class TasksService {
 			isActive: true,
 			keywordStatus: 'ACTIVE' as const,
 			status: 'PENDING' as const,
-			...(notInSerpTaskIds.length > 0 ? { id: { notIn: notInSerpTaskIds } } : {}),
+			...(notInSerpTaskIds.length > 0
+				? { id: { notIn: notInSerpTaskIds } }
+				: {}),
 			executions: {
 				none: {
 					executorId,
@@ -253,14 +280,20 @@ export class TasksService {
 			website: {
 				isActive: true,
 				userId: { not: executorId },
-				...(blockedWebsiteIds.length > 0 ? { id: { notIn: blockedWebsiteIds } } : {}),
+				...(blockedWebsiteIds.length > 0
+					? { id: { notIn: blockedWebsiteIds } }
+					: {}),
 				NOT: DOMAIN_BLACKLIST.map(d => ({ url: { contains: d } })),
 			},
 		}
 
 		// Сайты, у которых вообще есть eligible-задачи (distinct — ограничено числом сайтов)
 		const eligibleSiteIds = await this.prisma.task
-			.findMany({ where: eligibleTaskWhere, select: { websiteId: true }, distinct: ['websiteId'] })
+			.findMany({
+				where: eligibleTaskWhere,
+				select: { websiteId: true },
+				distinct: ['websiteId'],
+			})
 			.then(r => r.map(t => t.websiteId))
 
 		const networkCap = await this.getNetworkPerSiteCapacity()
@@ -287,15 +320,32 @@ export class TasksService {
 
 		const todayCountsBySite = await this.prisma.execution.groupBy({
 			by: ['websiteId'],
-			where: { websiteId: { in: eligibleSiteIds }, status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+			where: {
+				websiteId: { in: eligibleSiteIds },
+				status: 'COMPLETED',
+				completedAt: { gte: dayAgo24h },
+			},
 			_count: { _all: true },
 		})
-		const todayCountBySite = new Map(todayCountsBySite.map(c => [c.websiteId, c._count._all]))
+		const todayCountBySite = new Map(
+			todayCountsBySite.map(c => [c.websiteId, c._count._all]),
+		)
 
 		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
 		const allSiteTasks = await this.prisma.task.findMany({
-			where: { websiteId: { in: eligibleSiteIds }, isActive: true, keywordStatus: 'ACTIVE' },
-			select: { websiteId: true, type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
+			where: {
+				websiteId: { in: eligibleSiteIds },
+				isActive: true,
+				keywordStatus: 'ACTIVE',
+			},
+			select: {
+				websiteId: true,
+				type: true,
+				maxYandexVisits: true,
+				maxGoogleVisits: true,
+				useYandex: true,
+				useGoogle: true,
+			},
 		})
 		const siteTargetMap = new Map<string, number>()
 		for (const t of allSiteTasks) {
@@ -306,7 +356,12 @@ export class TasksService {
 		// Метаданные сайтов: createdAt (warm-up), override target, владелец (платный приоритет)
 		const websiteMeta = await this.prisma.website.findMany({
 			where: { id: { in: eligibleSiteIds } },
-			select: { id: true, createdAt: true, dailyVisitsTarget: true, userId: true },
+			select: {
+				id: true,
+				createdAt: true,
+				dailyVisitsTarget: true,
+				userId: true,
+			},
 		})
 
 		const paidOwners = await this.getPaidPriorityOwners()
@@ -314,7 +369,8 @@ export class TasksService {
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
 		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean }>()
 		for (const site of websiteMeta) {
-			const userSiteTarget = site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
+			const userSiteTarget =
+				site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
 			const cappedTarget = Math.min(userSiteTarget, networkCap)
 			const rampedCap = this.rampedDailyCap(cappedTarget, site.createdAt)
 			const todayOnSite = todayCountBySite.get(site.id) ?? 0
@@ -332,7 +388,10 @@ export class TasksService {
 
 		// Окно кандидатов только по НЕзакапанным сайтам → все 300 реально доступны.
 		const allTasks = await this.prisma.task.findMany({
-			where: { ...eligibleTaskWhere, website: { ...eligibleTaskWhere.website, id: { in: availableSiteIds } } },
+			where: {
+				...eligibleTaskWhere,
+				website: { ...eligibleTaskWhere.website, id: { in: availableSiteIds } },
+			},
 			include: { website: { include: { user: true } } },
 			orderBy: { createdAt: 'asc' }, // FIFO внутри равных по нагрузке/приоритету
 			take: 300,
@@ -469,7 +528,9 @@ export class TasksService {
 				})
 
 				if (alreadyCompleted > 0) {
-					throw new BadRequestException('Task already completed by this user recently')
+					throw new BadRequestException(
+						'Task already completed by this user recently',
+					)
 				}
 
 				// ПФ-маскировка: лимиты на сайт от одного executor
@@ -485,7 +546,9 @@ export class TasksService {
 					},
 				})
 				if (siteVisitsThisMonth >= 2) {
-					throw new BadRequestException('Monthly site limit reached for this user')
+					throw new BadRequestException(
+						'Monthly site limit reached for this user',
+					)
 				}
 
 				const siteVisitRecently = await prisma.execution.count({
@@ -505,24 +568,45 @@ export class TasksService {
 				// потом плавный разгон от 3 в первый день до полного потолка за 14 дней.
 				const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
 				const todayOnSite = await prisma.execution.count({
-					where: { websiteId: task.websiteId, status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+					where: {
+						websiteId: task.websiteId,
+						status: 'COMPLETED',
+						completedAt: { gte: dayAgo24h },
+					},
 				})
 				// Site target: явный override из website.dailyVisitsTarget или сумма ключей
-				const userSiteTarget = task.website.dailyVisitsTarget ?? await (async () => {
-					const siteTasksForTarget = await prisma.task.findMany({
-						where: { websiteId: task.websiteId, isActive: true, keywordStatus: 'ACTIVE' },
-						select: { type: true, maxYandexVisits: true, maxGoogleVisits: true, useYandex: true, useGoogle: true },
-					})
-					return siteTasksForTarget.reduce(
-						(sum, t) => sum + this.getTaskDailyTarget(t),
-						0,
-					)
-				})()
+				const userSiteTarget =
+					task.website.dailyVisitsTarget ??
+					(await (async () => {
+						const siteTasksForTarget = await prisma.task.findMany({
+							where: {
+								websiteId: task.websiteId,
+								isActive: true,
+								keywordStatus: 'ACTIVE',
+							},
+							select: {
+								type: true,
+								maxYandexVisits: true,
+								maxGoogleVisits: true,
+								useYandex: true,
+								useGoogle: true,
+							},
+						})
+						return siteTasksForTarget.reduce(
+							(sum, t) => sum + this.getTaskDailyTarget(t),
+							0,
+						)
+					})())
 				const networkCap = await this.getNetworkPerSiteCapacity()
 				const cappedTarget = Math.min(userSiteTarget, networkCap)
-				const rampedCap = this.rampedDailyCap(cappedTarget, task.website.createdAt)
+				const rampedCap = this.rampedDailyCap(
+					cappedTarget,
+					task.website.createdAt,
+				)
 				if (todayOnSite >= rampedCap) {
-					throw new BadRequestException('Daily site cap reached (warm-up / network limit)')
+					throw new BadRequestException(
+						'Daily site cap reached (warm-up / network limit)',
+					)
 				}
 
 				if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) {
@@ -640,16 +724,30 @@ export class TasksService {
 		return this.prisma.task.update({
 			where: { id: taskId },
 			data: {
-				...(dto.maxYandexVisits !== undefined && { maxYandexVisits: dto.maxYandexVisits }),
-				...(dto.maxGoogleVisits !== undefined && { maxGoogleVisits: dto.maxGoogleVisits }),
+				...(dto.maxYandexVisits !== undefined && {
+					maxYandexVisits: dto.maxYandexVisits,
+				}),
+				...(dto.maxGoogleVisits !== undefined && {
+					maxGoogleVisits: dto.maxGoogleVisits,
+				}),
 				...(dto.useYandex !== undefined && { useYandex: dto.useYandex }),
 				...(dto.useGoogle !== undefined && { useGoogle: dto.useGoogle }),
-				...(dto.pagesDepthFrom !== undefined && { pagesDepthFrom: dto.pagesDepthFrom }),
-				...(dto.pagesDepthTo !== undefined && { pagesDepthTo: dto.pagesDepthTo }),
-				...(dto.pageDurationFrom !== undefined && { pageDurationFrom: dto.pageDurationFrom }),
-				...(dto.pageDurationTo !== undefined && { pageDurationTo: dto.pageDurationTo }),
+				...(dto.pagesDepthFrom !== undefined && {
+					pagesDepthFrom: dto.pagesDepthFrom,
+				}),
+				...(dto.pagesDepthTo !== undefined && {
+					pagesDepthTo: dto.pagesDepthTo,
+				}),
+				...(dto.pageDurationFrom !== undefined && {
+					pageDurationFrom: dto.pageDurationFrom,
+				}),
+				...(dto.pageDurationTo !== undefined && {
+					pageDurationTo: dto.pageDurationTo,
+				}),
 				...(dto.isActive !== undefined && { isActive: dto.isActive }),
-				...(dto.targetUrl !== undefined && { targetUrl: dto.targetUrl || null }),
+				...(dto.targetUrl !== undefined && {
+					targetUrl: dto.targetUrl || null,
+				}),
 			},
 		})
 	}
@@ -711,7 +809,7 @@ export class TasksService {
 			distinct: ['executorId'],
 		})
 		const activeCount = distinctExecutors.length
-		const capacity = Math.max(5, Math.floor((activeCount * 2) / 30))
+		const capacity = Math.max(20, Math.floor((activeCount * 2) / 30))
 		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
 		return capacity
 	}
@@ -723,7 +821,8 @@ export class TasksService {
 	//   paidConsumed = max(0, потрачено − бесплатные);  paidRemaining = куплено − paidConsumed
 	// Кэш 5 мин — пересчёт по всей балансовой истории недёшев, а набор меняется редко.
 	private static readonly WELCOME_BASELINE = 1000 // User.balance @default(1000), без записи в history
-	private paidOwnersCache: { value: Set<string>; expiresAt: number } | null = null
+	private paidOwnersCache: { value: Set<string>; expiresAt: number } | null =
+		null
 	private async getPaidPriorityOwners(): Promise<Set<string>> {
 		const now = Date.now()
 		if (this.paidOwnersCache && this.paidOwnersCache.expiresAt > now) {
@@ -745,9 +844,16 @@ export class TasksService {
 				where: { userId: { in: buyerIds } },
 				_sum: { amount: true },
 			})
-			const perUser = new Map<string, { purchased: number; free: number; spent: number }>()
+			const perUser = new Map<
+				string,
+				{ purchased: number; free: number; spent: number }
+			>()
 			for (const row of sums) {
-				const acc = perUser.get(row.userId) ?? { purchased: 0, free: 0, spent: 0 }
+				const acc = perUser.get(row.userId) ?? {
+					purchased: 0,
+					free: 0,
+					spent: 0,
+				}
 				const amt = row._sum.amount ?? 0
 				if (row.type === 'PAYMENT') {
 					acc.purchased += amt
@@ -785,7 +891,10 @@ export class TasksService {
 		if (targetMax <= START_CAP) return targetMax
 		const progress = daysActive / RAMP_DAYS
 		const eased = progress * progress
-		return Math.max(START_CAP, Math.floor(START_CAP + (targetMax - START_CAP) * eased))
+		return Math.max(
+			START_CAP,
+			Math.floor(START_CAP + (targetMax - START_CAP) * eased),
+		)
 	}
 
 	private getTaskRewardBounds(task: {
@@ -841,15 +950,24 @@ export class TasksService {
 	async debugAvailability(executorId: string) {
 		const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
 
-		const [{ diag }, totalActivePendingTasks, blockedByCooldown15d] = await Promise.all([
-			this.computeAvailability(executorId),
-			this.prisma.task.count({ where: { isActive: true, keywordStatus: 'ACTIVE', status: 'PENDING' } }),
-			this.prisma.execution.findMany({
-				where: { executorId, status: 'COMPLETED', completedAt: { gte: cooldownDate } },
-				select: { taskId: true },
-				distinct: ['taskId'],
-			}).then(r => r.length),
-		])
+		const [{ diag }, totalActivePendingTasks, blockedByCooldown15d] =
+			await Promise.all([
+				this.computeAvailability(executorId),
+				this.prisma.task.count({
+					where: { isActive: true, keywordStatus: 'ACTIVE', status: 'PENDING' },
+				}),
+				this.prisma.execution
+					.findMany({
+						where: {
+							executorId,
+							status: 'COMPLETED',
+							completedAt: { gte: cooldownDate },
+						},
+						select: { taskId: true },
+						distinct: ['taskId'],
+					})
+					.then(r => r.length),
+			])
 
 		return {
 			networkCap: diag.networkCap,
