@@ -151,7 +151,12 @@ export class AiService {
 
 			return parsed
 		} catch (err) {
-			throw new BadRequestException('Ошибка анализа сайта через AI: ' + (err as Error).message)
+			const msg = (err as Error).message ?? ''
+			// Не пробрасываем сырую OpenAI-ошибку — она содержит ключ API (sk-proj-...)
+			if (msg.includes('API key') || msg.includes('401') || msg.includes('Unauthorized')) {
+				throw new BadRequestException('AI-анализ временно недоступен. Обратитесь к администратору.')
+			}
+			throw new BadRequestException('Ошибка анализа сайта через AI')
 		}
 	}
 
