@@ -347,14 +347,16 @@ export class TasksService {
 			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio })
 		}
 
-		// Приоритет выдачи: платные сайты → наименее загруженные сегодня → FIFO.
-		candidates.sort((a, b) => {
+		// Приоритет выдачи: платные сайты → наименее загруженные сегодня → случайный порядок.
+		// Случайность внутри одного тира гарантирует честное распределение между исполнителями:
+		// двое запросивших одновременно получат разные задачи, а не одну и ту же.
+		const withSalt = candidates.map(c => ({ ...c, _salt: Math.random() }))
+		withSalt.sort((a, b) => {
 			if (a.isPaid !== b.isPaid) return a.isPaid ? -1 : 1
 			if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
-			return a.task.createdAt.getTime() - b.task.createdAt.getTime()
+			return a._salt - b._salt
 		})
-
-		return { candidates, diag }
+		return { candidates: withSalt, diag }
 	}
 
 	async getUserTasks(userId: string, websiteId?: string) {
@@ -709,7 +711,7 @@ export class TasksService {
 			distinct: ['executorId'],
 		})
 		const activeCount = distinctExecutors.length
-		const capacity = Math.max(3, Math.floor((activeCount * 2) / 30))
+		const capacity = Math.max(5, Math.floor((activeCount * 2) / 30))
 		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
 		return capacity
 	}
