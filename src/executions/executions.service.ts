@@ -151,7 +151,7 @@ export class ExecutionsService {
 					if (alreadyCredited) return // балл уже начислен через creditEngine
 
 					const earned = foundInTop ? 15 : 5
-					const spent = foundInTop ? 30 : 20 // «не найдено» временно 20 (раньше 10)
+					const spent = foundInTop ? 30 : 0
 					engineRewards.push({
 						engine,
 						label: engine === 'yandex' ? 'Яндекс' : 'Google',
@@ -170,7 +170,7 @@ export class ExecutionsService {
 				pointsSpent = 30
 			} else {
 				pointsEarned = 5
-				pointsSpent = 20 // «не найдено» временно 20 (раньше 10)
+				pointsSpent = 0
 			}
 		} else if (execution.task.type === 'EXTERNAL_LINK') {
 			pointsEarned = 5
@@ -422,7 +422,7 @@ export class ExecutionsService {
 		}
 
 		const pointsEarned = dto.foundInTop ? 15 : 5
-		const pointsSpent = dto.foundInTop ? 30 : 20 // «не найдено» временно 20 (раньше 10)
+		const pointsSpent = dto.foundInTop ? 30 : 0
 		const taskDescription = execution.task.keyword
 			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
 			: `Переход по ссылке ${execution.task.externalUrl}`
