@@ -516,7 +516,7 @@ export class ExecutionsService {
 	async failExecution(executionId: string, dto: FailExecutionDto) {
 		const execution = await this.prisma.execution.findUnique({
 			where: { id: executionId },
-			select: { id: true, taskId: true, status: true },
+			select: { id: true, taskId: true, status: true, executorId: true },
 		})
 
 		if (!execution) {
@@ -559,8 +559,21 @@ export class ExecutionsService {
 			`[ExecutionsService] Execution ${executionId} FAILED (${dto.failureReason}), task ${execution.taskId} returned to PENDING`,
 		)
 
-		// Авто-ограничение ключевика: 10 подряд NOT_IN_SERP и ни разу не найден
+		// Авто-ограничение ключевика: 10 подряд NOT_IN_SERP и ни разу не найден.
+		// НО: новые аккаунты листают только до стр. 3 (дни 1-6) и до стр. 4 (дни 7-13).
+		// Стр. 5 начинается с 14-го дня. NOT_IN_SERP от молодого аккаунта — не значит что
+		// сайта нет в выдаче, просто не долистал. Считаем к ограничению только от зрелых.
 		if (dto.failureReason === 'NOT_IN_SERP') {
+			const executor = await this.prisma.user.findUnique({
+				where: { id: execution.executorId },
+				select: { createdAt: true },
+			})
+			const executorAgeDays = executor
+				? Math.floor((Date.now() - executor.createdAt.getTime()) / (24 * 60 * 60 * 1000))
+				: 0
+			const searchesFullDepth = executorAgeDays >= 14 // с 14-го дня ищет до стр. 5
+			if (!searchesFullDepth) return updatedExecution
+
 			const everFound = await this.prisma.execution.count({
 				where: { taskId: execution.taskId, status: 'COMPLETED', foundInTop: true },
 			})
