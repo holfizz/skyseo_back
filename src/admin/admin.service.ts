@@ -134,7 +134,25 @@ export class AdminService {
 		return this.prisma.user.findUnique({
 			where: { id: userId },
 			include: {
-				websites: true,
+				websites: {
+					include: {
+						tasks: {
+							orderBy: { createdAt: 'desc' },
+							select: {
+								id: true,
+								keyword: true,
+								type: true,
+								isActive: true,
+								keywordStatus: true,
+								useYandex: true,
+								useGoogle: true,
+								maxYandexVisits: true,
+								maxGoogleVisits: true,
+								_count: { select: { executions: true } },
+							},
+						},
+					},
+				},
 				balanceHistory: {
 					orderBy: { createdAt: 'desc' },
 					take: 50,
