@@ -282,10 +282,10 @@ export class ExecutionsService {
 				? (dto.googleFoundInTop ? 15 : 5)
 				: 0
 			const yandexTotalSpent = dto.yandexCompleted
-				? (dto.yandexFoundInTop ? 30 : 20)
+				? (dto.yandexFoundInTop ? 30 : 0)
 				: 0
 			const googleTotalSpent = dto.googleCompleted
-				? (dto.googleFoundInTop ? 30 : 20)
+				? (dto.googleFoundInTop ? 30 : 0)
 				: 0
 			const totalEarnedOnRow = hasPerEngineResult
 				? yandexTotalEarned + googleTotalEarned
@@ -485,20 +485,22 @@ export class ExecutionsService {
 				},
 			})
 
-			// Списание с владельца сайта
-			await tx.user.update({
-				where: { id: execution.task.website.userId },
-				data: { balance: { increment: -pointsSpent } },
-			})
-			await tx.balanceHistory.create({
-				data: {
-					userId: execution.task.website.userId,
-					amount: -pointsSpent,
-					type: 'TASK_SPENT',
-					description: `Задача выполнена: ${taskDescription} — ${label} (${resultText})`,
-					taskId: execution.taskId,
-				},
-			})
+			// Списание с владельца сайта — только если есть что списывать
+			if (pointsSpent > 0) {
+				await tx.user.update({
+					where: { id: execution.task.website.userId },
+					data: { balance: { increment: -pointsSpent } },
+				})
+				await tx.balanceHistory.create({
+					data: {
+						userId: execution.task.website.userId,
+						amount: -pointsSpent,
+						type: 'TASK_SPENT',
+						description: `Задача выполнена: ${taskDescription} — ${label} (${resultText})`,
+						taskId: execution.taskId,
+					},
+				})
+			}
 
 			return { credited: true as const }
 		})
