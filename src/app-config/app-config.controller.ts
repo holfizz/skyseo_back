@@ -10,4 +10,10 @@ export class AppConfigController {
 	async google() {
 		return this.appConfig.getGoogleConfig()
 	}
+
+	// Публичный — кабинет показывает расценки в тултипе баланса.
+	@Get('points')
+	async points() {
+		return this.appConfig.getPointsConfig()
+	}
 }

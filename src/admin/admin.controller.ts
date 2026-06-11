@@ -30,6 +30,16 @@ export class AdminController {
 		return this.adminService.setGoogleConfig(body)
 	}
 
+	@Get('settings/points')
+	async getPointsConfig() {
+		return this.adminService.getPointsConfig()
+	}
+
+	@Put('settings/points')
+	async setPointsConfig(@Body() body: { foundEarned?: number; foundSpent?: number; notFoundEarned?: number; notFoundSpent?: number }) {
+		return this.adminService.setPointsConfig(body)
+	}
+
 	@Get('analytics')
 	async getAnalytics(
 		@Query('from') from?: string,
@@ -65,6 +75,11 @@ export class AdminController {
 	@Put('users/:id/toggle-active')
 	async toggleUserActive(@Param('id') id: string) {
 		return this.adminService.toggleUserActive(id)
+	}
+
+	@Put('users/:id/boost')
+	async setUserBoost(@Param('id') id: string, @Body() body: { boost: number }) {
+		return this.adminService.setUserBoost(id, body.boost)
 	}
 
 	@Get('tasks')

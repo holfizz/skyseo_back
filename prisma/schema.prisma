@@ -36,6 +36,7 @@ model User {
   uninstallToken         String?   @unique // Стабильный токен для beacon-пинга от деинсталлятора Windows
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
+  priorityBoost          Int       @default(1) // Множитель приоритета в очереди задач (1 = норма, выше = чаще)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

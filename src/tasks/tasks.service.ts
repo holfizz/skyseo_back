@@ -317,18 +317,35 @@ export class TasksService {
 		// Считаем cap для ВСЕХ eligible-сайтов ДО окна кандидатов — иначе закапанные
 		// сайты съедают окно и реально доступные задачи (за позицией 300) не выдаются.
 		const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+		const ago30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
-		const todayCountsBySite = await this.prisma.execution.groupBy({
-			by: ['websiteId'],
-			where: {
-				websiteId: { in: eligibleSiteIds },
-				status: 'COMPLETED',
-				completedAt: { gte: dayAgo24h },
-			},
-			_count: { _all: true },
-		})
+		const [todayCountsBySite, foundCountsBySite] = await Promise.all([
+			this.prisma.execution.groupBy({
+				by: ['websiteId'],
+				where: {
+					websiteId: { in: eligibleSiteIds },
+					status: 'COMPLETED',
+					completedAt: { gte: dayAgo24h },
+				},
+				_count: { _all: true },
+			}),
+			// Кол-во «найдено в топе» за последние 30 дней — для приоритизации успешных сайтов
+			this.prisma.execution.groupBy({
+				by: ['websiteId'],
+				where: {
+					websiteId: { in: eligibleSiteIds },
+					status: 'COMPLETED',
+					foundInTop: true,
+					completedAt: { gte: ago30d },
+				},
+				_count: { _all: true },
+			}),
+		])
 		const todayCountBySite = new Map(
 			todayCountsBySite.map(c => [c.websiteId, c._count._all]),
+		)
+		const foundCountBySite = new Map(
+			foundCountsBySite.map(c => [c.websiteId, c._count._all]),
 		)
 
 		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
@@ -353,7 +370,7 @@ export class TasksService {
 			siteTargetMap.set(t.websiteId, cur + this.getTaskDailyTarget(t))
 		}
 
-		// Метаданные сайтов: createdAt (warm-up), override target, владелец (платный приоритет)
+		// Метаданные сайтов: createdAt (warm-up), override target, владелец (платный приоритет + boost)
 		const websiteMeta = await this.prisma.website.findMany({
 			where: { id: { in: eligibleSiteIds } },
 			select: {
@@ -361,13 +378,14 @@ export class TasksService {
 				createdAt: true,
 				dailyVisitsTarget: true,
 				userId: true,
+				user: { select: { priorityBoost: true } },
 			},
 		})
 
 		const paidOwners = await this.getPaidPriorityOwners()
 
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
-		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean }>()
+		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean; foundCount: number; boost: number }>()
 		for (const site of websiteMeta) {
 			const userSiteTarget =
 				site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
@@ -375,9 +393,13 @@ export class TasksService {
 			const rampedCap = this.rampedDailyCap(cappedTarget, site.createdAt)
 			const todayOnSite = todayCountBySite.get(site.id) ?? 0
 			if (todayOnSite >= rampedCap) continue // сайт упёрся в дневной cap
+			const boost = (site.user as any)?.priorityBoost ?? 1
 			siteInfo.set(site.id, {
-				fillRatio: rampedCap > 0 ? todayOnSite / rampedCap : 1,
+				// boost > 1 → делим fillRatio, сайт выглядит «менее заполненным» → выше в очереди
+				fillRatio: rampedCap > 0 ? (todayOnSite / rampedCap) / Math.max(1, boost) : 1,
 				isPaid: paidOwners.has(site.userId),
+				foundCount: foundCountBySite.get(site.id) ?? 0,
+				boost,
 			})
 		}
 
@@ -403,15 +425,15 @@ export class TasksService {
 			if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) continue
 			const info = siteInfo.get(task.websiteId)
 			if (!info) continue
-			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio })
+			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio, foundCount: info.foundCount, boost: info.boost })
 		}
 
-		// Приоритет выдачи: платные сайты → наименее загруженные сегодня → случайный порядок.
-		// Случайность внутри одного тира гарантирует честное распределение между исполнителями:
-		// двое запросивших одновременно получат разные задачи, а не одну и ту же.
+		// Приоритет выдачи: платные → больше находок за 30д → наименее загруженные сегодня → случайный.
+		// Случайность внутри тира гарантирует честное распределение между параллельными исполнителями.
 		const withSalt = candidates.map(c => ({ ...c, _salt: Math.random() }))
 		withSalt.sort((a, b) => {
 			if (a.isPaid !== b.isPaid) return a.isPaid ? -1 : 1
+			if (a.foundCount !== b.foundCount) return b.foundCount - a.foundCount
 			if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
 			return a._salt - b._salt
 		})

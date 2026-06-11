@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { AppConfigService } from '../app-config/app-config.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
@@ -10,6 +11,7 @@ export class ExecutionsService {
 		private prisma: PrismaService,
 		private usersService: UsersService,
 		private telegram: TelegramService,
+		private appConfig: AppConfigService,
 	) {}
 
 	// Получить начало текущей недели (понедельник 00:00)
@@ -71,6 +73,7 @@ export class ExecutionsService {
 
 	async completeExecution(executionId: string, dto: CompleteExecutionDto) {
 		console.log(`[completeExecution] id=${executionId} dto=`, JSON.stringify(dto))
+		const pts = await this.appConfig.getPointsConfig()
 		const execution = await this.prisma.execution.findUnique({
 			where: { id: executionId },
 			include: {
@@ -150,8 +153,8 @@ export class ExecutionsService {
 					if (!completed) return
 					if (alreadyCredited) return // балл уже начислен через creditEngine
 
-					const earned = foundInTop ? 15 : 5
-					const spent = foundInTop ? 30 : 0
+					const earned = foundInTop ? pts.foundEarned : pts.notFoundEarned
+					const spent = foundInTop ? pts.foundSpent : pts.notFoundSpent
 					engineRewards.push({
 						engine,
 						label: engine === 'yandex' ? 'Яндекс' : 'Google',
@@ -166,11 +169,11 @@ export class ExecutionsService {
 				addEngineReward('yandex', dto.yandexCompleted, dto.yandexFoundInTop, yandexAlreadyCredited)
 				addEngineReward('google', dto.googleCompleted, dto.googleFoundInTop, googleAlreadyCredited)
 			} else if (dto.foundInTop) {
-				pointsEarned = 15
-				pointsSpent = 30
+				pointsEarned = pts.foundEarned
+				pointsSpent = pts.foundSpent
 			} else {
-				pointsEarned = 5
-				pointsSpent = 0
+				pointsEarned = pts.notFoundEarned
+				pointsSpent = pts.notFoundSpent
 			}
 		} else if (execution.task.type === 'EXTERNAL_LINK') {
 			pointsEarned = 5
@@ -276,16 +279,16 @@ export class ExecutionsService {
 			// Итоговые pointsEarned/pointsSpent для execution-строки:
 			// учитываем И уже начисленные через creditEngine движки тоже.
 			const yandexTotalEarned = dto.yandexCompleted
-				? (dto.yandexFoundInTop ? 15 : 5)
+				? (dto.yandexFoundInTop ? pts.foundEarned : pts.notFoundEarned)
 				: 0
 			const googleTotalEarned = dto.googleCompleted
-				? (dto.googleFoundInTop ? 15 : 5)
+				? (dto.googleFoundInTop ? pts.foundEarned : pts.notFoundEarned)
 				: 0
 			const yandexTotalSpent = dto.yandexCompleted
-				? (dto.yandexFoundInTop ? 30 : 0)
+				? (dto.yandexFoundInTop ? pts.foundSpent : pts.notFoundSpent)
 				: 0
 			const googleTotalSpent = dto.googleCompleted
-				? (dto.googleFoundInTop ? 30 : 0)
+				? (dto.googleFoundInTop ? pts.foundSpent : pts.notFoundSpent)
 				: 0
 			const totalEarnedOnRow = hasPerEngineResult
 				? yandexTotalEarned + googleTotalEarned
@@ -421,8 +424,9 @@ export class ExecutionsService {
 			throw new Error('Invalid position (1-50)')
 		}
 
-		const pointsEarned = dto.foundInTop ? 15 : 5
-		const pointsSpent = dto.foundInTop ? 30 : 0
+		const pts = await this.appConfig.getPointsConfig()
+		const pointsEarned = dto.foundInTop ? pts.foundEarned : pts.notFoundEarned
+		const pointsSpent = dto.foundInTop ? pts.foundSpent : pts.notFoundSpent
 		const taskDescription = execution.task.keyword
 			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
 			: `Переход по ссылке ${execution.task.externalUrl}`

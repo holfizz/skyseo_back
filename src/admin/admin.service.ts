@@ -5,6 +5,10 @@ import {
 	DEFAULT_GOOGLE_SOCS,
 	KEY_GOOGLE_CONSENT,
 	KEY_GOOGLE_SOCS,
+	KEY_POINTS_FOUND_EARNED,
+	KEY_POINTS_FOUND_SPENT,
+	KEY_POINTS_NOT_FOUND_EARNED,
+	KEY_POINTS_NOT_FOUND_SPENT,
 } from '../app-config/app-config.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
@@ -29,6 +33,24 @@ export class AdminService {
 		if (typeof body.socs === 'string') await this.appConfig.set(KEY_GOOGLE_SOCS, body.socs.trim())
 		if (typeof body.consent === 'string') await this.appConfig.set(KEY_GOOGLE_CONSENT, body.consent.trim())
 		return this.getGoogleConfigForAdmin()
+	}
+
+	async getPointsConfig() {
+		return this.appConfig.getPointsConfigWithMeta()
+	}
+
+	async setPointsConfig(body: { foundEarned?: number; foundSpent?: number; notFoundEarned?: number; notFoundSpent?: number }) {
+		if (body.foundEarned != null) await this.appConfig.set(KEY_POINTS_FOUND_EARNED, String(body.foundEarned))
+		if (body.foundSpent != null) await this.appConfig.set(KEY_POINTS_FOUND_SPENT, String(body.foundSpent))
+		if (body.notFoundEarned != null) await this.appConfig.set(KEY_POINTS_NOT_FOUND_EARNED, String(body.notFoundEarned))
+		if (body.notFoundSpent != null) await this.appConfig.set(KEY_POINTS_NOT_FOUND_SPENT, String(body.notFoundSpent))
+		return this.appConfig.getPointsConfigWithMeta()
+	}
+
+	async setUserBoost(userId: string, boost: number) {
+		const clamped = Math.max(1, Math.min(100, Math.round(boost)))
+		await this.prisma.user.update({ where: { id: userId }, data: { priorityBoost: clamped } })
+		return { priorityBoost: clamped }
 	}
 
 	async getAdminStatistics() {
