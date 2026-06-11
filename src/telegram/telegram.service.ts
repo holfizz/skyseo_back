@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Telegraf } from 'telegraf'
 import { PrismaService } from '../prisma/prisma.service'
 
 @Injectable()
-export class TelegramService {
+export class TelegramService implements OnModuleDestroy {
 	private bot: Telegraf | null = null
 	private adminId: string
 	private isEnabled: boolean = false
@@ -55,6 +55,12 @@ export class TelegramService {
 			console.log(
 				`✅ Telegram bot connected successfully: @${(botInfo as any).username}`,
 			)
+
+			// Запускаем polling для приёма команд
+			this.bot.launch().catch(err => {
+				console.error('[TelegramService] Polling error:', err.message)
+			})
+			console.log('[TelegramService] Bot polling started')
 		} catch (error) {
 			console.log('⚠️ Telegram bot connection failed:', error.message)
 			console.log('⚠️ Telegram notifications disabled')
@@ -97,6 +103,10 @@ export class TelegramService {
 				await ctx.reply('❌ Ошибка при получении статистики')
 			}
 		})
+	}
+
+	onModuleDestroy() {
+		this.bot?.stop()
 	}
 
 	async sendAdminNotification(message: string, threadId?: number) {
