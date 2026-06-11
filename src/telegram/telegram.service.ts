@@ -282,6 +282,8 @@ export class TelegramService {
 			totalEarned,
 			totalPayments,
 			totalRevenue,
+			paymentsToday,
+			revenueTodayAgg,
 		] = await Promise.all([
 			// Всего пользователей
 			this.prisma.user.count(),
@@ -361,6 +363,15 @@ export class TelegramService {
 				_sum: { amount: true },
 				where: { status: 'SUCCEEDED' },
 			}),
+
+			// Платежи за сегодня
+			this.prisma.payment.count({ where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
+
+			// Выручка за сегодня
+			this.prisma.payment.aggregate({
+				_sum: { amount: true },
+				where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } },
+			}),
 		])
 
 		// Форматируем статистику
@@ -409,117 +420,184 @@ export class TelegramService {
 		message += `└ Google: ${googleTasks}\n\n`
 
 		// Финансы
+		const revenueTotal = Number(totalRevenue._sum.amount || 0)
+		const revToday = Number(revenueTodayAgg._sum.amount || 0)
 		message += '💰 <b>Финансы:</b>\n'
 		message += `├ Заработано баллов: ${totalEarned._sum.amount || 0}\n`
-		message += `├ Платежей: ${totalPayments}\n`
-		message += `└ Выручка: ${Number(totalRevenue._sum.amount || 0).toFixed(2)} ₽\n\n`
+		message += `├ Платежей всего: ${totalPayments}\n`
+		message += `├ Выручка всего: ${revenueTotal.toLocaleString('ru-RU')} ₽\n`
+		if (paymentsToday > 0) message += `├ Платежей сегодня: ${paymentsToday}\n`
+		if (revToday > 0)      message += `├ Выручка сегодня: ${revToday.toLocaleString('ru-RU')} ₽\n`
+		message += `└ ─\n\n`
 
 		message += `🕐 Обновлено: ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		return message
 	}
 
-	// Получение дневной статистики
+	// Получение дневной статистики (команда /daily — тот же формат что и авто-отчёт)
 	private async getDailyStats(): Promise<string> {
+		// Делегируем в sendDailyTelegramReport, но возвращаем строку вместо отправки
 		const now = new Date()
-		const startOfToday = new Date(
-			now.getFullYear(),
-			now.getMonth(),
-			now.getDate(),
-		)
+		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+		const dateStr = now.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
 
-		// Получаем данные за сегодня
 		const [
 			newUsersToday,
+			activePCsToday,
+			execFound,
+			execNotFound,
+			execScriptError,
+			execNotInSerp,
+			execLockTimeout,
+			captchaYandex,
+			captchaGoogle,
+			earnedToday,
+			spentToday,
 			newTasksToday,
-			completedTasksToday,
 			paymentsToday,
 			revenueToday,
-			activeExecutorsToday,
 		] = await Promise.all([
-			// Новые пользователи
-			this.prisma.user.count({
-				where: { createdAt: { gte: startOfToday } },
-			}),
-
-			// Новые задания
-			this.prisma.task.count({
-				where: { createdAt: { gte: startOfToday } },
-			}),
-
-			// Выполненные задания
-			this.prisma.execution.count({
-				where: {
-					status: 'COMPLETED',
-					completedAt: { gte: startOfToday },
-				},
-			}),
-
-			// Платежи
-			this.prisma.payment.count({
-				where: {
-					status: 'SUCCEEDED',
-					paidAt: { gte: startOfToday },
-				},
-			}),
-
-			// Выручка
-			this.prisma.payment.aggregate({
-				_sum: { amount: true },
-				where: {
-					status: 'SUCCEEDED',
-					paidAt: { gte: startOfToday },
-				},
-			}),
-
-			// Активные исполнители
+			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
 			this.prisma.execution
-				.groupBy({
-					by: ['executorId'],
-					where: {
-						createdAt: { gte: startOfToday },
-					},
-				})
-				.then(result => result.length),
+				.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } })
+				.then(r => r.length),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: true } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: false } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'SCRIPT_ERROR' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'NOT_IN_SERP' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'LOCK_TIMEOUT' } }),
+			this.prisma.executionEvent.count({ where: { createdAt: { gte: startOfToday }, type: 'captcha', engine: 'yandex' } }),
+			this.prisma.executionEvent.count({ where: { createdAt: { gte: startOfToday }, type: 'captcha', engine: 'google' } }),
+			this.prisma.execution.aggregate({ _sum: { pointsEarned: true }, where: { createdAt: { gte: startOfToday }, status: 'COMPLETED' } }),
+			this.prisma.execution.aggregate({ _sum: { pointsSpent: true }, where: { createdAt: { gte: startOfToday }, status: 'COMPLETED' } }),
+			this.prisma.task.count({ where: { createdAt: { gte: startOfToday } } }),
+			this.prisma.payment.count({ where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
+			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 		])
 
-		let message = '📅 <b>Статистика за сегодня</b>\n\n'
+		const totalToday = execFound + execNotFound + execScriptError + execNotInSerp + execLockTimeout
+		const foundPct = totalToday > 0 ? Math.round((execFound / totalToday) * 100) : 0
+		const revenue = Number(revenueToday._sum.amount || 0)
+		const earned = earnedToday._sum.pointsEarned ?? 0
+		const spent = spentToday._sum.pointsSpent ?? 0
+		const totalCaptcha = captchaYandex + captchaGoogle
 
-		message += '👥 <b>Пользователи:</b>\n'
-		message += `├ Новых: ${newUsersToday}\n`
-		message += `└ Активных: ${activeExecutorsToday}\n\n`
+		let message = `📅 <b>Статистика за сегодня — ${dateStr}</b>\n\n`
 
-		message += '📋 <b>Задания:</b>\n'
-		message += `├ Создано: ${newTasksToday}\n`
-		message += `└ Выполнено: ${completedTasksToday}\n\n`
+		message += `👥 <b>Пользователи:</b>\n`
+		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
+		message += `└ Активных ПК: <b>${activePCsToday}</b>\n\n`
 
-		message += '💰 <b>Финансы:</b>\n'
-		message += `├ Платежей: ${paymentsToday}\n`
-		message += `└ Выручка: ${Number(revenueToday._sum.amount || 0).toFixed(2)} ₽\n\n`
+		if (newTasksToday > 0) message += `📋 <b>Новых заданий:</b> ${newTasksToday}\n\n`
+
+		message += `⚙️ <b>Задачи (${totalToday} всего, ${foundPct}% успех):</b>\n`
+		if (execFound > 0)       message += `├ ✅ Найдено в топ: <b>${execFound}</b>\n`
+		if (execNotFound > 0)    message += `├ 🔍 Вне топ-50: <b>${execNotFound}</b>\n`
+		if (execNotInSerp > 0)   message += `├ 🚫 Нет в поиске: <b>${execNotInSerp}</b>\n`
+		if (execScriptError > 0) message += `├ ❌ Ошибка скрипта: <b>${execScriptError}</b>\n`
+		if (execLockTimeout > 0) message += `├ ⏱ Таймаут: <b>${execLockTimeout}</b>\n`
+		if (totalToday === 0)    message += `├ Задач не было\n`
+		message += `├ 🪙 Заработано: <b>${earned}</b> б.\n`
+		if (spent > 0)           message += `└ 💸 Потрачено: <b>${spent}</b> б.\n`
+		else                     message += `└ ─\n`
+		message += '\n'
+
+		if (totalCaptcha > 0) {
+			message += `🤖 <b>Капча:</b>\n`
+			if (captchaYandex > 0) message += `├ Яндекс: <b>${captchaYandex}</b>\n`
+			if (captchaGoogle > 0) message += `└ Google: <b>${captchaGoogle}</b>\n`
+			message += '\n'
+		}
+
+		if (paymentsToday > 0 || revenue > 0) {
+			message += `💰 <b>Покупки:</b>\n`
+			if (paymentsToday > 0) message += `├ Платежей: <b>${paymentsToday}</b>\n`
+			if (revenue > 0)       message += `└ Выручка: <b>${revenue.toLocaleString('ru-RU')} ₽</b>\n`
+			message += '\n'
+		}
 
 		message += `🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
-
 		return message
 	}
 
 	async sendDailyTelegramReport() {
 		const now = new Date()
 		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+		const dateStr = now.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
 
-		const [sitesFoundToday, activePCsToday] = await Promise.all([
-			this.prisma.execution.count({
-				where: { status: 'COMPLETED', foundInTop: true, completedAt: { gte: startOfToday } },
-			}),
+		const [
+			newUsersToday,
+			activePCsToday,
+			execFound,
+			execNotFound,
+			execScriptError,
+			execNotInSerp,
+			execLockTimeout,
+			captchaYandex,
+			captchaGoogle,
+			earnedToday,
+			spentToday,
+			paymentsToday,
+			revenueToday,
+		] = await Promise.all([
+			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
 			this.prisma.execution
-				.groupBy({ by: ['executorId'], where: { completedAt: { gte: startOfToday } } })
+				.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } })
 				.then(r => r.length),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: true } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: false } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'SCRIPT_ERROR' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'NOT_IN_SERP' } }),
+			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'LOCK_TIMEOUT' } }),
+			this.prisma.executionEvent.count({ where: { createdAt: { gte: startOfToday }, type: 'captcha', engine: 'yandex' } }),
+			this.prisma.executionEvent.count({ where: { createdAt: { gte: startOfToday }, type: 'captcha', engine: 'google' } }),
+			this.prisma.execution.aggregate({ _sum: { pointsEarned: true }, where: { createdAt: { gte: startOfToday }, status: 'COMPLETED' } }),
+			this.prisma.execution.aggregate({ _sum: { pointsSpent: true }, where: { createdAt: { gte: startOfToday }, status: 'COMPLETED' } }),
+			this.prisma.payment.count({ where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
+			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 		])
 
-		const message =
-			`📅 <b>Дневной отчёт SkySEO</b>\n\n` +
-			`🖥 ПК в сети: <b>${activePCsToday}</b>\n` +
-			`🎯 Сайтов найдено в топе: <b>${sitesFoundToday}</b>\n\n` +
-			`🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+		const totalToday = execFound + execNotFound + execScriptError + execNotInSerp + execLockTimeout
+		const foundPct = totalToday > 0 ? Math.round((execFound / totalToday) * 100) : 0
+		const revenue = Number(revenueToday._sum.amount || 0)
+		const earned = earnedToday._sum.pointsEarned ?? 0
+		const spent = spentToday._sum.pointsSpent ?? 0
+		const totalCaptcha = captchaYandex + captchaGoogle
+
+		let message = `📅 <b>Дневной отчёт SkySEO — ${dateStr}</b>\n\n`
+
+		message += `👥 <b>Пользователи:</b>\n`
+		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
+		message += `└ Активных ПК: <b>${activePCsToday}</b>\n\n`
+
+		message += `⚙️ <b>Задачи (${totalToday} всего, ${foundPct}% успех):</b>\n`
+		if (execFound > 0)       message += `├ ✅ Найдено в топ: <b>${execFound}</b>\n`
+		if (execNotFound > 0)    message += `├ 🔍 Вне топ-50: <b>${execNotFound}</b>\n`
+		if (execNotInSerp > 0)   message += `├ 🚫 Нет в поиске: <b>${execNotInSerp}</b>\n`
+		if (execScriptError > 0) message += `├ ❌ Ошибка скрипта: <b>${execScriptError}</b>\n`
+		if (execLockTimeout > 0) message += `├ ⏱ Таймаут: <b>${execLockTimeout}</b>\n`
+		if (totalToday === 0)    message += `├ Задач не было\n`
+		message += `├ 🪙 Заработано: <b>${earned}</b> б.\n`
+		if (spent > 0)           message += `└ 💸 Потрачено: <b>${spent}</b> б.\n`
+		else                     message += `└ ─\n`
+		message += '\n'
+
+		if (totalCaptcha > 0) {
+			message += `🤖 <b>Капча:</b>\n`
+			if (captchaYandex > 0) message += `├ Яндекс: <b>${captchaYandex}</b>\n`
+			if (captchaGoogle > 0) message += `└ Google: <b>${captchaGoogle}</b>\n`
+			message += '\n'
+		}
+
+		if (paymentsToday > 0 || revenue > 0) {
+			message += `💰 <b>Покупки:</b>\n`
+			if (paymentsToday > 0) message += `├ Платежей: <b>${paymentsToday}</b>\n`
+			if (revenue > 0)       message += `└ Выручка: <b>${revenue.toLocaleString('ru-RU')} ₽</b>\n`
+			message += '\n'
+		}
+
+		message += `🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		await this.sendAdminNotification(message)
 
