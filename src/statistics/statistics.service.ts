@@ -362,6 +362,7 @@ export class StatisticsService {
 				top10: yPositions.filter(v => v > 3 && v <= 10).length,
 				top30: yPositions.filter(v => v > 10 && v <= 30).length,
 				top100: yPositions.filter(v => v > 30 && v <= 100).length,
+				// null = не найдено в топ-50 (глубже не сканируем)
 				outTop: keywordStats.filter(k => k.currentYandex === null && tasks.find(t => t.keyword === k.keyword)?.useYandex).length,
 			},
 			google: {
@@ -369,6 +370,7 @@ export class StatisticsService {
 				top10: gPositions.filter(v => v > 3 && v <= 10).length,
 				top30: gPositions.filter(v => v > 10 && v <= 30).length,
 				top100: gPositions.filter(v => v > 30 && v <= 100).length,
+				// null = не найдено в топ-50 (глубже не сканируем)
 				outTop: keywordStats.filter(k => k.currentGoogle === null && tasks.find(t => t.keyword === k.keyword)?.useGoogle).length,
 			},
 		}
