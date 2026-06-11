@@ -513,10 +513,21 @@ export class TasksService {
 		const nonPaidPool = sortPool(candidates.filter(c => !c.isPaid))
 		const merged: typeof paidPool = []
 		let pi = 0, ni = 0
-		while (pi < paidPool.length || ni < nonPaidPool.length) {
+
+		// Фаза 1 — перемежевание пока оба пула непусты.
+		// Чередуем блоки: paidSlots платных, nonPaidSlots бесплатных, и так по кругу.
+		while (pi < paidPool.length && ni < nonPaidPool.length) {
 			for (let i = 0; i < paidSlots && pi < paidPool.length; i++, pi++) merged.push(paidPool[pi])
 			for (let i = 0; i < nonPaidSlots && ni < nonPaidPool.length; i++, ni++) merged.push(nonPaidPool[ni])
 		}
+
+		// Фаза 2 — дренаж остатка.
+		// Если один из пулов кончился раньше — второй добавляется целиком без ограничений.
+		// Пример: платных задач нет совсем → исполнитель получает только бесплатные,
+		// без пустых "слотов" и задержек. И наоборот — если бесплатных нет, платные заполняют всё.
+		while (pi < paidPool.length) merged.push(paidPool[pi++])
+		while (ni < nonPaidPool.length) merged.push(nonPaidPool[ni++])
+
 		return { candidates: merged, diag }
 	}
 
