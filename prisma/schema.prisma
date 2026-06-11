@@ -103,6 +103,7 @@ model Task {
 
   @@index([status, priority])
   @@index([assignedExecutorId])
+  @@index([websiteId, status, isActive, keywordStatus, createdAt])
   @@map("tasks")
 }
 
@@ -142,6 +143,7 @@ model Execution {
   @@index([executorId, status, completedAt])
   @@index([websiteId, status, completedAt])
   @@index([taskId, executorId, status])
+  @@index([websiteId, foundInTop, completedAt])
   @@map("executions")
 }
 
@@ -228,6 +230,7 @@ model BalanceHistory {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([type, userId])
   @@map("balance_history")
 }
 

@@ -31,6 +31,7 @@ export class TasksController {
 		return this.tasksService.getUserTasks(req.user.id, websiteId)
 	}
 
+	@Throttle({ short: { limit: 60, ttl: 60000 } })
 	@Get('available-queue')
 	async getAvailableTasks(@Request() req, @Query('limit') limit?: string) {
 		const limitNum = limit ? parseInt(limit, 10) : 10

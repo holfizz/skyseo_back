@@ -3,6 +3,7 @@ import {
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common'
+import { AppConfigService } from '../app-config/app-config.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 import { CreateTaskDto, UpdateTaskDto } from './dto'
@@ -89,6 +90,7 @@ export class TasksService {
 	constructor(
 		private prisma: PrismaService,
 		private usersService: UsersService,
+		private appConfig: AppConfigService,
 	) {}
 
 	async create(userId: string, dto: CreateTaskDto) {
@@ -318,14 +320,19 @@ export class TasksService {
 		// сайты съедают окно и реально доступные задачи (за позицией 300) не выдаются.
 		const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
 		const ago30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		// IN_PROGRESS не старше 2ч — учитываем активные задачи в дневном cap,
+		// чтобы при всплеске N исполнителей не превысить rampedDailyCap до COMPLETED.
+		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
 
 		const [todayCountsBySite, foundCountsBySite] = await Promise.all([
 			this.prisma.execution.groupBy({
 				by: ['websiteId'],
 				where: {
 					websiteId: { in: eligibleSiteIds },
-					status: 'COMPLETED',
-					completedAt: { gte: dayAgo24h },
+					OR: [
+						{ status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+						{ status: 'IN_PROGRESS', createdAt: { gte: twoHoursAgo } },
+					],
 				},
 				_count: { _all: true },
 			}),
@@ -382,7 +389,14 @@ export class TasksService {
 			},
 		})
 
-		const paidOwners = await this.getPaidPriorityOwners()
+		const [paidOwners, pts, executorUser] = await Promise.all([
+			this.getPaidPriorityOwners(),
+			this.appConfig.getPointsConfig(),
+			// Нужен возраст аккаунта исполнителя для адаптивного ratio платных/бесплатных задач.
+			// Новые аккаунты получают равное соотношение чтобы не рисковать репутацией платных сайтов
+			// (см. логику ниже у блока interleave).
+			this.prisma.user.findUnique({ where: { id: executorId }, select: { createdAt: true } }),
+		])
 
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
 		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean; foundCount: number; boost: number }>()
@@ -408,36 +422,102 @@ export class TasksService {
 		diag.sitesAtDailyCap = eligibleSiteIds.length - availableSiteIds.length
 		if (availableSiteIds.length === 0) return { candidates: [], diag }
 
-		// Окно кандидатов только по НЕзакапанным сайтам → все 300 реально доступны.
-		const allTasks = await this.prisma.task.findMany({
-			where: {
-				...eligibleTaskWhere,
-				website: { ...eligibleTaskWhere.website, id: { in: availableSiteIds } },
-			},
-			include: { website: { include: { user: true } } },
-			orderBy: { createdAt: 'asc' }, // FIFO внутри равных по нагрузке/приоритету
-			take: 300,
-		})
+		// КРИТ-3: разделяем paid/non-paid ДО take-лимита — иначе новый платный сайт
+		// вытесняется 300 более старыми бесплатными задачами и никогда не выдаётся.
+		const paidSiteIds = availableSiteIds.filter(id => siteInfo.get(id)?.isPaid)
+		const nonPaidSiteIds = availableSiteIds.filter(id => !siteInfo.get(id)?.isPaid)
+		const taskQuery = (ids: string[], take: number) =>
+			ids.length === 0
+				? Promise.resolve([] as typeof allTasks)
+				: this.prisma.task.findMany({
+						where: {
+							...eligibleTaskWhere,
+							website: { ...eligibleTaskWhere.website, id: { in: ids } },
+						},
+						include: { website: { include: { user: true } } },
+						orderBy: { createdAt: 'asc' },
+						take,
+					})
+		const [paidTasks, nonPaidTasks] = await Promise.all([
+			taskQuery(paidSiteIds, 200),
+			taskQuery(nonPaidSiteIds, 100),
+		])
+		const allTasks = [...paidTasks, ...nonPaidTasks]
 
 		const candidates = []
 		for (const task of allTasks) {
 			if (task.website.userId === executorId) continue // защита: не свои
-			if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) continue
+			if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) continue
 			const info = siteInfo.get(task.websiteId)
 			if (!info) continue
 			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio, foundCount: info.foundCount, boost: info.boost })
 		}
 
-		// Приоритет выдачи: платные → больше находок за 30д → наименее загруженные сегодня → случайный.
-		// Случайность внутри тира гарантирует честное распределение между параллельными исполнителями.
-		const withSalt = candidates.map(c => ({ ...c, _salt: Math.random() }))
-		withSalt.sort((a, b) => {
-			if (a.isPaid !== b.isPaid) return a.isPaid ? -1 : 1
-			if (a.foundCount !== b.foundCount) return b.foundCount - a.foundCount
-			if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
-			return a._salt - b._salt
-		})
-		return { candidates: withSalt, diag }
+		// ─── Сортировка внутри пула ───────────────────────────────────────────────
+		// Каждый пул (платные / бесплатные) сортируется независимо по одной логике:
+		//   1. foundCount desc  — сайты, которые чаще находят в топе, идут первыми.
+		//                         Логика: если сайт реально ранжируется — исполнитель
+		//                         скорее всего найдёт его и получит бонус, владелец доволен.
+		//   2. fillRatio asc    — среди равных по foundCount выбираем менее "загруженный"
+		//                         сегодня (fillRatio = todayOnSite / rampedCap / boost).
+		//                         Это балансирует трафик между сайтами.
+		//   3. _salt (random)   — тай-брейк при полном равенстве; нужен чтобы несколько
+		//                         параллельных исполнителей не получали одну и ту же задачу №1.
+		const sortPool = (pool: typeof candidates) => {
+			const salted = pool.map(c => ({ ...c, _salt: Math.random() }))
+			salted.sort((a, b) => {
+				if (a.foundCount !== b.foundCount) return b.foundCount - a.foundCount
+				if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
+				return a._salt - b._salt
+			})
+			return salted
+		}
+
+		// ─── Адаптивное ratio платных / бесплатных задач ─────────────────────────
+		// Проблема: новый аккаунт исполнителя = новый браузерный профиль без истории
+		// (куки, паттерны поведения, история поиска). Яндекс и Google смотрят на "зрелость"
+		// профиля — свежий аккаунт выглядит подозрительнее и с большей вероятностью
+		// получит капчу или пессимизацию сайта-цели.
+		//
+		// Решение: первые 5 дней новый исполнитель получает задачи 50/50 (платные/бесплатные).
+		// Бесплатные сайты — менее критичны, "обкатка" нового профиля на них безопаснее.
+		// После 5 дней профиль считается прогретым и переходит на стандартное соотношение 7/3.
+		//
+		// 5 дней выбрано в соответствии с DAILY_RAMP_UP в Electron-приложении — это тот же
+		// период, за который приложение плавно наращивает дневной лимит задач для нового аккаунта.
+		const EXECUTOR_WARMUP_DAYS = 5
+		const executorAgeDays = executorUser
+			? Math.floor((Date.now() - executorUser.createdAt.getTime()) / (24 * 60 * 60 * 1000))
+			: EXECUTOR_WARMUP_DAYS // если пользователь не найден — считаем прогретым, не блокируем
+
+		// paidSlots / nonPaidSlots — размер блока при перемежевании:
+		//   новый аккаунт (<5д):  5 платных + 5 бесплатных = 50/50
+		//   прогретый (≥5д):      7 платных + 3 бесплатных = 70/30
+		const [paidSlots, nonPaidSlots] = executorAgeDays < EXECUTOR_WARMUP_DAYS
+			? [5, 5]
+			: [7, 3]
+
+		// ─── Перемежевание двух пулов ─────────────────────────────────────────────
+		// Строгий isPaid-тир (сначала все платные, потом все бесплатные) заменён на
+		// блочное смешивание. Это даёт:
+		//   - платным клиентам гарантированный приоритет (~70% задач прогретого исполнителя)
+		//   - бесплатным ненулевой шанс — они не голодают пока у платных есть задачи
+		// Пример при paidSlots=7, nonPaidSlots=3 и 20 платных + 10 бесплатных задачах:
+		//   позиции 1-7:  платные #1-7
+		//   позиции 8-10: бесплатные #1-3
+		//   позиции 11-17: платные #8-14
+		//   позиции 18-20: бесплатные #4-6
+		//   позиции 21-27: платные #15-20 (меньше 7 — добираем сколько есть)
+		//   позиции 28-30: бесплатные #7-10
+		const paidPool = sortPool(candidates.filter(c => c.isPaid))
+		const nonPaidPool = sortPool(candidates.filter(c => !c.isPaid))
+		const merged: typeof paidPool = []
+		let pi = 0, ni = 0
+		while (pi < paidPool.length || ni < nonPaidPool.length) {
+			for (let i = 0; i < paidSlots && pi < paidPool.length; i++, pi++) merged.push(paidPool[pi])
+			for (let i = 0; i < nonPaidSlots && ni < nonPaidPool.length; i++, ni++) merged.push(nonPaidPool[ni])
+		}
+		return { candidates: merged, diag }
 	}
 
 	async getUserTasks(userId: string, websiteId?: string) {
@@ -510,7 +590,8 @@ export class TasksService {
 	}
 
 	async assignTask(taskId: string, executorId: string) {
-		// Используем транзакцию для атомарного назначения задачи
+		// M1: грузим pts ДО транзакции — cost guard должен использовать актуальный foundSpent из AppConfig
+		const pts = await this.appConfig.getPointsConfig()
 		try {
 			const result = await this.prisma.$transaction(async prisma => {
 				// Проверяем что задача существует и доступна для назначения
@@ -589,11 +670,16 @@ export class TasksService {
 				// target = сумма target'ов всех активных ключей сайта, кэп min(target, network),
 				// потом плавный разгон от 3 в первый день до полного потолка за 14 дней.
 				const dayAgo24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+				// C4: включаем IN_PROGRESS (≤2ч) — иначе при всплеске N исполнителей
+				// все видят todayOnSite=0 и разбирают задачи сверх rampedDailyCap.
+				const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
 				const todayOnSite = await prisma.execution.count({
 					where: {
 						websiteId: task.websiteId,
-						status: 'COMPLETED',
-						completedAt: { gte: dayAgo24h },
+						OR: [
+							{ status: 'COMPLETED', completedAt: { gte: dayAgo24h } },
+							{ status: 'IN_PROGRESS', createdAt: { gte: twoHoursAgo } },
+						],
 					},
 				})
 				// Site target: явный override из website.dailyVisitsTarget или сумма ключей
@@ -631,7 +717,7 @@ export class TasksService {
 					)
 				}
 
-				if (task.website.user.balance < this.getTaskOwnerMaxCost(task)) {
+				if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) {
 					await prisma.task.update({
 						where: { id: taskId },
 						data: {
@@ -938,11 +1024,10 @@ export class TasksService {
 		}
 	}
 
-	private getTaskOwnerMaxCost(task: {
-		type: string
-		useYandex?: boolean | null
-		useGoogle?: boolean | null
-	}) {
+	private getTaskOwnerMaxCost(
+		task: { type: string; useYandex?: boolean | null; useGoogle?: boolean | null },
+		pts: { foundSpent: number } = { foundSpent: 30 },
+	) {
 		if (task.type === 'EXTERNAL_LINK') {
 			return 10
 		}
@@ -950,7 +1035,7 @@ export class TasksService {
 		const enabledEngines =
 			(task.useYandex !== false ? 1 : 0) + (task.useGoogle !== false ? 1 : 0)
 
-		return Math.max(1, enabledEngines) * 30
+		return Math.max(1, enabledEngines) * pts.foundSpent
 	}
 
 	private calculateTaskCost(
