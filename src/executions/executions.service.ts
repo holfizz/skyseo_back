@@ -633,9 +633,9 @@ export class ExecutionsService {
 			},
 		})
 
-		if (!execution) {
-			throw new Error('Execution not found')
-		}
+		// Execution могла быть помечена FAILED (LOCK_TIMEOUT) пока приложение ещё шлёт события —
+		// молча игнорируем, лог-событие некритично.
+		if (!execution) return null
 
 		return this.prisma.executionEvent.create({
 			data: {

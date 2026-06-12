@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PassportStrategy } from '@nestjs/passport'
 import { ExtractJwt, Strategy } from 'passport-jwt'
@@ -17,7 +17,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 	}
 
 	async validate(payload: any) {
-		const user = await this.usersService.findById(payload.sub)
+		let user: any
+		try {
+			user = await this.usersService.findById(payload.sub)
+		} catch (err) {
+			// Ошибка БД при поиске юзера не должна выглядеть как 401 (Passport
+			// конвертирует любое исключение из validate() в UnauthorizedException).
+			// Бросаем 500 — клиент увидит transient error, а не ложный "токен истёк".
+			console.error('[JwtStrategy] DB error during user lookup:', (err as any)?.message)
+			throw new InternalServerErrorException('Auth validation failed')
+		}
 		if (!user || !user.isActive) {
 			throw new UnauthorizedException()
 		}

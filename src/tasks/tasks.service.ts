@@ -245,7 +245,7 @@ export class TasksService {
 
 		const blockedWebsiteIds = Array.from(
 			new Set([...sitesAtMonthlyLimit, ...sitesVisitedRecently]),
-		)
+		).filter((id): id is string => id !== null)
 
 		// Задачи, где ключевик не найден этим исполнителем — скрываем на 30 дней, затем
 		// перепроверяем (позиции меняются, в т.ч. благодаря самому ПФ). Мёртвые ключи
