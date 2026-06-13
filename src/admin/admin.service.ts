@@ -99,7 +99,16 @@ export class AdminService {
 			where: { createdAt: { gte: fiveMinutesAgo } },
 		})
 
+		// Ёмкость сети: активных ПК за неделю, среднее/день и максимум просмотров/день
+		// (ceil(среднее/14)) — то же число, что видит владелец при создании сайта.
+		const capacity = await this.appConfig.getNetworkCapacityInfo()
+
 		return {
+			network: {
+				activePcsWeek: capacity.activePcsWeek,
+				avgPerDay: capacity.avgPerDay,
+				maxViewsPerDay: capacity.maxPerDay,
+			},
 			users: {
 				total: totalUsers,
 				active: activeUsers,

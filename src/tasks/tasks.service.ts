@@ -404,7 +404,13 @@ export class TasksService {
 			const userSiteTarget =
 				site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
 			const cappedTarget = Math.min(userSiteTarget, networkCap)
-			const rampedCap = this.rampedDailyCap(cappedTarget, site.createdAt)
+			const rampedCap = Math.max(
+				1,
+				Math.round(
+					this.rampedDailyCap(cappedTarget, site.createdAt) *
+						this.dailyJitter(site.id),
+				),
+			)
 			const todayOnSite = todayCountBySite.get(site.id) ?? 0
 			if (todayOnSite >= rampedCap) continue // сайт упёрся в дневной cap
 			const boost = (site.user as any)?.priorityBoost ?? 1
@@ -718,9 +724,12 @@ export class TasksService {
 					})())
 				const networkCap = await this.getNetworkPerSiteCapacity()
 				const cappedTarget = Math.min(userSiteTarget, networkCap)
-				const rampedCap = this.rampedDailyCap(
-					cappedTarget,
-					task.website.createdAt,
+				const rampedCap = Math.max(
+					1,
+					Math.round(
+						this.rampedDailyCap(cappedTarget, task.website.createdAt) *
+							this.dailyJitter(task.websiteId),
+					),
 				)
 				if (todayOnSite >= rampedCap) {
 					throw new BadRequestException(
@@ -911,26 +920,29 @@ export class TasksService {
 		return Math.max(1, yandex + google)
 	}
 
-	// Сколько визитов в день на ОДИН сайт физически может выдать сеть.
-	// Каждая нода: max 2 визита на сайт за 30 дней → 2/30 в день на сайт.
-	// Если активных нод 500 → ~33/день/сайт. Если 5000 → ~333/день/сайт.
-	// Кэш 5 минут — запрос на distinct executors недешёвый.
-	private networkCapCache: { value: number; expiresAt: number } | null = null
+	// Потолок просмотров в день на ОДИН сайт = то, что видит и выбирает владелец.
+	// Единая формула в AppConfigService: ceil(среднее активных ПК в день за неделю
+	// / 14) — один ПК повторяет визит на сайт не чаще раза в 2 недели, значит в
+	// любой день «свежи» лишь 1/14 парка. То же число показывается в форме создания
+	// сайта и в админке (единый источник правды).
 	private async getNetworkPerSiteCapacity(): Promise<number> {
-		const now = Date.now()
-		if (this.networkCapCache && this.networkCapCache.expiresAt > now) {
-			return this.networkCapCache.value
+		const { maxPerDay } = await this.appConfig.getNetworkCapacityInfo()
+		return maxPerDay
+	}
+
+	// Дневной разброс ±10%, чтобы выдача не была каждый день ровно равна потолку.
+	// Детерминирован по (сайт + календарный день) — стабилен в течение суток, иначе
+	// при каждом запросе доступности cap бы «прыгал» и todayOnSite≷cap мерцал.
+	private dailyJitter(siteId: string): number {
+		const day = Math.floor(Date.now() / (24 * 60 * 60 * 1000))
+		let h = 2166136261
+		const s = `${siteId}:${day}`
+		for (let i = 0; i < s.length; i++) {
+			h ^= s.charCodeAt(i)
+			h = Math.imul(h, 16777619)
 		}
-		const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
-		const distinctExecutors = await this.prisma.execution.findMany({
-			where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
-			select: { executorId: true },
-			distinct: ['executorId'],
-		})
-		const activeCount = distinctExecutors.length
-		const capacity = Math.max(5, Math.floor((activeCount * 2) / 30))
-		this.networkCapCache = { value: capacity, expiresAt: now + 5 * 60 * 1000 }
-		return capacity
+		const frac = ((h >>> 0) % 1000) / 1000 // 0..0.999
+		return 0.9 + frac * 0.2 // 0.9 .. 1.1
 	}
 
 	// Владельцы с «живыми» купленными баллами — их сайты идут в приоритет выдачи.

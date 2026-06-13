@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common'
 import { TelegramService } from '../telegram/telegram.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { AppConfigService } from '../app-config/app-config.service'
 import { CreateWebsiteDto, UpdateWebsiteDto } from './dto'
 
 const URL_FORBIDDEN_WORDS = [
@@ -27,7 +28,18 @@ export class WebsitesService {
 	constructor(
 		private prisma: PrismaService,
 		private telegram: TelegramService,
+		private appConfig: AppConfigService,
 	) {}
+
+	// Не даём владельцу поставить потолок больше, чем сейчас тянет сеть
+	// (ceil(среднее активных ПК/день / 14)). null = «без явного лимита» — не трогаем.
+	private async clampDailyTarget(
+		target: number | null | undefined,
+	): Promise<number | null | undefined> {
+		if (target == null) return target
+		const { maxPerDay } = await this.appConfig.getNetworkCapacityInfo()
+		return Math.min(target, maxPerDay)
+	}
 
 	private async checkSiteReachable(url: string): Promise<void> {
 		const normalized = url.trim().replace(/\/$/, '')
@@ -80,7 +92,7 @@ export class WebsitesService {
 				name: dto.name,
 				url: dto.url,
 				city: dto.city,
-				dailyVisitsTarget: dto.dailyVisitsTarget,
+				dailyVisitsTarget: await this.clampDailyTarget(dto.dailyVisitsTarget),
 			},
 		})
 
@@ -119,9 +131,14 @@ export class WebsitesService {
 	async update(id: string, userId: string, dto: UpdateWebsiteDto) {
 		await this.findOne(id, userId)
 
+		const data: UpdateWebsiteDto = { ...dto }
+		if (dto.dailyVisitsTarget !== undefined) {
+			data.dailyVisitsTarget = await this.clampDailyTarget(dto.dailyVisitsTarget)
+		}
+
 		return this.prisma.website.update({
 			where: { id },
-			data: dto,
+			data,
 		})
 	}
 

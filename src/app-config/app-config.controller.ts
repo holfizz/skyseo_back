@@ -16,4 +16,10 @@ export class AppConfigController {
 	async points() {
 		return this.appConfig.getPointsConfig()
 	}
+
+	// Публичный — форма создания сайта показывает «максимум сети» и считает пакет.
+	@Get('network-capacity')
+	async networkCapacity() {
+		return this.appConfig.getNetworkCapacityInfo()
+	}
 }
