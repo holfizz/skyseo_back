@@ -10,6 +10,7 @@ import {
 	KEY_POINTS_NOT_FOUND_EARNED,
 	KEY_POINTS_NOT_FOUND_SPENT,
 } from '../app-config/app-config.service'
+import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 
@@ -19,6 +20,7 @@ export class AdminService {
 		private prisma: PrismaService,
 		private usersService: UsersService,
 		private appConfig: AppConfigService,
+		private notifications: NotificationsService,
 	) {}
 
 	async getGoogleConfigForAdmin() {
@@ -175,6 +177,8 @@ export class AdminService {
 				referralSource: true,
 				isActive: true,
 				lastSeenAt: true,
+				appVersion: true,
+				appStatus: true,
 				createdAt: true,
 				_count: {
 					select: {
@@ -776,7 +780,7 @@ export class AdminService {
 
 		// По дням — CTE вместо коррелированных подзапросов
 		const byDay = await this.prisma.$queryRaw<Array<{
-			date: string; found: bigint; not_found: bigint; errors: bigint; new_users: bigint; captchas: bigint
+			date: string; found: bigint; not_found: bigint; errors: bigint; new_users: bigint; captchas: bigint; active_nodes: bigint
 		}>>`
 			WITH exec_dates AS (
 				SELECT DISTINCT DATE(e."createdAt") AS date
@@ -788,7 +792,8 @@ export class AdminService {
 					DATE(e."createdAt") AS date,
 					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = true  THEN 1 END) AS found,
 					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = false THEN 1 END) AS not_found,
-					COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) AS errors
+					COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) AS errors,
+					COUNT(DISTINCT e."executorId") AS active_nodes
 				FROM executions e
 				WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
 				GROUP BY DATE(e."createdAt")
@@ -810,6 +815,7 @@ export class AdminService {
 				es.found,
 				es.not_found,
 				es.errors,
+				es.active_nodes,
 				COALESCE(us.new_users, 0) AS new_users,
 				COALESCE(cs.captchas, 0) AS captchas
 			FROM exec_stats es
@@ -893,12 +899,95 @@ export class AdminService {
 				newThisPeriod: newUsers,
 				byDay: byDay.map(r => ({ date: r.date, newRegistrations: Number(r.new_users) })),
 			},
+			nodes: {
+				byDay: byDay.map(r => ({ date: r.date, nodes: Number(r.active_nodes) })),
+			},
 			economy: {
 				totalEarned: totalEarned._sum.amount ?? 0,
 				totalSpent: Math.abs(totalSpent._sum.amount ?? 0),
 				totalPaymentPoints: totalPayments._sum.amount ?? 0,
 			},
 		}
+	}
+
+	// Кто удалил приложение (appStatus = UNINSTALLED) + сколько был «в сети».
+	// Длительность онлайна = от регистрации до последнего app-сигнала
+	// (heartbeat / app-логин / последнее выполненное задание).
+	async getDeletedUsers() {
+		const rows = await this.prisma.$queryRaw<Array<{
+			id: string
+			email: string
+			balance: number
+			promoCode: string | null
+			city: string | null
+			appVersion: string | null
+			createdAt: Date
+			lastSeenAt: Date | null
+			appLastLoginAt: Date | null
+			lastExecution: Date | null
+		}>>`
+			SELECT u.id, u.email, u.balance, u."promoCode", u.city, u."appVersion",
+			       u."createdAt", u."lastSeenAt", u."appLastLoginAt",
+			       MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED') AS "lastExecution"
+			FROM users u
+			LEFT JOIN executions e ON e."executorId" = u.id
+			WHERE u."appStatus" = 'UNINSTALLED'
+			GROUP BY u.id
+			ORDER BY GREATEST(
+				u."lastSeenAt",
+				u."appLastLoginAt",
+				MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED')
+			) DESC NULLS LAST
+			LIMIT 500
+		`
+		const day = 86400000
+		const users = rows.map(u => {
+			const signals = [u.lastSeenAt, u.appLastLoginAt, u.lastExecution]
+				.filter(Boolean)
+				.map(d => new Date(d as Date).getTime())
+			const lastSignal = signals.length ? Math.max(...signals) : null
+			const onlineDays = lastSignal
+				? Math.max(0, Math.round((lastSignal - new Date(u.createdAt).getTime()) / day))
+				: 0
+			return {
+				...u,
+				lastSignal: lastSignal ? new Date(lastSignal).toISOString() : null,
+				onlineDays,
+			}
+		})
+		return { total: users.length, users }
+	}
+
+	// Лог ошибок: последние упавшие задачи (status = FAILED) со всей сети.
+	// failureReason — код причины (CAPTCHA / SCRIPT_ERROR / NOT_IN_SERP / LOCK_TIMEOUT),
+	// человеко-читаемый текст ошибки в БД не хранится (только код).
+	async getErrorLog(limit = 200) {
+		return this.prisma.execution.findMany({
+			where: { status: 'FAILED' },
+			select: {
+				id: true,
+				failureReason: true,
+				completionKind: true,
+				createdAt: true,
+				completedAt: true,
+				task: { select: { keyword: true, website: { select: { url: true } } } },
+				executor: { select: { id: true, email: true, appVersion: true } },
+			},
+			orderBy: { createdAt: 'desc' },
+			take: limit,
+		})
+	}
+
+	// Письмо «вернись» — только по ручному нажатию админа. Текст редактируется на фронте,
+	// сюда приходит готовый subject + message (обычный текст), бэкенд оборачивает в бренд-шаблон.
+	async sendWinbackEmail(userId: string, subject: string, message: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { email: true },
+		})
+		if (!user) throw new Error('Пользователь не найден')
+		await this.notifications.sendWinbackEmail(user.email, subject, message)
+		return { sent: true, email: user.email }
 	}
 
 	async deleteUser(userId: string) {

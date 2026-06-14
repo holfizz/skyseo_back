@@ -497,6 +497,42 @@ export class NotificationsService {
 		await this.sendEmail(email, 'SkySEO: еженедельный отчёт по позициям', html)
 	}
 
+	// Письмо «вернись» для удаливших приложение. subject + message задаёт админ,
+	// message — обычный текст (переносы строк → абзацы), оборачиваем в бренд-шаблон.
+	async sendWinbackEmail(email: string, subject: string, message: string) {
+		const paragraphs = message
+			.split(/\n{2,}/)
+			.map(block => block.trim())
+			.filter(Boolean)
+			.map(
+				block =>
+					`<p style="color: #181818; font-size: 16px; line-height: 1.7; margin: 0 0 18px 0;">${block.replace(/\n/g, '<br />')}</p>`,
+			)
+			.join('')
+
+		const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">
+        <div style="background: #181818; padding: 40px 20px; text-align: center;">
+          <h1 style="color: #ffffff; font-size: 24px; font-weight: 600; margin: 0; letter-spacing: 1px;">SkySEO</h1>
+        </div>
+        <div style="padding: 40px;">
+          ${paragraphs}
+          <div style="text-align: center; margin: 36px 0 8px 0;">
+            <a href="https://skyseo.site" style="display: inline-block; background: #007dff; color: #ffffff; padding: 18px 50px; text-decoration: none; font-weight: 600; font-size: 16px; letter-spacing: 1px; text-transform: uppercase; border-radius: 8px;">
+              Открыть SkySEO
+            </a>
+          </div>
+        </div>
+        <div style="background: #181818; padding: 40px; text-align: center; color: #ffffff;">
+          <p style="margin: 0 0 5px 0; font-size: 14px;">С уважением,</p>
+          <p style="margin: 0; font-size: 16px; font-weight: 600;">Команда SkySEO</p>
+        </div>
+      </div>
+    `
+
+		await this.sendEmail(email, subject, html)
+	}
+
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
 			if (this.useSmtp && this.smtpTransporter) {

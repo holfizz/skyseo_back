@@ -122,6 +122,27 @@ export class AdminController {
 		return this.adminService.getInactiveUsers(days ? Number(days) : 7)
 	}
 
+	// Кто удалил приложение + длительность онлайна
+	@Get('deleted-users')
+	async getDeletedUsers() {
+		return this.adminService.getDeletedUsers()
+	}
+
+	// Лог ошибок (упавшие задачи со всей сети)
+	@Get('error-log')
+	async getErrorLog(@Query('limit') limit?: string) {
+		return this.adminService.getErrorLog(limit ? Number(limit) : 200)
+	}
+
+	// Письмо «вернись» — только по ручному нажатию админа
+	@Post('users/:id/winback-email')
+	async sendWinbackEmail(
+		@Param('id') id: string,
+		@Body() body: { subject: string; message: string },
+	) {
+		return this.adminService.sendWinbackEmail(id, body.subject, body.message)
+	}
+
 	@Get('promo-codes/:code/users')
 	async getPromoCodeUsers(
 		@Param('code') code: string,
