@@ -59,6 +59,7 @@ model Website {
   city              String?
   isActive          Boolean  @default(true)
   dailyVisitsTarget Int? // Опциональный явный потолок визитов на сайт в сутки. Null = сумма target'ов всех активных ключей.
+  autoMaxVisits     Boolean  @default(false) // Крутить всегда по максимуму сети (ceil(среднее ПК/день / 14)), динамически растёт с сетью
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

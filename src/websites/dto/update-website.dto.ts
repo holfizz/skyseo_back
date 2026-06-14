@@ -1,17 +1,18 @@
-import { IsBoolean, IsInt, IsOptional, IsUrl, Max, Min } from 'class-validator'
+import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator'
 
 export class UpdateWebsiteDto {
-	@IsOptional()
-	@IsUrl()
-	url?: string
-
+	// url/name намеренно НЕ редактируются — сменить сам сайт нельзя, только просмотры/режим.
 	@IsOptional()
 	@IsBoolean()
 	isActive?: boolean
 
 	@IsOptional()
 	@IsInt()
-	@Min(3)
+	@Min(1)
 	@Max(500)
 	dailyVisitsTarget?: number
+
+	@IsOptional()
+	@IsBoolean()
+	autoMaxVisits?: boolean
 }

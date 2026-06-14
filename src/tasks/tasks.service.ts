@@ -384,6 +384,7 @@ export class TasksService {
 				id: true,
 				createdAt: true,
 				dailyVisitsTarget: true,
+				autoMaxVisits: true,
 				userId: true,
 				user: { select: { priorityBoost: true } },
 			},
@@ -401,8 +402,10 @@ export class TasksService {
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
 		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean; foundCount: number; boost: number }>()
 		for (const site of websiteMeta) {
-			const userSiteTarget =
-				site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0
+			// autoMaxVisits → всегда крутим по максимуму сети (динамически растёт с парком ПК)
+			const userSiteTarget = site.autoMaxVisits
+				? networkCap
+				: (site.dailyVisitsTarget ?? siteTargetMap.get(site.id) ?? 0)
 			const cappedTarget = Math.min(userSiteTarget, networkCap)
 			const rampedCap = Math.max(
 				1,
@@ -699,30 +702,32 @@ export class TasksService {
 						],
 					},
 				})
-				// Site target: явный override из website.dailyVisitsTarget или сумма ключей
-				const userSiteTarget =
-					task.website.dailyVisitsTarget ??
-					(await (async () => {
-						const siteTasksForTarget = await prisma.task.findMany({
-							where: {
-								websiteId: task.websiteId,
-								isActive: true,
-								keywordStatus: 'ACTIVE',
-							},
-							select: {
-								type: true,
-								maxYandexVisits: true,
-								maxGoogleVisits: true,
-								useYandex: true,
-								useGoogle: true,
-							},
-						})
-						return siteTasksForTarget.reduce(
-							(sum, t) => sum + this.getTaskDailyTarget(t),
-							0,
-						)
-					})())
 				const networkCap = await this.getNetworkPerSiteCapacity()
+				// Site target: autoMaxVisits → максимум сети (динамически); иначе явный
+				// override website.dailyVisitsTarget или сумма target'ов ключей.
+				const userSiteTarget = task.website.autoMaxVisits
+					? networkCap
+					: (task.website.dailyVisitsTarget ??
+						(await (async () => {
+							const siteTasksForTarget = await prisma.task.findMany({
+								where: {
+									websiteId: task.websiteId,
+									isActive: true,
+									keywordStatus: 'ACTIVE',
+								},
+								select: {
+									type: true,
+									maxYandexVisits: true,
+									maxGoogleVisits: true,
+									useYandex: true,
+									useGoogle: true,
+								},
+							})
+							return siteTasksForTarget.reduce(
+								(sum, t) => sum + this.getTaskDailyTarget(t),
+								0,
+							)
+						})()))
 				const cappedTarget = Math.min(userSiteTarget, networkCap)
 				const rampedCap = Math.max(
 					1,

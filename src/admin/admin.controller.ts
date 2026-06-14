@@ -40,6 +40,21 @@ export class AdminController {
 		return this.adminService.setPointsConfig(body)
 	}
 
+	@Get('settings/network')
+	async getNetworkConfig() {
+		return this.adminService.getNetworkConfig()
+	}
+
+	@Put('settings/network')
+	async setNetworkConfig(@Body() body: { activePcs?: number | null }) {
+		return this.adminService.setNetworkConfig(body)
+	}
+
+	@Put('websites/:id')
+	async updateWebsite(@Param('id') id: string, @Body() body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean }) {
+		return this.adminService.updateWebsite(id, body)
+	}
+
 	@Get('analytics')
 	async getAnalytics(
 		@Query('from') from?: string,

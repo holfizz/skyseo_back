@@ -93,6 +93,7 @@ export class WebsitesService {
 				url: dto.url,
 				city: dto.city,
 				dailyVisitsTarget: await this.clampDailyTarget(dto.dailyVisitsTarget),
+				autoMaxVisits: dto.autoMaxVisits ?? false,
 			},
 		})
 
@@ -131,15 +132,15 @@ export class WebsitesService {
 	async update(id: string, userId: string, dto: UpdateWebsiteDto) {
 		await this.findOne(id, userId)
 
-		const data: UpdateWebsiteDto = { ...dto }
+		// Редактировать можно ТОЛЬКО просмотры/режим — не сам сайт (url/name).
+		const data: { isActive?: boolean; autoMaxVisits?: boolean; dailyVisitsTarget?: number | null } = {}
+		if (dto.isActive !== undefined) data.isActive = dto.isActive
+		if (dto.autoMaxVisits !== undefined) data.autoMaxVisits = dto.autoMaxVisits
 		if (dto.dailyVisitsTarget !== undefined) {
-			data.dailyVisitsTarget = await this.clampDailyTarget(dto.dailyVisitsTarget)
+			data.dailyVisitsTarget = (await this.clampDailyTarget(dto.dailyVisitsTarget)) ?? null
 		}
 
-		return this.prisma.website.update({
-			where: { id },
-			data,
-		})
+		return this.prisma.website.update({ where: { id }, data })
 	}
 
 	async delete(id: string, userId: string) {

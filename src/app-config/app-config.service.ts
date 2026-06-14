@@ -19,6 +19,9 @@ export const DEFAULT_POINTS_FOUND_SPENT = '30'
 export const DEFAULT_POINTS_NOT_FOUND_EARNED = '5'
 export const DEFAULT_POINTS_NOT_FOUND_SPENT = '0'
 
+// Админ-override числа активных ПК в сети (для расчёта потолка). Пусто = авто.
+export const KEY_NETWORK_ACTIVE_PCS = 'network_active_pcs'
+
 @Injectable()
 export class AppConfigService {
 	constructor(private prisma: PrismaService) {}
@@ -81,6 +84,9 @@ export class AppConfigService {
 	// Это единый источник правды: и валидация ввода юзера, и реальный cap выдачи
 	// (см. TasksService.getNetworkPerSiteCapacity).
 	static readonly CAPACITY_SPREAD_DAYS = 14
+	// В деве в сети реально 1 ПК — подставляем фикс, чтобы видеть математику потолка.
+	// Меняй число, чтобы посмотреть разные потолки (напр. 140 → ceil(140/14)=10/день).
+	static readonly DEV_FAKE_ACTIVE_PCS = 10
 	private capacityCache: {
 		value: { activePcsWeek: number; avgPerDay: number; maxPerDay: number }
 		expiresAt: number
@@ -92,32 +98,62 @@ export class AppConfigService {
 			return this.capacityCache.value
 		}
 
-		const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
-		const rows = await this.prisma.execution.findMany({
-			where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
-			select: { executorId: true, completedAt: true },
-		})
+		// Приоритет: админ-override → дев-фикс → реальный расчёт по выполнениям.
+		const override = parseInt(await this.get(KEY_NETWORK_ACTIVE_PCS, ''), 10)
+		const isDev = process.env.NODE_ENV !== 'production'
 
-		// distinct активных ПК на каждый из дней → среднее в день за неделю
-		const perDay = new Map<string, Set<string>>()
-		const weekSet = new Set<string>()
-		for (const r of rows) {
-			if (!r.executorId || !r.completedAt) continue
-			weekSet.add(r.executorId)
-			const day = r.completedAt.toISOString().slice(0, 10)
-			let set = perDay.get(day)
-			if (!set) perDay.set(day, (set = new Set()))
-			set.add(r.executorId)
+		let activePcsWeek: number
+		let avgPerDay: number
+		if (Number.isFinite(override) && override > 0) {
+			activePcsWeek = override
+			avgPerDay = override
+		} else if (isDev) {
+			// В деве реально 1 ПК — фикс, чтобы видеть математику потолка.
+			activePcsWeek = AppConfigService.DEV_FAKE_ACTIVE_PCS
+			avgPerDay = AppConfigService.DEV_FAKE_ACTIVE_PCS
+		} else {
+			const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
+			const rows = await this.prisma.execution.findMany({
+				where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
+				select: { executorId: true, completedAt: true },
+			})
+			// distinct активных ПК на каждый из дней → среднее в день за неделю
+			const perDay = new Map<string, Set<string>>()
+			const weekSet = new Set<string>()
+			for (const r of rows) {
+				if (!r.executorId || !r.completedAt) continue
+				weekSet.add(r.executorId)
+				const day = r.completedAt.toISOString().slice(0, 10)
+				let set = perDay.get(day)
+				if (!set) perDay.set(day, (set = new Set()))
+				set.add(r.executorId)
+			}
+			const sumDaily = Array.from(perDay.values()).reduce((s, set) => s + set.size, 0)
+			activePcsWeek = weekSet.size
+			avgPerDay = Math.round(sumDaily / 7) // усредняем по календарной неделе
 		}
-		const sumDaily = Array.from(perDay.values()).reduce((s, set) => s + set.size, 0)
-		const avgPerDay = Math.round(sumDaily / 7) // усредняем по календарной неделе
+
 		const maxPerDay = Math.max(
 			1,
 			Math.ceil(avgPerDay / AppConfigService.CAPACITY_SPREAD_DAYS),
 		)
-
-		const value = { activePcsWeek: weekSet.size, avgPerDay, maxPerDay }
+		const value = { activePcsWeek, avgPerDay, maxPerDay }
 		this.capacityCache = { value, expiresAt: now + 5 * 60 * 1000 }
 		return value
+	}
+
+	// Текущий override (null = не задан, считается авто)
+	async getNetworkActivePcsOverride(): Promise<number | null> {
+		const v = parseInt(await this.get(KEY_NETWORK_ACTIVE_PCS, ''), 10)
+		return Number.isFinite(v) && v > 0 ? v : null
+	}
+
+	// Редактирование из админки. null/<=0 → сброс на авто. Кэш сбрасываем сразу.
+	async setNetworkActivePcs(value: number | null) {
+		await this.set(
+			KEY_NETWORK_ACTIVE_PCS,
+			value != null && value > 0 ? String(Math.round(value)) : '',
+		)
+		this.capacityCache = null
 	}
 }

@@ -53,6 +53,34 @@ export class AdminService {
 		return { priorityBoost: clamped }
 	}
 
+	// Ёмкость сети: текущий override активных ПК + посчитанные числа потолка
+	async getNetworkConfig() {
+		const override = await this.appConfig.getNetworkActivePcsOverride()
+		const info = await this.appConfig.getNetworkCapacityInfo()
+		return { override, ...info }
+	}
+
+	async setNetworkConfig(body: { activePcs?: number | null }) {
+		await this.appConfig.setNetworkActivePcs(body.activePcs ?? null)
+		return this.getNetworkConfig()
+	}
+
+	// Админ правит просмотры/день и режим у ЛЮБОГО сайта (без проверки владельца).
+	async updateWebsite(
+		websiteId: string,
+		body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean },
+	) {
+		const data: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean } = {}
+		if (body.dailyVisitsTarget !== undefined) {
+			data.dailyVisitsTarget =
+				body.dailyVisitsTarget != null && body.dailyVisitsTarget > 0
+					? Math.round(body.dailyVisitsTarget)
+					: null
+		}
+		if (body.autoMaxVisits !== undefined) data.autoMaxVisits = body.autoMaxVisits
+		return this.prisma.website.update({ where: { id: websiteId }, data })
+	}
+
 	async getAdminStatistics() {
 		const [
 			totalUsers,

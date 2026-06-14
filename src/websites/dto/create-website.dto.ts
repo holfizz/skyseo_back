@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator'
+import { IsBoolean, IsInt, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator'
 
 export class CreateWebsiteDto {
 	@IsString()
@@ -13,7 +13,11 @@ export class CreateWebsiteDto {
 
 	@IsOptional()
 	@IsInt()
-	@Min(3)
+	@Min(1)
 	@Max(500)
 	dailyVisitsTarget?: number
+
+	@IsOptional()
+	@IsBoolean()
+	autoMaxVisits?: boolean
 }
