@@ -489,6 +489,18 @@ export class ExecutionsService {
 				},
 			})
 
+			// Синхронизируем строку execution, чтобы в админке («Задачи») показывалось
+			// реально начисленное, а не 0. При нормальном завершении completeExecution
+			// перезапишет строку полным итогом (set) — задвоения нет; а для упавших
+			// задач (failExecution) это единственный апдейт и он отражает факт.
+			await tx.execution.update({
+				where: { id: executionId },
+				data: {
+					pointsEarned: { increment: pointsEarned },
+					...(pointsSpent > 0 ? { pointsSpent: { increment: pointsSpent } } : {}),
+				},
+			})
+
 			// Списание с владельца сайта — только если есть что списывать
 			if (pointsSpent > 0) {
 				await tx.user.update({
