@@ -128,10 +128,10 @@ export class AdminController {
 		return this.adminService.getDeletedUsers()
 	}
 
-	// Лог ошибок (упавшие задачи со всей сети)
-	@Get('error-log')
-	async getErrorLog(@Query('limit') limit?: string) {
-		return this.adminService.getErrorLog(limit ? Number(limit) : 200)
+	// Журнал задач (найденные + не найденные + ошибки со всей сети)
+	@Get('execution-log')
+	async getExecutionLog(@Query('limit') limit?: string) {
+		return this.adminService.getExecutionLog(limit ? Number(limit) : 300)
 	}
 
 	// Письмо «вернись» — только по ручному нажатию админа

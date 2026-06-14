@@ -958,14 +958,20 @@ export class AdminService {
 		return { total: users.length, users }
 	}
 
-	// Лог ошибок: последние упавшие задачи (status = FAILED) со всей сети.
-	// failureReason — код причины (CAPTCHA / SCRIPT_ERROR / NOT_IN_SERP / LOCK_TIMEOUT),
-	// человеко-читаемый текст ошибки в БД не хранится (только код).
-	async getErrorLog(limit = 200) {
+	// Журнал задач: последние выполнения со всей сети — и найденные (зелёным),
+	// и не найденные / упавшие. Для найденных видно, в какой системе нашли
+	// (yandexFoundInTop / googleFoundInTop) и позицию. failureReason — код
+	// причины (CAPTCHA / SCRIPT_ERROR / NOT_IN_SERP / LOCK_TIMEOUT).
+	async getExecutionLog(limit = 300) {
 		return this.prisma.execution.findMany({
-			where: { status: 'FAILED' },
+			where: { status: { in: ['COMPLETED', 'FAILED'] } },
 			select: {
 				id: true,
+				status: true,
+				foundInTop: true,
+				yandexFoundInTop: true,
+				googleFoundInTop: true,
+				position: true,
 				failureReason: true,
 				completionKind: true,
 				createdAt: true,
