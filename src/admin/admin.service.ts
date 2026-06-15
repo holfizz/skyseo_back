@@ -1007,4 +1007,174 @@ export class AdminService {
 	async deleteAdminTask(taskId: string) {
 		return this.prisma.task.delete({ where: { id: taskId } })
 	}
+
+	async getSiteStats(page = 0, limit = 30) {
+		const offset = page * limit
+
+		// Сайты, поднявшиеся хотя бы на 1 позицию (сравниваем два последних position_history)
+		const rising = await this.prisma.$queryRaw<Array<{
+			task_id: string; url: string; keyword: string; user_email: string
+			yandex_curr: number | null; yandex_prev: number | null
+			google_curr: number | null; google_prev: number | null
+			improvement: number
+		}>>`
+			WITH ranked AS (
+				SELECT
+					ph."taskId",
+					ph."yandexPosition",
+					ph."googlePosition",
+					ROW_NUMBER() OVER (PARTITION BY ph."taskId" ORDER BY ph."createdAt" DESC) AS rn
+				FROM position_history ph
+			)
+			SELECT
+				curr."taskId" AS task_id,
+				w.url,
+				t.keyword,
+				u.email AS user_email,
+				curr."yandexPosition"   AS yandex_curr,
+				prev."yandexPosition"   AS yandex_prev,
+				curr."googlePosition"   AS google_curr,
+				prev."googlePosition"   AS google_prev,
+				GREATEST(
+					COALESCE(prev."yandexPosition" - curr."yandexPosition", 0),
+					COALESCE(prev."googlePosition" - curr."googlePosition", 0)
+				) AS improvement
+			FROM ranked curr
+			JOIN ranked prev ON prev."taskId" = curr."taskId" AND prev.rn = 2
+			JOIN tasks    t  ON t.id = curr."taskId"
+			JOIN websites w  ON w.id = t."websiteId"
+			JOIN users    u  ON u.id = w."userId"
+			WHERE curr.rn = 1
+				AND (
+					(curr."yandexPosition" IS NOT NULL AND prev."yandexPosition" IS NOT NULL AND curr."yandexPosition" < prev."yandexPosition")
+					OR
+					(curr."googlePosition" IS NOT NULL AND prev."googlePosition" IS NOT NULL AND curr."googlePosition" < prev."googlePosition")
+				)
+			ORDER BY improvement DESC
+			LIMIT ${limit} OFFSET ${offset}
+		`
+
+		const risingTotal = await this.prisma.$queryRaw<[{ cnt: bigint }]>`
+			WITH ranked AS (
+				SELECT
+					ph."taskId",
+					ph."yandexPosition",
+					ph."googlePosition",
+					ROW_NUMBER() OVER (PARTITION BY ph."taskId" ORDER BY ph."createdAt" DESC) AS rn
+				FROM position_history ph
+			)
+			SELECT COUNT(*) AS cnt
+			FROM ranked curr
+			JOIN ranked prev ON prev."taskId" = curr."taskId" AND prev.rn = 2
+			WHERE curr.rn = 1
+				AND (
+					(curr."yandexPosition" IS NOT NULL AND prev."yandexPosition" IS NOT NULL AND curr."yandexPosition" < prev."yandexPosition")
+					OR
+					(curr."googlePosition" IS NOT NULL AND prev."googlePosition" IS NOT NULL AND curr."googlePosition" < prev."googlePosition")
+				)
+		`
+
+		// Сайты, которые пропали: были найдены раньше, но последние 10 выполнений — "не найден"
+		const disappeared = await this.prisma.$queryRaw<Array<{
+			url: string; keyword: string; user_email: string; last_found_at: Date; consecutive_not_found: bigint
+		}>>`
+			WITH latest_completed AS (
+				SELECT
+					e."taskId",
+					e."foundInTop",
+					ROW_NUMBER() OVER (PARTITION BY e."taskId" ORDER BY e."completedAt" DESC) AS rn
+				FROM executions e
+				WHERE e.status = 'COMPLETED'
+			),
+			bad_tasks AS (
+				SELECT "taskId"
+				FROM latest_completed
+				WHERE rn <= 10
+				GROUP BY "taskId"
+				HAVING COUNT(*) >= 10
+					AND SUM(CASE WHEN "foundInTop" = true THEN 1 ELSE 0 END) = 0
+			),
+			last_found AS (
+				SELECT e."taskId", MAX(e."completedAt") AS last_found_at
+				FROM executions e
+				WHERE e."foundInTop" = true AND e."taskId" IN (SELECT "taskId" FROM bad_tasks)
+				GROUP BY e."taskId"
+			)
+			SELECT
+				w.url,
+				t.keyword,
+				u.email AS user_email,
+				lf.last_found_at,
+				(
+					SELECT COUNT(*)
+					FROM executions e2
+					WHERE e2."taskId" = t.id
+						AND e2.status = 'COMPLETED'
+						AND e2."completedAt" > lf.last_found_at
+				) AS consecutive_not_found
+			FROM bad_tasks bt
+			JOIN last_found lf ON lf."taskId" = bt."taskId"
+			JOIN tasks    t   ON t.id = bt."taskId"
+			JOIN websites w   ON w.id = t."websiteId"
+			JOIN users    u   ON u.id = w."userId"
+			ORDER BY lf.last_found_at ASC
+		`
+
+		return {
+			rising: rising.map(r => ({
+				taskId: r.task_id,
+				url: r.url,
+				keyword: r.keyword,
+				userEmail: r.user_email,
+				yandexCurr: r.yandex_curr,
+				yandexPrev: r.yandex_prev,
+				googleCurr: r.google_curr,
+				googlePrev: r.google_prev,
+				improvement: Number(r.improvement),
+			})),
+			risingTotal: Number(risingTotal[0]?.cnt ?? 0),
+			disappeared: disappeared.map(r => ({
+				url: r.url,
+				keyword: r.keyword,
+				userEmail: r.user_email,
+				lastFoundAt: r.last_found_at,
+				consecutiveNotFound: Number(r.consecutive_not_found),
+			})),
+		}
+	}
+
+	async getSiteTrend(taskId: string) {
+		const meta = await this.prisma.$queryRaw<Array<{
+			url: string; keyword: string; user_email: string
+		}>>`
+			SELECT w.url, t.keyword, u.email AS user_email
+			FROM tasks t
+			JOIN websites w ON w.id = t."websiteId"
+			JOIN users    u ON u.id = w."userId"
+			WHERE t.id = ${taskId}
+			LIMIT 1
+		`
+
+		const history = await this.prisma.$queryRaw<Array<{
+			date: Date; yandex_pos: number | null; google_pos: number | null
+		}>>`
+			SELECT
+				DATE(ph."createdAt") AS date,
+				MIN(ph."yandexPosition") AS yandex_pos,
+				MIN(ph."googlePosition") AS google_pos
+			FROM position_history ph
+			WHERE ph."taskId" = ${taskId}
+			GROUP BY DATE(ph."createdAt")
+			ORDER BY date ASC
+		`
+
+		return {
+			meta: meta[0] ?? null,
+			history: history.map(h => ({
+				date: h.date instanceof Date ? h.date.toISOString().slice(0, 10) : String(h.date).slice(0, 10),
+				yandex: h.yandex_pos != null ? Number(h.yandex_pos) : null,
+				google: h.google_pos != null ? Number(h.google_pos) : null,
+			})),
+		}
+	}
 }

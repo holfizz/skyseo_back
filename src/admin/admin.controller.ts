@@ -185,6 +185,16 @@ export class AdminController {
 		return this.adminService.deletePromoCode(id)
 	}
 
+	@Get('site-stats')
+	async getSiteStats(@Query('page') page?: string, @Query('limit') limit?: string) {
+		return this.adminService.getSiteStats(page ? Number(page) : 0, limit ? Number(limit) : 30)
+	}
+
+	@Get('site-trend')
+	async getSiteTrend(@Query('taskId') taskId: string) {
+		return this.adminService.getSiteTrend(taskId)
+	}
+
 	// ─── CRUD воронки ───
 	@Get('funnel-entries')
 	async listFunnelEntries(@Query('limit') limit?: string) {
