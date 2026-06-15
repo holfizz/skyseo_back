@@ -1144,37 +1144,72 @@ export class AdminService {
 	}
 
 	async getSiteTrend(taskId: string) {
-		const meta = await this.prisma.$queryRaw<Array<{
-			url: string; keyword: string; user_email: string
+		// Находим websiteId через taskId
+		const task = await this.prisma.task.findUnique({
+			where: { id: taskId },
+			select: { websiteId: true },
+		})
+		if (!task) return { meta: null, keywords: [] }
+
+		const metaRows = await this.prisma.$queryRaw<Array<{
+			url: string; user_email: string
 		}>>`
-			SELECT w.url, t.keyword, u.email AS user_email
-			FROM tasks t
-			JOIN websites w ON w.id = t."websiteId"
-			JOIN users    u ON u.id = w."userId"
-			WHERE t.id = ${taskId}
+			SELECT w.url, u.email AS user_email
+			FROM websites w
+			JOIN users u ON u.id = w."userId"
+			WHERE w.id = ${task.websiteId}
 			LIMIT 1
 		`
 
-		const history = await this.prisma.$queryRaw<Array<{
-			date: Date; yandex_pos: number | null; google_pos: number | null
+		// История позиций по всем ключевикам сайта; 101 = не найден, исключаем
+		const rows = await this.prisma.$queryRaw<Array<{
+			task_id: string; keyword: string; date: Date
+			yandex_pos: number | null; google_pos: number | null
 		}>>`
 			SELECT
+				t.id AS task_id,
+				t.keyword,
 				DATE(ph."createdAt") AS date,
-				MIN(ph."yandexPosition") AS yandex_pos,
-				MIN(ph."googlePosition") AS google_pos
-			FROM position_history ph
-			WHERE ph."taskId" = ${taskId}
-			GROUP BY DATE(ph."createdAt")
-			ORDER BY date ASC
+				MIN(CASE WHEN ph."yandexPosition" < 101 THEN ph."yandexPosition" END) AS yandex_pos,
+				MIN(CASE WHEN ph."googlePosition" < 101 THEN ph."googlePosition" END) AS google_pos
+			FROM tasks t
+			JOIN position_history ph ON ph."taskId" = t.id
+			WHERE t."websiteId" = ${task.websiteId}
+			GROUP BY t.id, t.keyword, DATE(ph."createdAt")
+			ORDER BY t.keyword ASC, date ASC
 		`
 
+		// Группируем по задаче
+		const grouped = new Map<string, { keyword: string; history: Array<{ date: string; yandex: number | null; google: number | null }> }>()
+		for (const row of rows) {
+			if (!grouped.has(row.task_id)) grouped.set(row.task_id, { keyword: row.keyword, history: [] })
+			const dateStr = row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10)
+			grouped.get(row.task_id)!.history.push({
+				date: dateStr,
+				yandex: row.yandex_pos != null ? Number(row.yandex_pos) : null,
+				google: row.google_pos != null ? Number(row.google_pos) : null,
+			})
+		}
+
 		return {
-			meta: meta[0] ?? null,
-			history: history.map(h => ({
-				date: h.date instanceof Date ? h.date.toISOString().slice(0, 10) : String(h.date).slice(0, 10),
-				yandex: h.yandex_pos != null ? Number(h.yandex_pos) : null,
-				google: h.google_pos != null ? Number(h.google_pos) : null,
-			})),
+			meta: metaRows[0] ?? null,
+			keywords: Array.from(grouped.entries()).map(([kTaskId, { keyword, history }]) => {
+				const firstY = history.find(h => h.yandex != null)?.yandex ?? null
+				const lastY = [...history].reverse().find(h => h.yandex != null)?.yandex ?? null
+				const firstG = history.find(h => h.google != null)?.google ?? null
+				const lastG = [...history].reverse().find(h => h.google != null)?.google ?? null
+				return {
+					taskId: kTaskId,
+					keyword,
+					history,
+					firstYandex: firstY,
+					lastYandex: lastY,
+					yandexDelta: firstY != null && lastY != null ? firstY - lastY : null,
+					firstGoogle: firstG,
+					lastGoogle: lastG,
+					googleDelta: firstG != null && lastG != null ? firstG - lastG : null,
+				}
+			}),
 		}
 	}
 }
