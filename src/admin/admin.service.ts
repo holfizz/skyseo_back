@@ -166,7 +166,13 @@ export class AdminService {
 		}
 	}
 
-	async getAllUsers(offset = 0, limit = 100) {
+	async getAllUsers(search = '', offset = 0, limit = 100) {
+		const where = search ? {
+			OR: [
+				{ email: { contains: search, mode: 'insensitive' as const } },
+				{ city: { contains: search, mode: 'insensitive' as const } },
+			],
+		} : {}
 		const select = {
 			id: true,
 			email: true,
@@ -189,8 +195,8 @@ export class AdminService {
 			},
 		}
 		const [users, total] = await Promise.all([
-			this.prisma.user.findMany({ select, orderBy: { createdAt: 'desc' }, skip: offset, take: limit }),
-			this.prisma.user.count(),
+			this.prisma.user.findMany({ select, where, orderBy: { createdAt: 'desc' }, skip: offset, take: limit }),
+			this.prisma.user.count({ where }),
 		])
 		return { users, total, offset, limit }
 	}

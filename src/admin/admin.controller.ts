@@ -66,8 +66,12 @@ export class AdminController {
 	}
 
 	@Get('users')
-	async getAllUsers(@Query('offset') offset?: string, @Query('limit') limit?: string) {
-		return this.adminService.getAllUsers(offset ? Number(offset) : 0, limit ? Number(limit) : 100)
+	async getAllUsers(
+		@Query('search') search?: string,
+		@Query('offset') offset?: string,
+		@Query('limit') limit?: string,
+	) {
+		return this.adminService.getAllUsers(search ?? '', offset ? Number(offset) : 0, limit ? Number(limit) : 100)
 	}
 
 	@Get('users/:id')
