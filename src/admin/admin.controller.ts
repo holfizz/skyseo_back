@@ -82,6 +82,23 @@ export class AdminController {
 		)
 	}
 
+	@Get('sites')
+	async getAllSites(
+		@Query('search') search?: string,
+		@Query('offset') offset?: string,
+		@Query('limit') limit?: string,
+		@Query('sortBy') sortBy?: string,
+		@Query('sortDir') sortDir?: string,
+	) {
+		return this.adminService.getAllSites(
+			search ?? '',
+			offset ? Number(offset) : 0,
+			limit ? Number(limit) : 100,
+			sortBy ?? 'createdAt',
+			(sortDir === 'asc' ? 'asc' : 'desc'),
+		)
+	}
+
 	@Get('users/:id')
 	async getUser(@Param('id') id: string) {
 		return this.adminService.getUserDetails(id)

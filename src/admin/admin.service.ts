@@ -205,6 +205,57 @@ export class AdminService {
 		return { users, total, offset, limit }
 	}
 
+	async getAllSites(search = '', offset = 0, limit = 100, sortBy = 'createdAt', sortDir: 'asc' | 'desc' = 'desc') {
+		const where: any = search ? {
+			OR: [
+				{ url: { contains: search, mode: 'insensitive' as const } },
+				{ name: { contains: search, mode: 'insensitive' as const } },
+				{ user: { email: { contains: search, mode: 'insensitive' as const } } },
+			],
+		} : {}
+		const orderBy: any =
+			sortBy === 'tasks' ? { tasks: { _count: sortDir } } :
+			{ [['name', 'url', 'createdAt', 'isActive'].includes(sortBy) ? sortBy : 'createdAt']: sortDir }
+		const [sites, total] = await Promise.all([
+			this.prisma.website.findMany({
+				where,
+				select: {
+					id: true,
+					name: true,
+					url: true,
+					isActive: true,
+					createdAt: true,
+					user: { select: { id: true, email: true } },
+					_count: { select: { tasks: true } },
+				},
+				orderBy,
+				skip: offset,
+				take: limit,
+			}),
+			this.prisma.website.count({ where }),
+		])
+		const siteIds = sites.map(s => s.id)
+		const [execAll, execCompleted, execFailed] = await Promise.all([
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds } }, _count: { id: true } }),
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'COMPLETED' }, _count: { id: true } }),
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'FAILED' }, _count: { id: true } }),
+		])
+		const totalMap = new Map(execAll.map(e => [e.websiteId, e._count.id]))
+		const completedMap = new Map(execCompleted.map(e => [e.websiteId, e._count.id]))
+		const failedMap = new Map(execFailed.map(e => [e.websiteId, e._count.id]))
+		return {
+			sites: sites.map(s => ({
+				...s,
+				totalExecutions: totalMap.get(s.id) ?? 0,
+				completedExecutions: completedMap.get(s.id) ?? 0,
+				failedExecutions: failedMap.get(s.id) ?? 0,
+			})),
+			total,
+			offset,
+			limit,
+		}
+	}
+
 	async getUserDetails(userId: string) {
 		const [user, totalExecutions, completedExecutions] = await Promise.all([
 			this.prisma.user.findUnique({
