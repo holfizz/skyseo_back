@@ -166,13 +166,17 @@ export class AdminService {
 		}
 	}
 
-	async getAllUsers(search = '', offset = 0, limit = 100) {
+	async getAllUsers(search = '', offset = 0, limit = 100, sortBy = 'createdAt', sortDir: 'asc' | 'desc' = 'desc') {
 		const where = search ? {
 			OR: [
 				{ email: { contains: search, mode: 'insensitive' as const } },
 				{ city: { contains: search, mode: 'insensitive' as const } },
 			],
 		} : {}
+		const orderBy =
+			sortBy === 'websites' ? { websites: { _count: sortDir } } :
+			sortBy === 'executions' ? { executions: { _count: sortDir } } :
+			{ [['email','balance','city','isActive','createdAt','appVersion','role','appStatus'].includes(sortBy) ? sortBy : 'createdAt']: sortDir }
 		const select = {
 			id: true,
 			email: true,
@@ -195,56 +199,62 @@ export class AdminService {
 			},
 		}
 		const [users, total] = await Promise.all([
-			this.prisma.user.findMany({ select, where, orderBy: { createdAt: 'desc' }, skip: offset, take: limit }),
+			this.prisma.user.findMany({ select, where, orderBy, skip: offset, take: limit }),
 			this.prisma.user.count({ where }),
 		])
 		return { users, total, offset, limit }
 	}
 
 	async getUserDetails(userId: string) {
-		return this.prisma.user.findUnique({
-			where: { id: userId },
-			include: {
-				websites: {
-					include: {
-						tasks: {
-							orderBy: { createdAt: 'desc' },
-							select: {
-								id: true,
-								keyword: true,
-								type: true,
-								isActive: true,
-								keywordStatus: true,
-								useYandex: true,
-								useGoogle: true,
-								maxYandexVisits: true,
-								maxGoogleVisits: true,
-								_count: { select: { executions: true } },
+		const [user, totalExecutions, completedExecutions] = await Promise.all([
+			this.prisma.user.findUnique({
+				where: { id: userId },
+				include: {
+					websites: {
+						include: {
+							tasks: {
+								orderBy: { createdAt: 'desc' },
+								select: {
+									id: true,
+									keyword: true,
+									type: true,
+									isActive: true,
+									keywordStatus: true,
+									useYandex: true,
+									useGoogle: true,
+									maxYandexVisits: true,
+									maxGoogleVisits: true,
+									_count: { select: { executions: true } },
+								},
+							},
+						},
+					},
+					balanceHistory: {
+						orderBy: { createdAt: 'desc' },
+						take: 50,
+					},
+					payments: {
+						orderBy: { createdAt: 'desc' },
+						take: 20,
+					},
+					executions: {
+						orderBy: { createdAt: 'desc' },
+						take: 20,
+						include: {
+							task: {
+								include: {
+									website: true,
+								},
 							},
 						},
 					},
 				},
-				balanceHistory: {
-					orderBy: { createdAt: 'desc' },
-					take: 50,
-				},
-				payments: {
-					orderBy: { createdAt: 'desc' },
-					take: 20,
-				},
-				executions: {
-					orderBy: { createdAt: 'desc' },
-					take: 20,
-					include: {
-						task: {
-							include: {
-								website: true,
-							},
-						},
-					},
-				},
-			},
-		})
+			}),
+			this.prisma.execution.count({ where: { executorId: userId } }),
+			this.prisma.execution.count({ where: { executorId: userId, status: 'COMPLETED' } }),
+		])
+		if (!user) return null
+		return { ...user, totalExecutions, completedExecutions }
 	}
 
 	async adjustUserBalance(userId: string, amount: number, description: string) {
