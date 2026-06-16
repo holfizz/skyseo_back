@@ -379,13 +379,15 @@ enum AppStatus {
 }
 
 model PromoCode {
-  id          String   @id @default(uuid())
-  code        String   @unique // uppercase, без пробелов
-  bonusPoints Int      @default(500) // сколько баллов накидывается при регистрации
-  description String? // источник трафика — для напоминания себе
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(uuid())
+  code         String   @unique // uppercase, без пробелов
+  bonusPoints  Int      @default(500) // сколько баллов накидывается при регистрации
+  description  String? // источник трафика — для напоминания себе
+  isActive     Boolean  @default(true)
+  budgetAmount Decimal? @db.Decimal(10, 2) // общий бюджет кампании ИЛИ ₽ за инстал — в зависимости от budgetMode
+  budgetMode   String   @default("total")  // "total" | "per_install"
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@map("promo_codes")
 }

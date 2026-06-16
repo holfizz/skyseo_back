@@ -166,31 +166,33 @@ export class AdminService {
 		}
 	}
 
-	async getAllUsers(limit = 100) {
-		return this.prisma.user.findMany({
-			select: {
-				id: true,
-				email: true,
-				balance: true,
-				role: true,
-				city: true,
-				referralSource: true,
-				isActive: true,
-				lastSeenAt: true,
-				appVersion: true,
-				appStatus: true,
-				createdAt: true,
-				_count: {
-					select: {
-						websites: true,
-						executions: true,
-						payments: true,
-					},
+	async getAllUsers(offset = 0, limit = 100) {
+		const select = {
+			id: true,
+			email: true,
+			balance: true,
+			role: true,
+			city: true,
+			promoCode: true,
+			referralSource: true,
+			isActive: true,
+			lastSeenAt: true,
+			appVersion: true,
+			appStatus: true,
+			createdAt: true,
+			_count: {
+				select: {
+					websites: true,
+					executions: true,
+					payments: true,
 				},
 			},
-			orderBy: { createdAt: 'desc' },
-			take: limit,
-		})
+		}
+		const [users, total] = await Promise.all([
+			this.prisma.user.findMany({ select, orderBy: { createdAt: 'desc' }, skip: offset, take: limit }),
+			this.prisma.user.count(),
+		])
+		return { users, total, offset, limit }
 	}
 
 	async getUserDetails(userId: string) {
@@ -513,7 +515,7 @@ export class AdminService {
 		})
 	}
 
-	async createPromoCode(data: { code: string; bonusPoints: number; description?: string; isActive?: boolean }) {
+	async createPromoCode(data: { code: string; bonusPoints: number; description?: string; isActive?: boolean; budgetAmount?: number | null }) {
 		const code = data.code.trim().toUpperCase()
 		if (!code || code.length < 2) {
 			throw new Error('Промокод должен быть минимум 2 символа')
@@ -528,11 +530,12 @@ export class AdminService {
 				bonusPoints,
 				description: data.description?.trim() || null,
 				isActive: data.isActive !== false,
+				budgetAmount: data.budgetAmount != null && data.budgetAmount > 0 ? data.budgetAmount : null,
 			},
 		})
 	}
 
-	async updatePromoCode(id: string, data: { code?: string; bonusPoints?: number; description?: string | null; isActive?: boolean }) {
+	async updatePromoCode(id: string, data: { code?: string; bonusPoints?: number; description?: string | null; isActive?: boolean; budgetAmount?: number | null; budgetMode?: string }) {
 		const patch: any = {}
 		if (data.code !== undefined) {
 			const code = data.code.trim().toUpperCase()
@@ -544,6 +547,8 @@ export class AdminService {
 		if (data.bonusPoints !== undefined) patch.bonusPoints = Math.max(0, Math.floor(data.bonusPoints))
 		if (data.description !== undefined) patch.description = data.description?.trim() || null
 		if (data.isActive !== undefined) patch.isActive = data.isActive
+		if (data.budgetAmount !== undefined) patch.budgetAmount = data.budgetAmount != null && data.budgetAmount > 0 ? data.budgetAmount : null
+		if (data.budgetMode !== undefined) patch.budgetMode = data.budgetMode === 'per_install' ? 'per_install' : 'total'
 		return this.prisma.promoCode.update({ where: { id }, data: patch })
 	}
 
@@ -964,32 +969,38 @@ export class AdminService {
 	// Длительность онлайна = от регистрации до последнего app-сигнала
 	// (heartbeat / app-логин / последнее выполненное задание).
 	async getDeletedUsers() {
-		const rows = await this.prisma.$queryRaw<Array<{
-			id: string
-			email: string
-			balance: number
-			promoCode: string | null
-			city: string | null
-			appVersion: string | null
-			createdAt: Date
-			lastSeenAt: Date | null
-			appLastLoginAt: Date | null
-			lastExecution: Date | null
-		}>>`
-			SELECT u.id, u.email, u.balance, u."promoCode", u.city, u."appVersion",
-			       u."createdAt", u."lastSeenAt", u."appLastLoginAt",
-			       MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED') AS "lastExecution"
-			FROM users u
-			LEFT JOIN executions e ON e."executorId" = u.id
-			WHERE u."appStatus" = 'UNINSTALLED'
-			GROUP BY u.id
-			ORDER BY GREATEST(
-				u."lastSeenAt",
-				u."appLastLoginAt",
-				MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED')
-			) DESC NULLS LAST
-			LIMIT 500
-		`
+		const [rows, capacity] = await Promise.all([
+			this.prisma.$queryRaw<Array<{
+				id: string
+				email: string
+				balance: number
+				promoCode: string | null
+				city: string | null
+				appVersion: string | null
+				createdAt: Date
+				lastSeenAt: Date | null
+				appLastLoginAt: Date | null
+				lastExecution: Date | null
+				websites: string | null
+			}>>`
+				SELECT u.id, u.email, u.balance, u."promoCode", u.city, u."appVersion",
+				       u."createdAt", u."lastSeenAt", u."appLastLoginAt",
+				       MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED') AS "lastExecution",
+				       STRING_AGG(DISTINCT w.url, ', ') FILTER (WHERE w.url IS NOT NULL) AS websites
+				FROM users u
+				LEFT JOIN executions e ON e."executorId" = u.id
+				LEFT JOIN websites w ON w."userId" = u.id
+				WHERE u."appStatus" = 'UNINSTALLED'
+				GROUP BY u.id
+				ORDER BY GREATEST(
+					u."lastSeenAt",
+					u."appLastLoginAt",
+					MAX(e."completedAt") FILTER (WHERE e.status = 'COMPLETED')
+				) DESC NULLS LAST
+				LIMIT 500
+			`,
+			this.appConfig.getNetworkCapacityInfo(),
+		])
 		const day = 86400000
 		const users = rows.map(u => {
 			const signals = [u.lastSeenAt, u.appLastLoginAt, u.lastExecution]
@@ -1001,11 +1012,13 @@ export class AdminService {
 				: 0
 			return {
 				...u,
+				websites: u.websites ? u.websites.split(', ').filter(Boolean) : [],
 				lastSignal: lastSignal ? new Date(lastSignal).toISOString() : null,
 				onlineDays,
 			}
 		})
-		return { total: users.length, users }
+		const networkTasksPerDay = capacity.avgPerDay * capacity.maxPerDay
+		return { total: users.length, users, networkTasksPerDay }
 	}
 
 	// Журнал задач: последние выполнения со всей сети — и найденные (зелёным),

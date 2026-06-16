@@ -66,8 +66,8 @@ export class AdminController {
 	}
 
 	@Get('users')
-	async getAllUsers() {
-		return this.adminService.getAllUsers()
+	async getAllUsers(@Query('offset') offset?: string, @Query('limit') limit?: string) {
+		return this.adminService.getAllUsers(offset ? Number(offset) : 0, limit ? Number(limit) : 100)
 	}
 
 	@Get('users/:id')
@@ -168,14 +168,14 @@ export class AdminController {
 	}
 
 	@Post('promo-codes')
-	async createPromoCode(@Body() body: { code: string; bonusPoints: number; description?: string; isActive?: boolean }) {
+	async createPromoCode(@Body() body: { code: string; bonusPoints: number; description?: string; isActive?: boolean; budgetAmount?: number | null }) {
 		return this.adminService.createPromoCode(body)
 	}
 
 	@Put('promo-codes/:id')
 	async updatePromoCode(
 		@Param('id') id: string,
-		@Body() body: { code?: string; bonusPoints?: number; description?: string | null; isActive?: boolean },
+		@Body() body: { code?: string; bonusPoints?: number; description?: string | null; isActive?: boolean; budgetAmount?: number | null; budgetMode?: string },
 	) {
 		return this.adminService.updatePromoCode(id, body)
 	}
