@@ -363,8 +363,9 @@ export class AdminService {
 			createdAt: Date
 			city: string | null
 			appStatus: string
+			appVersion: string | null
 		}>>`
-			SELECT id, email, balance, "lastSeenAt", "createdAt", city, "appStatus"
+			SELECT id, email, balance, "lastSeenAt", "createdAt", city, "appStatus", "appVersion"
 			FROM users
 			WHERE "promoCode" = ${normalized}
 			ORDER BY "createdAt" DESC
@@ -452,15 +453,64 @@ export class AdminService {
 		const codes = await this.prisma.promoCode.findMany({
 			orderBy: { createdAt: 'desc' },
 		})
-		// Сразу подтягиваем количество юзеров по каждому коду
-		const usersByCode = await this.prisma.$queryRaw<Array<{ promoCode: string; count: bigint }>>`
-			SELECT "promoCode", COUNT(*)::bigint AS count
-			FROM users
-			WHERE "promoCode" IS NOT NULL
-			GROUP BY "promoCode"
+		const stats = await this.prisma.$queryRaw<Array<{
+			promoCode: string
+			total: bigint
+			uninstalled: bigint
+			active: bigint
+			stayed_week: bigint
+			stayed_month: bigint
+			avg_days_to_uninstall: any
+			paying_count: bigint
+			total_revenue: any
+			avg_tasks: any
+		}>>`
+			WITH user_tasks AS (
+				SELECT "executorId" AS user_id, COUNT(*)::bigint AS task_count
+				FROM execution_events
+				GROUP BY "executorId"
+			),
+			user_payments AS (
+				SELECT "userId" AS user_id,
+					BOOL_OR(status = 'SUCCEEDED') AS has_paid,
+					COALESCE(SUM(CASE WHEN status = 'SUCCEEDED' THEN amount ELSE 0 END), 0) AS paid_amount
+				FROM payments
+				GROUP BY "userId"
+			)
+			SELECT
+				u."promoCode",
+				COUNT(*)::bigint AS total,
+				COUNT(*) FILTER (WHERE u."appStatus" = 'UNINSTALLED')::bigint AS uninstalled,
+				COUNT(*) FILTER (WHERE u."appStatus" IN ('ACTIVE', 'REINSTALLED'))::bigint AS active,
+				COUNT(*) FILTER (WHERE u."appStatus" IN ('ACTIVE', 'REINSTALLED') AND u."createdAt" <= NOW() - INTERVAL '7 days')::bigint AS stayed_week,
+				COUNT(*) FILTER (WHERE u."appStatus" IN ('ACTIVE', 'REINSTALLED') AND u."createdAt" <= NOW() - INTERVAL '30 days')::bigint AS stayed_month,
+				ROUND(AVG(CASE WHEN u."appStatus" = 'UNINSTALLED' AND u."lastSeenAt" IS NOT NULL
+					THEN EXTRACT(EPOCH FROM (u."lastSeenAt" - u."createdAt")) / 86400.0 END)::numeric, 1) AS avg_days_to_uninstall,
+				COUNT(*) FILTER (WHERE up.has_paid = true)::bigint AS paying_count,
+				COALESCE(SUM(up.paid_amount), 0) AS total_revenue,
+				ROUND(COALESCE(AVG(COALESCE(ut.task_count, 0)), 0)::numeric, 1) AS avg_tasks
+			FROM users u
+			LEFT JOIN user_payments up ON up.user_id = u.id
+			LEFT JOIN user_tasks ut ON ut.user_id = u.id
+			WHERE u."promoCode" IS NOT NULL
+			GROUP BY u."promoCode"
 		`
-		const countMap = new Map(usersByCode.map(r => [r.promoCode, Number(r.count)]))
-		return codes.map(c => ({ ...c, usersCount: countMap.get(c.code) ?? 0 }))
+		const sm = new Map(stats.map(s => [s.promoCode, s]))
+		return codes.map(c => {
+			const s = sm.get(c.code)
+			return {
+				...c,
+				usersCount: s ? Number(s.total) : 0,
+				uninstalledCount: s ? Number(s.uninstalled) : 0,
+				activeCount: s ? Number(s.active) : 0,
+				stayedWeek: s ? Number(s.stayed_week) : 0,
+				stayedMonth: s ? Number(s.stayed_month) : 0,
+				avgDaysToUninstall: s?.avg_days_to_uninstall != null ? Number(s.avg_days_to_uninstall) : null,
+				payingCount: s ? Number(s.paying_count) : 0,
+				totalRevenue: s ? Number(s.total_revenue) : 0,
+				avgTasks: s ? Number(s.avg_tasks) : 0,
+			}
+		})
 	}
 
 	async createPromoCode(data: { code: string; bonusPoints: number; description?: string; isActive?: boolean }) {
@@ -1152,9 +1202,9 @@ export class AdminService {
 		if (!task) return { meta: null, keywords: [] }
 
 		const metaRows = await this.prisma.$queryRaw<Array<{
-			url: string; user_email: string
+			url: string; user_email: string; user_id: string
 		}>>`
-			SELECT w.url, u.email AS user_email
+			SELECT w.url, u.email AS user_email, u.id AS user_id
 			FROM websites w
 			JOIN users u ON u.id = w."userId"
 			WHERE w.id = ${task.websiteId}
