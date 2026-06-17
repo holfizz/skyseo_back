@@ -60,8 +60,8 @@ export class AdminController {
 		@Query('from') from?: string,
 		@Query('to') to?: string,
 	) {
-		const toDate = to ? new Date(to) : new Date()
-		const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		const toDate = to ? new Date(to + 'T23:59:59.999Z') : new Date()
+		const fromDate = from ? new Date(from + 'T00:00:00.000Z') : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 		return this.adminService.getAnalytics(fromDate, toDate)
 	}
 
@@ -363,8 +363,8 @@ export class AdminController {
 		@Query('from') from?: string,
 		@Query('to') to?: string,
 	) {
-		const toDate = to ? new Date(to) : new Date()
-		const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		const toDate = to ? new Date(to + 'T23:59:59.999Z') : new Date()
+		const fromDate = from ? new Date(from + 'T00:00:00.000Z') : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 		return this.analyticsService.getFunnelStats(fromDate, toDate)
 	}
 

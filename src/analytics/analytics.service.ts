@@ -42,27 +42,27 @@ export class AnalyticsService {
 			this.prisma.pageEvent.count({ where: { type: 'download', createdAt: { gte: from, lte: to } } }),
 			this.prisma.user.count({ where: { createdAt: { gte: from, lte: to } } }),
 
-			// По дням
+			// По дням (МСК timezone)
 			this.prisma.$queryRaw<Array<{ date: string; visits: bigint; downloads: bigint; registrations: bigint }>>`
 				WITH days AS (
-					SELECT DISTINCT DATE(p."createdAt") AS date
+					SELECT DISTINCT (p."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date
 					FROM page_events p
 					WHERE p."createdAt" >= ${from} AND p."createdAt" <= ${to}
 				),
 				v AS (
-					SELECT DATE("createdAt") AS date, COUNT(*) AS cnt
+					SELECT (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date AS date, COUNT(*) AS cnt
 					FROM page_events WHERE type = 'visit' AND "createdAt" >= ${from} AND "createdAt" <= ${to}
-					GROUP BY DATE("createdAt")
+					GROUP BY (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date
 				),
 				d AS (
-					SELECT DATE("createdAt") AS date, COUNT(*) AS cnt
+					SELECT (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date AS date, COUNT(*) AS cnt
 					FROM page_events WHERE type = 'download' AND "createdAt" >= ${from} AND "createdAt" <= ${to}
-					GROUP BY DATE("createdAt")
+					GROUP BY (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date
 				),
 				r AS (
-					SELECT DATE("createdAt") AS date, COUNT(*) AS cnt
+					SELECT (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date AS date, COUNT(*) AS cnt
 					FROM users WHERE "createdAt" >= ${from} AND "createdAt" <= ${to}
-					GROUP BY DATE("createdAt")
+					GROUP BY (\"createdAt\" AT TIME ZONE 'Europe/Moscow')::date
 				)
 				SELECT
 					days.date::text AS date,

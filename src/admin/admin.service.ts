@@ -124,10 +124,18 @@ export class AdminService {
 		const fiveMinutesAgo = new Date()
 		fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5)
 
-		const activeUsersNow = await this.prisma.execution.groupBy({
-			by: ['executorId'],
-			where: { createdAt: { gte: fiveMinutesAgo } },
-		})
+		const now2 = new Date()
+		const startOfToday = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate())
+		const startOfYesterday = new Date(startOfToday.getTime() - 86400000)
+		const startOfDayBefore = new Date(startOfToday.getTime() - 2 * 86400000)
+
+		const [activeUsersNow, todaySet, yesterdaySet, dayBeforeSet] = await Promise.all([
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: fiveMinutesAgo } } }),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfYesterday, lt: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfDayBefore, lt: startOfYesterday } } }).then(r => new Set(r.map(x => x.executorId))),
+		])
+		const streak3 = [...todaySet].filter(id => yesterdaySet.has(id) && dayBeforeSet.has(id)).length
 
 		// Ёмкость сети: активных ПК за неделю, среднее/день и максимум просмотров/день
 		// (ceil(среднее/14)) — то же число, что видит владелец при создании сайта.
@@ -142,8 +150,9 @@ export class AdminService {
 			users: {
 				total: totalUsers,
 				active: activeUsers,
-				activeToday: activeUsersLast24h.length,
+				activeToday: todaySet.size,
 				activeNow: activeUsersNow.length,
+				streak3,
 			},
 			websites: {
 				total: totalWebsites,
@@ -900,37 +909,37 @@ export class AdminService {
 			this.prisma.balanceHistory.aggregate({ where: { type: 'PAYMENT', createdAt: { gte: from, lte: to } }, _sum: { amount: true } }),
 		])
 
-		// По дням — CTE вместо коррелированных подзапросов
+		// По дням — CTE вместо коррелированных подзапросов; DATE() по МСК (UTC+3)
 		const byDay = await this.prisma.$queryRaw<Array<{
 			date: string; found: bigint; not_found: bigint; errors: bigint; new_users: bigint; captchas: bigint; active_nodes: bigint
 		}>>`
 			WITH exec_dates AS (
-				SELECT DISTINCT DATE(e."createdAt") AS date
+				SELECT DISTINCT (e."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date
 				FROM executions e
 				WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
 			),
 			exec_stats AS (
 				SELECT
-					DATE(e."createdAt") AS date,
+					(e."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date,
 					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = true  THEN 1 END) AS found,
 					COUNT(CASE WHEN e.status = 'COMPLETED' AND e."foundInTop" = false THEN 1 END) AS not_found,
 					COUNT(CASE WHEN e.status = 'FAILED' THEN 1 END) AS errors,
 					COUNT(DISTINCT e."executorId") AS active_nodes
 				FROM executions e
 				WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${to}
-				GROUP BY DATE(e."createdAt")
+				GROUP BY (e."createdAt" AT TIME ZONE 'Europe/Moscow')::date
 			),
 			user_stats AS (
-				SELECT DATE(u."createdAt") AS date, COUNT(*) AS new_users
+				SELECT (u."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date, COUNT(*) AS new_users
 				FROM users u
-				WHERE DATE(u."createdAt") IN (SELECT date FROM exec_dates)
-				GROUP BY DATE(u."createdAt")
+				WHERE (u."createdAt" AT TIME ZONE 'Europe/Moscow')::date IN (SELECT date FROM exec_dates)
+				GROUP BY (u."createdAt" AT TIME ZONE 'Europe/Moscow')::date
 			),
 			captcha_stats AS (
-				SELECT DATE(c."createdAt") AS date, COUNT(*) AS captchas
+				SELECT (c."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date, COUNT(*) AS captchas
 				FROM captcha_events c
-				WHERE DATE(c."createdAt") IN (SELECT date FROM exec_dates)
-				GROUP BY DATE(c."createdAt")
+				WHERE (c."createdAt" AT TIME ZONE 'Europe/Moscow')::date IN (SELECT date FROM exec_dates)
+				GROUP BY (c."createdAt" AT TIME ZONE 'Europe/Moscow')::date
 			)
 			SELECT
 				es.date::text AS date,
@@ -1299,13 +1308,13 @@ export class AdminService {
 			SELECT
 				t.id AS task_id,
 				t.keyword,
-				DATE(ph."createdAt") AS date,
+				(ph."createdAt" AT TIME ZONE 'Europe/Moscow')::date AS date,
 				MIN(CASE WHEN ph."yandexPosition" < 101 THEN ph."yandexPosition" END) AS yandex_pos,
 				MIN(CASE WHEN ph."googlePosition" < 101 THEN ph."googlePosition" END) AS google_pos
 			FROM tasks t
 			JOIN position_history ph ON ph."taskId" = t.id
 			WHERE t."websiteId" = ${task.websiteId}
-			GROUP BY t.id, t.keyword, DATE(ph."createdAt")
+			GROUP BY t.id, t.keyword, (ph."createdAt" AT TIME ZONE 'Europe/Moscow')::date
 			ORDER BY t.keyword ASC, date ASC
 		`
 

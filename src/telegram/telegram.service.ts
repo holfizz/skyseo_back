@@ -452,9 +452,14 @@ export class TelegramService implements OnModuleDestroy {
 		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 		const dateStr = now.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
 
+		const startOfYesterday = new Date(startOfToday.getTime() - 86400000)
+		const startOfDayBefore = new Date(startOfToday.getTime() - 2 * 86400000)
+
 		const [
 			newUsersToday,
-			activePCsToday,
+			activePCsTodaySet,
+			yesterdaySet,
+			dayBeforeSet,
 			execFound,
 			execNotFound,
 			execScriptError,
@@ -469,9 +474,9 @@ export class TelegramService implements OnModuleDestroy {
 			revenueToday,
 		] = await Promise.all([
 			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
-			this.prisma.execution
-				.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } })
-				.then(r => r.length),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfYesterday, lt: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfDayBefore, lt: startOfYesterday } } }).then(r => new Set(r.map(x => x.executorId))),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: true } }),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: false } }),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'SCRIPT_ERROR' } }),
@@ -486,6 +491,8 @@ export class TelegramService implements OnModuleDestroy {
 			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 		])
 
+		const activePCsToday = activePCsTodaySet.size
+		const streak3 = [...activePCsTodaySet].filter(id => yesterdaySet.has(id) && dayBeforeSet.has(id)).length
 		const totalToday = execFound + execNotFound + execScriptError + execNotInSerp + execLockTimeout
 		const foundPct = totalToday > 0 ? Math.round((execFound / totalToday) * 100) : 0
 		const revenue = Number(revenueToday._sum.amount || 0)
@@ -495,9 +502,10 @@ export class TelegramService implements OnModuleDestroy {
 
 		let message = `📅 <b>Статистика за сегодня — ${dateStr}</b>\n\n`
 
-		message += `👥 <b>Пользователи:</b>\n`
+		message += `👥 <b>Аудитория:</b>\n`
 		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
-		message += `└ Активных ПК: <b>${activePCsToday}</b>\n\n`
+		message += `├ Активных ПК сегодня: <b>${activePCsToday}</b>\n`
+		message += `└ 3 дня подряд: <b>${streak3}</b>\n\n`
 
 		if (newTasksToday > 0) message += `📋 <b>Новых заданий:</b> ${newTasksToday}\n\n`
 
@@ -536,9 +544,14 @@ export class TelegramService implements OnModuleDestroy {
 		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 		const dateStr = now.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
 
+		const startOfYesterday2 = new Date(startOfToday.getTime() - 86400000)
+		const startOfDayBefore2 = new Date(startOfToday.getTime() - 2 * 86400000)
+
 		const [
 			newUsersToday,
-			activePCsToday,
+			activePCsTodaySet2,
+			yesterdaySet2,
+			dayBeforeSet2,
 			execFound,
 			execNotFound,
 			execScriptError,
@@ -552,9 +565,9 @@ export class TelegramService implements OnModuleDestroy {
 			revenueToday,
 		] = await Promise.all([
 			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
-			this.prisma.execution
-				.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } })
-				.then(r => r.length),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfYesterday2, lt: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
+			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfDayBefore2, lt: startOfYesterday2 } } }).then(r => new Set(r.map(x => x.executorId))),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: true } }),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'COMPLETED', foundInTop: false } }),
 			this.prisma.execution.count({ where: { createdAt: { gte: startOfToday }, status: 'FAILED', failureReason: 'SCRIPT_ERROR' } }),
@@ -568,6 +581,8 @@ export class TelegramService implements OnModuleDestroy {
 			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 		])
 
+		const activePCsToday = activePCsTodaySet2.size
+		const streak3 = [...activePCsTodaySet2].filter(id => yesterdaySet2.has(id) && dayBeforeSet2.has(id)).length
 		const totalToday = execFound + execNotFound + execScriptError + execNotInSerp + execLockTimeout
 		const foundPct = totalToday > 0 ? Math.round((execFound / totalToday) * 100) : 0
 		const revenue = Number(revenueToday._sum.amount || 0)
@@ -577,9 +592,10 @@ export class TelegramService implements OnModuleDestroy {
 
 		let message = `📅 <b>Дневной отчёт SkySEO — ${dateStr}</b>\n\n`
 
-		message += `👥 <b>Пользователи:</b>\n`
+		message += `👥 <b>Аудитория:</b>\n`
 		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
-		message += `└ Активных ПК: <b>${activePCsToday}</b>\n\n`
+		message += `├ Активных ПК сегодня: <b>${activePCsToday}</b>\n`
+		message += `└ 3 дня подряд: <b>${streak3}</b>\n\n`
 
 		message += `⚙️ <b>Задачи (${totalToday} всего, ${foundPct}% успех):</b>\n`
 		if (execFound > 0)       message += `├ ✅ Найдено в топ: <b>${execFound}</b>\n`
