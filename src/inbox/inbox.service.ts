@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { ImapFlow } from 'imapflow'
+import * as nodemailer from 'nodemailer'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
@@ -48,12 +49,18 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			this.lastNotifiedUid = Math.max(...newMsgs.map(m => m.uid))
 
 			for (const m of newMsgs) {
-				const tag = m.isFromOutreach ? `📬 *Ответ от лида* (${m.outreachDomain})` : '📧 *Новое письмо*'
+				const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+				const tag = m.isFromOutreach
+					? `📬 <b>Ответ от лида</b> (${esc(m.outreachDomain ?? '')})`
+					: '📧 <b>Новое письмо</b>'
+				const body = m.text
+					? esc(m.text.replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 600))
+					: ''
 				const text = [
 					tag,
-					`От: ${m.from} <${m.fromAddress}>`,
-					`Тема: ${m.subject}`,
-					m.text ? `\n${m.text.slice(0, 800)}` : '',
+					`От: ${esc(m.from)} &lt;${esc(m.fromAddress)}&gt;`,
+					`Тема: ${esc(m.subject)}`,
+					body ? `\n${body}` : '',
 				].join('\n')
 				await this.telegram.sendAdminNotification(text, 360)
 			}
@@ -156,5 +163,23 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 		}
 
 		return messages.reverse()
+	}
+
+	async replyToEmail(to: string, subject: string, text: string) {
+		const transport = nodemailer.createTransport({
+			host: this.config.get('SMTP_HOST') || 'smtp.beget.com',
+			port: Number(this.config.get('SMTP_PORT') || 2525),
+			secure: false,
+			auth: {
+				user: this.config.get('SMTP_USER') || 'info@skyseo.site',
+				pass: this.config.get('SMTP_PASS') || '',
+			},
+		})
+		await transport.sendMail({
+			from: this.config.get('SMTP_FROM') || 'info@skyseo.site',
+			to,
+			subject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
+			text,
+		})
 	}
 }
