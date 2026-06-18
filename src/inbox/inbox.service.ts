@@ -118,8 +118,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 				for await (const msg of client.fetch(`${start}:*`, {
 					uid: true,
 					envelope: true,
-					bodyStructure: true,
-					source: false,
+					source: true,
 				})) {
 					try {
 						const from = msg.envelope?.from?.[0]
@@ -128,14 +127,15 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 						const subject = msg.envelope?.subject ?? '(без темы)'
 						const date = msg.envelope?.date?.toISOString() ?? ''
 
-						// Получаем текст письма
 						let text = ''
-						try {
-							const { content } = await client.download(String(msg.seq), '1')
+						if (msg.source) {
 							const chunks: Buffer[] = []
-							for await (const chunk of content) chunks.push(chunk)
-							text = Buffer.concat(chunks).toString('utf-8').slice(0, 2000)
-						} catch {}
+							for await (const chunk of msg.source as unknown as AsyncIterable<Buffer>) chunks.push(chunk)
+							const raw = Buffer.concat(chunks).toString('utf-8')
+							// Берём тело после заголовков
+							const bodyStart = raw.indexOf('\r\n\r\n')
+							text = (bodyStart >= 0 ? raw.slice(bodyStart + 4) : raw).slice(0, 2000)
+						}
 
 						const lead = emailToLead.get(fromAddr)
 						messages.push({
