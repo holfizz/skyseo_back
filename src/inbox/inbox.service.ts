@@ -61,10 +61,12 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private makeClient() {
+		const port = Number(this.config.get('IMAP_PORT') || 993)
+		const secure = port === 993
 		return new ImapFlow({
 			host: this.config.get('IMAP_HOST') || 'imap.beget.com',
-			port: Number(this.config.get('IMAP_PORT') || 993),
-			secure: true,
+			port,
+			secure,
 			auth: {
 				user: this.config.get('SMTP_USER') || 'info@skyseo.site',
 				pass: this.config.get('SMTP_PASS') || '',
