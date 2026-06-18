@@ -29,9 +29,12 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 	) {}
 
 	onModuleInit() {
-		// Первый запуск через 30 сек после старта, потом каждые 5 мин
-		setTimeout(() => {
-			this.checkNewAndNotify()
+		// При старте инициализируем lastNotifiedUid текущим максимумом — не слать старые письма
+		setTimeout(async () => {
+			try {
+				const msgs = await this.fetchInbox(10)
+				if (msgs.length > 0) this.lastNotifiedUid = Math.max(...msgs.map(m => m.uid))
+			} catch {}
 			this.timer = setInterval(() => this.checkNewAndNotify(), 5 * 60 * 1000)
 		}, 30_000)
 	}
@@ -40,10 +43,17 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 		if (this.timer) clearInterval(this.timer)
 	}
 
+	private isBounce(m: InboxMessage) {
+		const from = m.fromAddress.toLowerCase()
+		const subj = m.subject.toLowerCase()
+		return from.includes('mailer-daemon') || from.includes('postmaster') ||
+			subj.includes('delivery') || subj.includes('undelivered') || subj.includes('returned mail')
+	}
+
 	private async checkNewAndNotify() {
 		try {
 			const msgs = await this.fetchInbox(30)
-			const newMsgs = msgs.filter(m => m.uid > this.lastNotifiedUid)
+			const newMsgs = msgs.filter(m => m.uid > this.lastNotifiedUid && !this.isBounce(m))
 			if (newMsgs.length === 0) return
 
 			this.lastNotifiedUid = Math.max(...newMsgs.map(m => m.uid))
@@ -162,7 +172,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			await client.logout().catch(() => {})
 		}
 
-		return messages.reverse()
+		return messages.reverse().filter(m => !this.isBounce(m))
 	}
 
 	async replyToEmail(to: string, subject: string, text: string) {
