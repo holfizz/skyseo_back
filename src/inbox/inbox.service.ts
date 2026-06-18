@@ -71,10 +71,23 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			},
 			logger: false,
 			tls: { rejectUnauthorized: false },
+			connectionTimeout: 10000,
+			socketTimeout: 15000,
 		})
 	}
 
 	async fetchInbox(limit = 50): Promise<InboxMessage[]> {
+		const client = this.makeClient()
+		const timer = setTimeout(() => client.close(), 15000)
+		try {
+			return await this._fetchInbox(limit, client)
+		} finally {
+			clearTimeout(timer)
+		}
+	}
+
+	private async _fetchInbox(limit = 50, client?: ReturnType<InboxService['makeClient']>): Promise<InboxMessage[]> {
+		if (!client) client = this.makeClient()
 		// Получаем все email-адреса из outreach_leads для матчинга
 		const leads = await this.prisma.outreachLead.findMany({
 			select: { id: true, domain: true, email: true },
@@ -85,7 +98,6 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			if (l.email) emailToLead.set(l.email.toLowerCase().trim(), { id: l.id, domain: l.domain })
 		}
 
-		const client = this.makeClient()
 		const messages: InboxMessage[] = []
 
 		try {
