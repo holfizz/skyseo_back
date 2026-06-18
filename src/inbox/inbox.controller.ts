@@ -12,7 +12,8 @@ export class InboxController {
 	async fetch(@Query('limit') limit?: string) {
 		try {
 			return await this.svc.fetchInbox(limit ? Number(limit) : 50)
-		} catch {
+		} catch (e) {
+			console.error('[Inbox] fetchInbox error:', e?.message)
 			return []
 		}
 	}
