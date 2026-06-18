@@ -129,6 +129,11 @@ export class OutreachService {
 		return this.prisma.outreachLead.delete({ where: { id } })
 	}
 
+	async bulkDeleteLeads(ids: string[]) {
+		const { count } = await this.prisma.outreachLead.deleteMany({ where: { id: { in: ids } } })
+		return count
+	}
+
 	async getConversions() {
 		// Матчим outreach_leads.domain с websites.url по вхождению домена
 		// Например: lead.domain = "fastweb.ru", website.url = "https://fastweb.ru" → совпадение

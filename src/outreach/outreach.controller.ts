@@ -74,4 +74,10 @@ export class OutreachController {
 	deleteLead(@Param('id') id: string) {
 		return this.svc.deleteLead(id)
 	}
+
+	@Post('bulk-delete')
+	bulkDelete(@Body('ids') ids: string[]) {
+		if (!Array.isArray(ids) || ids.length === 0) return { count: 0 }
+		return this.svc.bulkDeleteLeads(ids).then(count => ({ count }))
+	}
 }
