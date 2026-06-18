@@ -75,7 +75,9 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			tls: { rejectUnauthorized: false },
 			connectionTimeout: 10000,
 			socketTimeout: 15000,
-		})
+			// Отключаем STARTTLS для туннеля (plain TCP → TLS на хосте)
+			disableCompression: true,
+		} as any)
 	}
 
 	async fetchInbox(limit = 50): Promise<InboxMessage[]> {
@@ -103,7 +105,9 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 		const messages: InboxMessage[] = []
 
 		try {
+			console.log('[Inbox] connecting...')
 			await client.connect()
+			console.log('[Inbox] connected, getting lock...')
 			const lock = await client.getMailboxLock('INBOX')
 			try {
 				const status = await client.status('INBOX', { messages: true })
