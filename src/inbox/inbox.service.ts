@@ -130,10 +130,8 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
 						let text = ''
 						if (msg.source) {
-							const chunks: Buffer[] = []
-							for await (const chunk of msg.source as unknown as AsyncIterable<Buffer>) chunks.push(chunk)
-							const raw = Buffer.concat(chunks).toString('utf-8')
-							// Берём тело после заголовков
+							const src = msg.source as unknown as Buffer
+							const raw = src.toString('utf-8')
 							const bodyStart = raw.indexOf('\r\n\r\n')
 							text = (bodyStart >= 0 ? raw.slice(bodyStart + 4) : raw).slice(0, 2000)
 						}
