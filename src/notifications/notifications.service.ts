@@ -533,6 +533,10 @@ export class NotificationsService {
 		await this.sendEmail(email, subject, html)
 	}
 
+	async sendRawEmail(to: string, subject: string, text: string) {
+		return this.sendEmail(to, subject, `<pre style="font-family:inherit;white-space:pre-wrap;font-size:14px">${text}</pre>`)
+	}
+
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
 			if (this.useSmtp && this.smtpTransporter) {

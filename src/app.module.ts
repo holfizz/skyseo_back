@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler'
 import { AdminModule } from './admin/admin.module'
+import { OutreachModule } from './outreach/outreach.module'
+import { InboxModule } from './inbox/inbox.module'
 import { AiModule } from './ai/ai.module'
 import { AnalyticsModule } from './analytics/analytics.module'
 import { AppConfigModule } from './app-config/app-config.module'
@@ -41,6 +43,8 @@ import { WebsitesModule } from './websites/websites.module'
 		TelegramModule.forRoot(),
 		NotificationsModule,
 		AdminModule,
+		OutreachModule,
+		InboxModule,
 		AnalyticsModule,
 		UpdatesModule,
 		AppVersionModule,

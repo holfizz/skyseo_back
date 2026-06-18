@@ -504,3 +504,38 @@ enum Platform {
   WIN32_X64 // win32-x64
   WIN32_IA32 // win32-ia32
 }
+
+// Аутрич-лиды из Яндекс-парсера
+enum OutreachStatus {
+  NEW        // новые
+  CONTACTED  // написал
+  REPLIED    // ответил
+  DEMO       // демо
+  INSTALLED  // установил
+  PAID       // оплатил
+  DRAFT      // нет ответа 7 дней
+}
+
+model OutreachLead {
+  id             String         @id @default(uuid())
+  domain         String
+  contact        String?        // главный контакт (телефон / tg / email)
+  channel        String?        // WhatsApp / Telegram / Email / —
+  phone          String?
+  whatsapp       String?
+  telegram       String?
+  email          String?
+  keywords       String?        // список запросов и позиций
+  message        String         @db.Text
+  status         OutreachStatus @default(NEW)
+  contactedAt    DateTime?      // когда отправили
+  contactedVia   String?        // email / tg
+  emailsSent     Int            @default(0)
+  tgLinkClicked  Int            @default(0)
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([status])
+  @@map("outreach_leads")
+}
