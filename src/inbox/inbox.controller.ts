@@ -27,4 +27,14 @@ export class InboxController {
 			throw new HttpException(e?.message || 'SMTP error', 400)
 		}
 	}
+
+	@Post('ai-reply')
+	async aiReply(@Body() body: { fromAddress: string; fromName: string; subject: string; text: string; isFromOutreach: boolean; outreachDomain?: string }) {
+		try {
+			const text = await this.svc.generateAiReply(body)
+			return { text }
+		} catch (e) {
+			throw new HttpException(e?.message || 'AI error', 400)
+		}
+	}
 }

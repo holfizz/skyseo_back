@@ -2,6 +2,7 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { ImapFlow } from 'imapflow'
 import * as nodemailer from 'nodemailer'
+import OpenAI from 'openai'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
@@ -173,6 +174,50 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 		}
 
 		return messages.reverse().filter(m => !this.isBounce(m))
+	}
+
+	async generateAiReply(data: {
+		fromAddress: string
+		fromName: string
+		subject: string
+		text: string
+		isFromOutreach: boolean
+		outreachDomain?: string
+	}): Promise<string> {
+		const user = await this.prisma.user.findFirst({
+			where: { email: data.fromAddress.toLowerCase().trim() },
+			select: { id: true, email: true, balance: true, websites: { select: { url: true } } },
+		})
+
+		let systemContext: string
+		if (user) {
+			systemContext = `Данные о пользователе в системе SkySEO:\n- Email: ${user.email}\n- Баланс: ${user.balance} баллов\n- Сайтов добавлено: ${user.websites.length}${user.websites.length > 0 ? '\n- Сайты: ' + user.websites.map(w => w.url).join(', ') : ''}`
+		} else {
+			systemContext = 'Пользователь НЕ зарегистрирован в системе SkySEO. Упомяни, что можно попробовать бесплатно на skyseo.site.'
+		}
+
+		const outreachNote = data.isFromOutreach && data.outreachDomain
+			? `Это лид из нашей рассылки (домен: ${data.outreachDomain}).`
+			: ''
+
+		const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+		const response = await openai.chat.completions.create({
+			model: 'gpt-4o-mini',
+			messages: [
+				{
+					role: 'system',
+					content: `Ты — менеджер SEO-сервиса SkySEO. Помогаешь сайтам продвигаться в Яндексе и Google через поведенческие факторы. ${outreachNote}\n${systemContext}\n\nНапиши вежливый, живой ответ на письмо. Если есть данные о пользователе — используй их (баланс, сайты). Если нет — коротко пригласи зарегистрироваться. До 120 слов, без лишних формальностей.`,
+				},
+				{
+					role: 'user',
+					content: `От: ${data.fromName} <${data.fromAddress}>\nТема: ${data.subject}\n\n${(data.text || '').slice(0, 1000)}`,
+				},
+			],
+			max_tokens: 400,
+			temperature: 0.7,
+		})
+
+		return response.choices[0]?.message?.content?.trim() || ''
 	}
 
 	async replyToEmail(to: string, subject: string, text: string) {
