@@ -29,6 +29,8 @@ services:
       METRIKA_COUNTER_ID: ${METRIKA_COUNTER_ID}
       METRIKA_TOKEN: ${METRIKA_TOKEN}
       FRONTEND_URL: ${FRONTEND_URL}
+      IMAP_HOST: ${IMAP_HOST:-imap.beget.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
       PORT: 4000
       NODE_ENV: production
     ports:
