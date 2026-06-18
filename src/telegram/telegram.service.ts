@@ -472,6 +472,8 @@ export class TelegramService implements OnModuleDestroy {
 			newTasksToday,
 			paymentsToday,
 			revenueToday,
+			uninstalledToday,
+			inactiveToday,
 		] = await Promise.all([
 			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
@@ -489,6 +491,8 @@ export class TelegramService implements OnModuleDestroy {
 			this.prisma.task.count({ where: { createdAt: { gte: startOfToday } } }),
 			this.prisma.payment.count({ where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
+			this.prisma.user.count({ where: { appStatus: 'UNINSTALLED', lastSeenAt: { gte: startOfToday } } }),
+			this.prisma.user.count({ where: { appStatus: { in: ['ACTIVE', 'REINSTALLED'] }, executions: { none: { createdAt: { gte: startOfToday } } } } }),
 		])
 
 		const activePCsToday = activePCsTodaySet.size
@@ -505,7 +509,9 @@ export class TelegramService implements OnModuleDestroy {
 		message += `👥 <b>Аудитория:</b>\n`
 		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
 		message += `├ Активных ПК сегодня: <b>${activePCsToday}</b>\n`
-		message += `└ 3 дня подряд: <b>${streak3}</b>\n\n`
+		message += `├ 3 дня подряд: <b>${streak3}</b>\n`
+		if (uninstalledToday > 0) message += `├ 🗑 Удалили сегодня: <b>${uninstalledToday}</b>\n`
+		message += `└ 😴 Не использовали: <b>${inactiveToday}</b>\n\n`
 
 		if (newTasksToday > 0) message += `📋 <b>Новых заданий:</b> ${newTasksToday}\n\n`
 
@@ -563,6 +569,8 @@ export class TelegramService implements OnModuleDestroy {
 			spentToday,
 			paymentsToday,
 			revenueToday,
+			uninstalledToday,
+			inactiveToday,
 		] = await Promise.all([
 			this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
@@ -579,6 +587,8 @@ export class TelegramService implements OnModuleDestroy {
 			this.prisma.execution.aggregate({ _sum: { pointsSpent: true }, where: { createdAt: { gte: startOfToday }, status: 'COMPLETED' } }),
 			this.prisma.payment.count({ where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
 			this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: 'SUCCEEDED', paidAt: { gte: startOfToday } } }),
+			this.prisma.user.count({ where: { appStatus: 'UNINSTALLED', lastSeenAt: { gte: startOfToday } } }),
+			this.prisma.user.count({ where: { appStatus: { in: ['ACTIVE', 'REINSTALLED'] }, executions: { none: { createdAt: { gte: startOfToday } } } } }),
 		])
 
 		const activePCsToday = activePCsTodaySet2.size
@@ -595,7 +605,9 @@ export class TelegramService implements OnModuleDestroy {
 		message += `👥 <b>Аудитория:</b>\n`
 		if (newUsersToday > 0) message += `├ Новых: <b>${newUsersToday}</b>\n`
 		message += `├ Активных ПК сегодня: <b>${activePCsToday}</b>\n`
-		message += `└ 3 дня подряд: <b>${streak3}</b>\n\n`
+		message += `├ 3 дня подряд: <b>${streak3}</b>\n`
+		if (uninstalledToday > 0) message += `├ 🗑 Удалили сегодня: <b>${uninstalledToday}</b>\n`
+		message += `└ 😴 Не использовали: <b>${inactiveToday}</b>\n\n`
 
 		message += `⚙️ <b>Задачи (${totalToday} всего, ${foundPct}% успех):</b>\n`
 		if (execFound > 0)       message += `├ ✅ Найдено в топ: <b>${execFound}</b>\n`

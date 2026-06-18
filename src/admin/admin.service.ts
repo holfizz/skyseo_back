@@ -129,11 +129,15 @@ export class AdminService {
 		const startOfYesterday = new Date(startOfToday.getTime() - 86400000)
 		const startOfDayBefore = new Date(startOfToday.getTime() - 2 * 86400000)
 
-		const [activeUsersNow, todaySet, yesterdaySet, dayBeforeSet] = await Promise.all([
+		const [activeUsersNow, todaySet, yesterdaySet, dayBeforeSet, uninstalledToday, inactiveToday] = await Promise.all([
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: fiveMinutesAgo } } }),
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfYesterday, lt: startOfToday } } }).then(r => new Set(r.map(x => x.executorId))),
 			this.prisma.execution.groupBy({ by: ['executorId'], where: { createdAt: { gte: startOfDayBefore, lt: startOfYesterday } } }).then(r => new Set(r.map(x => x.executorId))),
+			// Удалили сегодня: lastSeenAt в рамках сегодня + appStatus = UNINSTALLED
+			this.prisma.user.count({ where: { appStatus: 'UNINSTALLED', lastSeenAt: { gte: startOfToday } } }),
+			// Не использовали сегодня (appStatus != UNINSTALLED, но нет выполнений сегодня)
+			this.prisma.user.count({ where: { appStatus: { in: ['ACTIVE', 'REINSTALLED'] }, executions: { none: { createdAt: { gte: startOfToday } } } } }),
 		])
 		const streak3 = [...todaySet].filter(id => yesterdaySet.has(id) && dayBeforeSet.has(id)).length
 
@@ -153,6 +157,8 @@ export class AdminService {
 				activeToday: todaySet.size,
 				activeNow: activeUsersNow.length,
 				streak3,
+				uninstalledToday,
+				inactiveToday,
 			},
 			websites: {
 				total: totalWebsites,
@@ -956,6 +962,19 @@ export class AdminService {
 			LIMIT 30
 		`
 
+		// Удаления по дням (lastSeenAt = последний сигнал с ПК для UNINSTALLED)
+		const uninstallsByDay = await this.prisma.$queryRaw<Array<{ date: string; count: bigint }>>`
+			SELECT
+				("lastSeenAt" AT TIME ZONE 'Europe/Moscow')::date AS date,
+				COUNT(*) AS count
+			FROM users
+			WHERE "appStatus" = 'UNINSTALLED'
+			  AND "lastSeenAt" >= ${from} AND "lastSeenAt" <= ${to}
+			GROUP BY ("lastSeenAt" AT TIME ZONE 'Europe/Moscow')::date
+			ORDER BY date DESC
+			LIMIT 30
+		`
+
 		// Позиции — улучшились/ухудшились
 		const latestPositions = await this.prisma.$queryRaw<Array<{
 			taskId: string; yandex_curr: number | null; yandex_prev: number | null;
@@ -1032,6 +1051,9 @@ export class AdminService {
 			},
 			nodes: {
 				byDay: byDay.map(r => ({ date: r.date, nodes: Number(r.active_nodes) })),
+			},
+			uninstalls: {
+				byDay: uninstallsByDay.map(r => ({ date: String(r.date), count: Number(r.count) })),
 			},
 			economy: {
 				totalEarned: totalEarned._sum.amount ?? 0,
