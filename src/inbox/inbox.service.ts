@@ -112,6 +112,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			try {
 				const status = await client.status('INBOX', { messages: true })
 				const total = status.messages ?? 0
+				console.log('[Inbox] total messages:', total, 'limit:', limit)
 				if (total === 0) return []
 
 				const start = Math.max(1, total - limit + 1)
@@ -158,6 +159,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			await client.logout().catch(() => {})
 		}
 
+		console.log('[Inbox] fetched:', messages.length, 'messages')
 		return messages.reverse()
 	}
 }
