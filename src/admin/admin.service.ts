@@ -250,20 +250,23 @@ export class AdminService {
 			this.prisma.website.count({ where }),
 		])
 		const siteIds = sites.map(s => s.id)
-		const [execAll, execCompleted, execFailed] = await Promise.all([
+		const [execAll, execCompleted, execFailed, firstTasks] = await Promise.all([
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds } }, _count: { id: true } }),
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'COMPLETED' }, _count: { id: true } }),
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'FAILED' }, _count: { id: true } }),
+			this.prisma.task.findMany({ where: { websiteId: { in: siteIds } }, select: { id: true, websiteId: true }, distinct: ['websiteId'], orderBy: { createdAt: 'asc' } }),
 		])
 		const totalMap = new Map(execAll.map(e => [e.websiteId, e._count.id]))
 		const completedMap = new Map(execCompleted.map(e => [e.websiteId, e._count.id]))
 		const failedMap = new Map(execFailed.map(e => [e.websiteId, e._count.id]))
+		const firstTaskMap = new Map(firstTasks.map(t => [t.websiteId, t.id]))
 		return {
 			sites: sites.map(s => ({
 				...s,
 				totalExecutions: totalMap.get(s.id) ?? 0,
 				completedExecutions: completedMap.get(s.id) ?? 0,
 				failedExecutions: failedMap.get(s.id) ?? 0,
+				firstTaskId: firstTaskMap.get(s.id) ?? null,
 			})),
 			total,
 			offset,
