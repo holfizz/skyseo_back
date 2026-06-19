@@ -20,7 +20,6 @@ export class OutreachController {
 		const wb = XLSX.read(file.buffer, { type: 'buffer' })
 		const ws = wb.Sheets[wb.SheetNames[0]]
 		const raw: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' })
-		// маппинг колонок из messages.xlsx
 		const rows = raw.map(r => ({
 			domain:   r['Домен']             || r['domain']   || '',
 			contact:  r['Главный контакт']   || r['contact']  || '',
@@ -45,6 +44,27 @@ export class OutreachController {
 		return this.svc.getStats()
 	}
 
+	@Get('conversions')
+	getConversions() {
+		return this.svc.getConversions()
+	}
+
+	@Post('move-stale')
+	moveStale() {
+		return this.svc.moveStaleToDraft()
+	}
+
+	@Post('bulk-delete')
+	bulkDelete(@Body('ids') ids: string[]) {
+		if (!Array.isArray(ids) || ids.length === 0) return { count: 0 }
+		return this.svc.bulkDeleteLeads(ids).then(count => ({ count }))
+	}
+
+	@Get(':id')
+	getLead(@Param('id') id: string) {
+		return this.svc.getLeadById(id)
+	}
+
 	@Patch(':id/status')
 	setStatus(@Param('id') id: string, @Body() body: { status: OutreachStatus; notes?: string }) {
 		return this.svc.setStatus(id, body.status, body.notes)
@@ -60,24 +80,8 @@ export class OutreachController {
 		return this.svc.trackTgClick(id)
 	}
 
-	@Get('conversions')
-	getConversions() {
-		return this.svc.getConversions()
-	}
-
-	@Post('move-stale')
-	moveStale() {
-		return this.svc.moveStaleToDraft()
-	}
-
 	@Delete(':id')
 	deleteLead(@Param('id') id: string) {
 		return this.svc.deleteLead(id)
-	}
-
-	@Post('bulk-delete')
-	bulkDelete(@Body('ids') ids: string[]) {
-		if (!Array.isArray(ids) || ids.length === 0) return { count: 0 }
-		return this.svc.bulkDeleteLeads(ids).then(count => ({ count }))
 	}
 }

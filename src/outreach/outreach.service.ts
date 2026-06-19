@@ -36,6 +36,18 @@ export class OutreachService {
 		return { created, skipped }
 	}
 
+	async getLeadById(id: string) {
+		const lead = await this.prisma.outreachLead.findUniqueOrThrow({ where: { id } })
+		// ищем юзера в системе по email
+		const user = lead.email
+			? await this.prisma.user.findFirst({
+				where: { email: lead.email.toLowerCase().trim() },
+				select: { id: true, email: true, balance: true, createdAt: true, websites: { select: { id: true, url: true, name: true, isActive: true } } },
+			}).catch(() => null)
+			: null
+		return { ...lead, systemUser: user ?? null }
+	}
+
 	async getLeads(status?: OutreachStatus, search?: string) {
 		const where: any = {}
 		if (status) where.status = status
@@ -97,11 +109,14 @@ export class OutreachService {
 	}
 
 	async getStats() {
-		const [total, byStatus, emailsSent, tgClicked] = await Promise.all([
+		const todayStart = new Date()
+		todayStart.setHours(0, 0, 0, 0)
+		const [total, byStatus, emailsSent, tgClicked, sentToday] = await Promise.all([
 			this.prisma.outreachLead.count(),
 			this.prisma.outreachLead.groupBy({ by: ['status'], _count: { _all: true } }),
 			this.prisma.outreachLead.aggregate({ _sum: { emailsSent: true } }),
 			this.prisma.outreachLead.aggregate({ _sum: { tgLinkClicked: true } }),
+			this.prisma.outreachLead.count({ where: { contactedAt: { gte: todayStart }, contactedVia: 'email' } }),
 		])
 		const counts: Record<string, number> = {}
 		for (const row of byStatus) counts[row.status] = row._count._all
@@ -110,6 +125,7 @@ export class OutreachService {
 			byStatus: counts,
 			emailsSent: emailsSent._sum.emailsSent ?? 0,
 			tgClicked: tgClicked._sum.tgLinkClicked ?? 0,
+			sentToday,
 		}
 	}
 

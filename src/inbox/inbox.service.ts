@@ -13,6 +13,7 @@ export interface InboxMessage {
 	subject: string
 	date: string
 	text: string
+	isHtml: boolean
 	isFromOutreach: boolean
 	outreachDomain?: string
 	outreachLeadId?: string
@@ -51,6 +52,52 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 			subj.includes('delivery') || subj.includes('undelivered') || subj.includes('returned mail')
 	}
 
+	private decodePart(raw: string, contentType: 'text/plain' | 'text/html'): string {
+		const partMatch = raw.match(
+			new RegExp(`Content-Type:\\s*${contentType.replace('/', '\\/')}[^\\r\\n]*\\r?\\n(?:[^\\r\\n]+\\r?\\n)*?\\r?\\n([\\s\\S]*?)(?:\\r?\\n--|$)`, 'i'),
+		)
+		if (!partMatch) return ''
+		const encSearch = raw.slice(raw.search(new RegExp(`Content-Type:\\s*${contentType.replace('/', '\\/')}`, 'i')))
+		const encMatch = encSearch.match(/Content-Transfer-Encoding:\s*(\S+)/i)
+		const enc = encMatch?.[1]?.toLowerCase() ?? 'plain'
+		const body = partMatch[1].trim()
+		if (enc === 'base64') {
+			try { return Buffer.from(body.replace(/\s/g, ''), 'base64').toString('utf-8') } catch { return body }
+		}
+		if (enc === 'quoted-printable') {
+			return body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+		}
+		return body
+	}
+
+	private decodeMimeText(raw: string): { plain: string; html: string; isHtml: boolean } {
+		// multipart: find text/plain and text/html parts
+		const hasPlainPart = /Content-Type:\s*text\/plain/i.test(raw)
+		const hasHtmlPart = /Content-Type:\s*text\/html/i.test(raw)
+
+		if (hasPlainPart || hasHtmlPart) {
+			const plain = hasPlainPart ? this.decodePart(raw, 'text/plain') : ''
+			const html = hasHtmlPart ? this.decodePart(raw, 'text/html') : ''
+			return { plain, html, isHtml: !plain && !!html }
+		}
+
+		// single-part: headers + blank line + body
+		const encMatch = raw.match(/Content-Transfer-Encoding:\s*(\S+)/i)
+		const enc = encMatch?.[1]?.toLowerCase() ?? 'plain'
+		const bodyStart = raw.indexOf('\r\n\r\n')
+		const body = (bodyStart >= 0 ? raw.slice(bodyStart + 4) : raw).trim()
+
+		let decoded = body
+		if (enc === 'base64') {
+			try { decoded = Buffer.from(body.replace(/\s/g, ''), 'base64').toString('utf-8') } catch {}
+		} else if (enc === 'quoted-printable') {
+			decoded = body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+		}
+
+		const looksHtml = /^\s*<!?[Dd][Oo][Cc][Tt][Yy][Pp][Ee]|^\s*<[Hh][Tt][Mm][Ll]/m.test(decoded)
+		return looksHtml ? { plain: '', html: decoded, isHtml: true } : { plain: decoded, html: '', isHtml: false }
+	}
+
 	private async checkNewAndNotify() {
 		try {
 			const msgs = await this.fetchInbox(30)
@@ -61,19 +108,43 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 
 			for (const m of newMsgs) {
 				const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+				const bodyText = (m.isHtml ? '' : (m.text || '')).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim()
+
+				// ищем юзера в системе по email
+				const sysUser = await this.prisma.user.findFirst({
+					where: { email: m.fromAddress.toLowerCase().trim() },
+					select: { id: true, balance: true, websites: { select: { url: true } } },
+				}).catch(() => null)
+
 				const tag = m.isFromOutreach
-					? `📬 <b>Ответ от лида</b> (${esc(m.outreachDomain ?? '')})`
+					? `📬 <b>Ответ от лида</b> · ${esc(m.outreachDomain ?? '')}`
 					: '📧 <b>Новое письмо</b>'
-				const body = m.text
-					? esc(m.text.replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 600))
+
+				const sysLine = sysUser
+					? `👤 В системе: баланс ${sysUser.balance} · сайтов ${sysUser.websites.length}`
+					: '👤 Не зарегистрирован'
+
+				const leadLine = m.outreachLeadId
+					? `🔗 <a href="https://i.skyseo.site/holfizz/outreach/${m.outreachLeadId}">открыть лид</a>`
 					: ''
-				const text = [
+
+				const inboxLink = `🔗 <a href="https://i.skyseo.site/holfizz/inbox">открыть письмо</a>`
+
+				const bodyLine = m.isHtml
+					? `(HTML-письмо — ${inboxLink})`
+					: bodyText ? esc(bodyText.slice(0, 500)) : ''
+
+				const parts = [
 					tag,
 					`От: ${esc(m.from)} &lt;${esc(m.fromAddress)}&gt;`,
 					`Тема: ${esc(m.subject)}`,
-					body ? `\n${body}` : '',
-				].join('\n')
-				await this.telegram.sendAdminNotification(text, 360)
+					sysLine,
+					leadLine,
+					bodyLine ? `\n${bodyLine}` : '',
+				].filter(Boolean)
+
+				await this.telegram.sendAdminNotification(parts.join('\n'), 360)
 			}
 		} catch {}
 	}
@@ -145,11 +216,13 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 						const date = msg.envelope?.date?.toISOString() ?? ''
 
 						let text = ''
+						let isHtml = false
 						if (msg.source) {
 							const src = msg.source as unknown as Buffer
-							const raw = src.toString('utf-8')
-							const bodyStart = raw.indexOf('\r\n\r\n')
-							text = (bodyStart >= 0 ? raw.slice(bodyStart + 4) : raw).slice(0, 2000)
+							const raw = src.toString('utf-8').slice(0, 30000)
+							const decoded = this.decodeMimeText(raw)
+							isHtml = decoded.isHtml
+							text = isHtml ? decoded.html.slice(0, 10000) : decoded.plain.slice(0, 5000)
 						}
 
 						const lead = emailToLead.get(fromAddr)
@@ -160,6 +233,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 							subject,
 							date,
 							text,
+							isHtml,
 							isFromOutreach: !!lead,
 							outreachDomain: lead?.domain,
 							outreachLeadId: lead?.id,
