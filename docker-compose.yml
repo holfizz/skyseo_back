@@ -1,6 +1,16 @@
 version: "3.8"
 
 services:
+  imap-tunnel:
+    image: alpine/socat
+    container_name: imap_tunnel
+    restart: always
+    command: tcp-listen:10993,fork,reuseaddr openssl:imap.beget.com:993,verify=0
+    ports:
+      - "10993:10993"
+    networks:
+      - skyseo_network
+
   backend:
     build:
       context: .

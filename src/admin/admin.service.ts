@@ -1139,6 +1139,12 @@ export class AdminService {
 				completedAt: true,
 				task: { select: { keyword: true, website: { select: { url: true } } } },
 				executor: { select: { id: true, email: true, appVersion: true } },
+				events: {
+					where: { type: 'failure' },
+					select: { details: true, stage: true, createdAt: true },
+					orderBy: { createdAt: 'desc' },
+					take: 1,
+				},
 			},
 			orderBy: { createdAt: 'desc' },
 			take: limit,

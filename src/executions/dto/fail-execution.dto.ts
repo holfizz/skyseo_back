@@ -1,4 +1,4 @@
-import { IsBoolean, IsEnum, IsInt, IsOptional, Min } from 'class-validator'
+import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator'
 
 export enum ExecutionFailureReasonDto {
 	CAPTCHA = 'CAPTCHA',
@@ -28,4 +28,8 @@ export class FailExecutionDto {
 	@IsOptional()
 	@IsBoolean()
 	directNavigationUsed?: boolean
+
+	@IsOptional()
+	@IsString()
+	errorMessage?: string
 }

@@ -577,6 +577,19 @@ export class ExecutionsService {
 			`[ExecutionsService] Execution ${executionId} FAILED (${dto.failureReason}), task ${execution.taskId} returned to PENDING`,
 		)
 
+		if (dto.errorMessage) {
+			await this.prisma.executionEvent.create({
+				data: {
+					executionId,
+					taskId: execution.taskId,
+					executorId: execution.executorId,
+					type: 'failure',
+					stage: dto.failureReason,
+					details: { errorMessage: dto.errorMessage },
+				},
+			}).catch(() => {})
+		}
+
 		// Авто-ограничение ключевика: 10 подряд NOT_IN_SERP и ни разу не найден.
 		// НО: новые аккаунты листают только до стр. 3 (дни 1-6) и до стр. 4 (дни 7-13).
 		// Стр. 5 начинается с 14-го дня. NOT_IN_SERP от молодого аккаунта — не значит что
