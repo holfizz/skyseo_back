@@ -323,8 +323,11 @@ export class TasksService {
 		// IN_PROGRESS не старше 2ч — учитываем активные задачи в дневном cap,
 		// чтобы при всплеске N исполнителей не превысить rampedDailyCap до COMPLETED.
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
+		// Минимальный зазор для подавления кластеризации визитов (защита от капчи).
+		// Используем то же окно: хватит одной записи IN_PROGRESS/COMPLETED за последние 2ч.
+		const recentVisitCutoff = twoHoursAgo
 
-		const [todayCountsBySite, foundCountsBySite, lastVisitBySite] = await Promise.all([
+		const [todayCountsBySite, foundCountsBySite, lastVisitBySite, recentVisitSiteRows] = await Promise.all([
 			this.prisma.execution.groupBy({
 				by: ['websiteId'],
 				where: {
@@ -353,6 +356,19 @@ export class TasksService {
 				where: { websiteId: { in: eligibleSiteIds }, status: 'COMPLETED' },
 				_max: { completedAt: true },
 			}),
+			// Сайты, у которых есть визит от ЛЮБОГО ПК за последние 2ч — исключаем из выдачи,
+			// чтобы не кластеризовать визиты (Яндекс видит несколько разных IP за минуты → капча).
+			this.prisma.execution.findMany({
+				where: {
+					websiteId: { in: eligibleSiteIds },
+					OR: [
+						{ status: 'COMPLETED', completedAt: { gte: recentVisitCutoff } },
+						{ status: 'IN_PROGRESS', createdAt: { gte: recentVisitCutoff } },
+					],
+				},
+				select: { websiteId: true },
+				distinct: ['websiteId'],
+			}),
 		])
 		const todayCountBySite = new Map(
 			todayCountsBySite.map(c => [c.websiteId, c._count._all]),
@@ -363,6 +379,7 @@ export class TasksService {
 		const lastVisitMap = new Map(
 			lastVisitBySite.map(r => [r.websiteId, r._max.completedAt]),
 		)
+		const recentlyVisitedSites = new Set(recentVisitSiteRows.map(r => r.websiteId))
 
 		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
 		const allSiteTasks = await this.prisma.task.findMany({
@@ -425,6 +442,7 @@ export class TasksService {
 			)
 			const todayOnSite = todayCountBySite.get(site.id) ?? 0
 			if (todayOnSite >= rampedCap) continue // сайт упёрся в дневной cap
+			if (recentlyVisitedSites.has(site.id)) continue // посещали < 2ч назад — ждём паузу
 			const boost = (site.user as any)?.priorityBoost ?? 1
 			const lastVisited = lastVisitMap.get(site.id)
 			const daysSinceLastVisit = lastVisited
