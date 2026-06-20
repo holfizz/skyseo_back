@@ -383,6 +383,11 @@ export class AdminController {
 		return { token, message: 'Сохраните токен в METRIKA_TOKEN в .env и перезапустите сервер' }
 	}
 
+	@Get('hourly-activity')
+	async getHourlyActivity() {
+		return this.adminService.getHourlyActivity()
+	}
+
 	@Get('debug/executor/:id')
 	async debugExecutor(@Param('id') id: string) {
 		return this.adminService.debugExecutorAvailability(id)

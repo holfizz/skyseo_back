@@ -1409,6 +1409,41 @@ export class AdminService {
 		return this.tasksService.debugAvailability(executorId)
 	}
 
+	async getHourlyActivity() {
+		const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+		const MSK = 3 * 60 * 60 * 1000 // UTC+3
+
+		const [execRows, regRows] = await Promise.all([
+			this.prisma.execution.findMany({
+				where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
+				select: { completedAt: true },
+			}),
+			this.prisma.user.findMany({
+				where: { createdAt: { gte: weekAgo } },
+				select: { createdAt: true },
+			}),
+		])
+
+		const execByHour = new Array(24).fill(0)
+		const regByHour = new Array(24).fill(0)
+
+		for (const e of execRows) {
+			if (!e.completedAt) continue
+			const h = Math.floor((e.completedAt.getTime() + MSK) / (60 * 60 * 1000)) % 24
+			execByHour[h]++
+		}
+		for (const u of regRows) {
+			const h = Math.floor((u.createdAt.getTime() + MSK) / (60 * 60 * 1000)) % 24
+			regByHour[h]++
+		}
+
+		return Array.from({ length: 24 }, (_, h) => ({
+			hour: h,
+			executions: Math.round(execByHour[h] / 7), // среднее в день за 7 дней
+			registrations: regByHour[h],
+		}))
+	}
+
 	async enableAutoMaxVisitsAll() {
 		const result = await this.prisma.website.updateMany({
 			where: { isActive: true, autoMaxVisits: false },
