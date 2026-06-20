@@ -12,6 +12,7 @@ import {
 } from '../app-config/app-config.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { TasksService } from '../tasks/tasks.service'
 import { UsersService } from '../users/users.service'
 
 @Injectable()
@@ -21,6 +22,7 @@ export class AdminService {
 		private usersService: UsersService,
 		private appConfig: AppConfigService,
 		private notifications: NotificationsService,
+		private tasksService: TasksService,
 	) {}
 
 	async getGoogleConfigForAdmin() {
@@ -91,6 +93,8 @@ export class AdminService {
 			totalTasks,
 			pendingTasks,
 			completedTasks,
+			activeTasksCount,
+			activeSitesWithTasks,
 			totalExecutions,
 			totalPayments,
 			totalRevenue,
@@ -102,6 +106,10 @@ export class AdminService {
 			this.prisma.task.count(),
 			this.prisma.task.count({ where: { status: 'PENDING' } }),
 			this.prisma.task.count({ where: { status: 'COMPLETED' } }),
+			// Задачи без RESTRICTED (ключ не найден 10 раз) — только реально рабочие задачи
+			this.prisma.task.count({ where: { isActive: true, keywordStatus: 'ACTIVE' } }),
+			// Уникальных сайтов с хотя бы одной рабочей задачей
+			this.prisma.task.findMany({ where: { isActive: true, keywordStatus: 'ACTIVE' }, select: { websiteId: true }, distinct: ['websiteId'] }).then(r => r.length),
 			this.prisma.execution.count(),
 			this.prisma.payment.count({ where: { status: 'SUCCEEDED' } }),
 			this.prisma.payment.aggregate({
@@ -145,11 +153,24 @@ export class AdminService {
 		// (ceil(среднее/14)) — то же число, что видит владелец при создании сайта.
 		const capacity = await this.appConfig.getNetworkCapacityInfo()
 
+		// Задач нужно для полной загрузки сети:
+		// каждый ПК повторяет сайт не раньше чем через 10-14 дней (SPREAD_DAYS),
+		// поэтому нужно avgPerDay × SPREAD_DAYS уникальных задач,
+		// делённых на потолок посещений сайта в день (networkCap),
+		// чтобы каждый ПК мог ежедневно получать свежие задачи.
+		const spread = AppConfigService.CAPACITY_SPREAD_DAYS
+		const tasksNeededForNetwork = capacity.maxPerDay > 0
+			? Math.ceil(capacity.avgPerDay * spread / capacity.maxPerDay)
+			: capacity.avgPerDay * spread
+
 		return {
 			network: {
 				activePcsWeek: capacity.activePcsWeek,
 				avgPerDay: capacity.avgPerDay,
 				maxViewsPerDay: capacity.maxPerDay,
+				activeTasksCount,
+				activeSitesWithTasks,
+				tasksNeededForNetwork,
 			},
 			users: {
 				total: totalUsers,
@@ -167,6 +188,7 @@ export class AdminService {
 				total: totalTasks,
 				pending: pendingTasks,
 				completed: completedTasks,
+				active: activeTasksCount,
 			},
 			executions: {
 				total: totalExecutions,
@@ -1381,5 +1403,17 @@ export class AdminService {
 				}
 			}),
 		}
+	}
+
+	async debugExecutorAvailability(executorId: string) {
+		return this.tasksService.debugAvailability(executorId)
+	}
+
+	async enableAutoMaxVisitsAll() {
+		const result = await this.prisma.website.updateMany({
+			where: { isActive: true, autoMaxVisits: false },
+			data: { autoMaxVisits: true },
+		})
+		return { updated: result.count }
 	}
 }

@@ -3,12 +3,13 @@ import { AnalyticsModule } from '../analytics/analytics.module'
 import { AppConfigModule } from '../app-config/app-config.module'
 import { MetrikaModule } from '../metrika/metrika.module'
 import { NotificationsModule } from '../notifications/notifications.module'
+import { TasksModule } from '../tasks/tasks.module'
 import { UsersModule } from '../users/users.module'
 import { AdminController } from './admin.controller'
 import { AdminService } from './admin.service'
 
 @Module({
-	imports: [UsersModule, AnalyticsModule, MetrikaModule, AppConfigModule, NotificationsModule],
+	imports: [UsersModule, AnalyticsModule, MetrikaModule, AppConfigModule, NotificationsModule, TasksModule],
 	controllers: [AdminController],
 	providers: [AdminService],
 })

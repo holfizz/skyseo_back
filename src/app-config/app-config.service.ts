@@ -113,24 +113,37 @@ export class AppConfigService {
 			avgPerDay = AppConfigService.DEV_FAKE_ACTIVE_PCS
 		} else {
 			const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000)
-			const rows = await this.prisma.execution.findMany({
-				where: { completedAt: { gte: weekAgo }, status: 'COMPLETED' },
-				select: { executorId: true, completedAt: true },
-			})
-			// distinct активных ПК на каждый из дней → среднее в день за неделю
+			// Считаем по ВСЕМ выполнениям (любой статус, по createdAt) — COMPLETED-only
+			// даёт замкнутый круг: мало выполнений → низкий cap → мало ПК получают задачи →
+			// мало выполнений. Реальная ёмкость сети = число ACTIVE-установок.
+			const [rows, activeInstalls] = await Promise.all([
+				this.prisma.execution.findMany({
+					where: { createdAt: { gte: weekAgo } },
+					select: { executorId: true, createdAt: true },
+				}),
+				// Число ПК с активным приложением — источник правды для потолка выдачи
+				this.prisma.user.count({
+					where: { appStatus: { in: ['ACTIVE', 'REINSTALLED'] } },
+				}),
+			])
+			// distinct активных ПК на каждый из дней → среднее в день за дни с данными
 			const perDay = new Map<string, Set<string>>()
 			const weekSet = new Set<string>()
 			for (const r of rows) {
-				if (!r.executorId || !r.completedAt) continue
+				if (!r.executorId) continue
 				weekSet.add(r.executorId)
-				const day = r.completedAt.toISOString().slice(0, 10)
+				const day = r.createdAt.toISOString().slice(0, 10)
 				let set = perDay.get(day)
 				if (!set) perDay.set(day, (set = new Set()))
 				set.add(r.executorId)
 			}
 			const sumDaily = Array.from(perDay.values()).reduce((s, set) => s + set.size, 0)
-			activePcsWeek = weekSet.size
-			avgPerDay = Math.round(sumDaily / 7) // усредняем по календарной неделе
+			// Уникальных ПК за неделю — берём максимум из фактических и активных установок
+			activePcsWeek = Math.max(weekSet.size, activeInstalls)
+			// avgPerDay = активные установки (потенциал сети), не зависимо от выдачи задач.
+			// Деление по фактическим дням (не всегда 7) устраняет занижение в начале работы.
+			const avgFromActivity = perDay.size > 0 ? Math.round(sumDaily / perDay.size) : 0
+			avgPerDay = Math.max(avgFromActivity, activeInstalls)
 		}
 
 		const maxPerDay = Math.max(

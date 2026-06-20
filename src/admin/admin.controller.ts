@@ -382,4 +382,14 @@ export class AdminController {
 		const token = await this.metrikaService.exchangeCode(body.code)
 		return { token, message: 'Сохраните токен в METRIKA_TOKEN в .env и перезапустите сервер' }
 	}
+
+	@Get('debug/executor/:id')
+	async debugExecutor(@Param('id') id: string) {
+		return this.adminService.debugExecutorAvailability(id)
+	}
+
+	@Post('websites/auto-max-visits')
+	async enableAutoMaxVisitsAll() {
+		return this.adminService.enableAutoMaxVisitsAll()
+	}
 }

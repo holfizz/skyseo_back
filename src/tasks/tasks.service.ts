@@ -247,10 +247,10 @@ export class TasksService {
 			new Set([...sitesAtMonthlyLimit, ...sitesVisitedRecently]),
 		).filter((id): id is string => id !== null)
 
-		// Задачи, где ключевик не найден этим исполнителем — скрываем на 30 дней, затем
+		// Задачи, где ключевик не найден этим исполнителем — скрываем на 14 дней, затем
 		// перепроверяем (позиции меняются, в т.ч. благодаря самому ПФ). Мёртвые ключи
 		// и так уходят в keywordStatus=RESTRICTED после 10 подряд NOT_IN_SERP.
-		const notInSerpSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+		const notInSerpSince = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
 		const notInSerpTaskIds = await this.prisma.execution
 			.findMany({
 				where: {
@@ -324,7 +324,7 @@ export class TasksService {
 		// чтобы при всплеске N исполнителей не превысить rampedDailyCap до COMPLETED.
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
 
-		const [todayCountsBySite, foundCountsBySite] = await Promise.all([
+		const [todayCountsBySite, foundCountsBySite, lastVisitBySite] = await Promise.all([
 			this.prisma.execution.groupBy({
 				by: ['websiteId'],
 				where: {
@@ -347,12 +347,21 @@ export class TasksService {
 				},
 				_count: { _all: true },
 			}),
+			// Дата последнего посещения по сайту — тайбрейкер: давно не посещённые сайты в приоритете
+			this.prisma.execution.groupBy({
+				by: ['websiteId'],
+				where: { websiteId: { in: eligibleSiteIds }, status: 'COMPLETED' },
+				_max: { completedAt: true },
+			}),
 		])
 		const todayCountBySite = new Map(
 			todayCountsBySite.map(c => [c.websiteId, c._count._all]),
 		)
 		const foundCountBySite = new Map(
 			foundCountsBySite.map(c => [c.websiteId, c._count._all]),
+		)
+		const lastVisitMap = new Map(
+			lastVisitBySite.map(r => [r.websiteId, r._max.completedAt]),
 		)
 
 		// Site target = website.dailyVisitsTarget (если задан явно) либо сумма target'ов всех АКТИВНЫХ ключей сайта
@@ -400,7 +409,7 @@ export class TasksService {
 		])
 
 		// Для каждого eligible-сайта: остался ли дневной лимит. Закапанные исключаем.
-		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean; foundCount: number; boost: number }>()
+		const siteInfo = new Map<string, { fillRatio: number; isPaid: boolean; foundCount: number; boost: number; daysSinceLastVisit: number }>()
 		for (const site of websiteMeta) {
 			// autoMaxVisits → всегда крутим по максимуму сети (динамически растёт с парком ПК)
 			const userSiteTarget = site.autoMaxVisits
@@ -417,12 +426,17 @@ export class TasksService {
 			const todayOnSite = todayCountBySite.get(site.id) ?? 0
 			if (todayOnSite >= rampedCap) continue // сайт упёрся в дневной cap
 			const boost = (site.user as any)?.priorityBoost ?? 1
+			const lastVisited = lastVisitMap.get(site.id)
+			const daysSinceLastVisit = lastVisited
+				? Math.floor((Date.now() - lastVisited.getTime()) / (24 * 60 * 60 * 1000))
+				: 9999
 			siteInfo.set(site.id, {
 				// boost > 1 → делим fillRatio, сайт выглядит «менее заполненным» → выше в очереди
 				fillRatio: rampedCap > 0 ? (todayOnSite / rampedCap) / Math.max(1, boost) : 1,
 				isPaid: paidOwners.has(site.userId),
 				foundCount: foundCountBySite.get(site.id) ?? 0,
 				boost,
+				daysSinceLastVisit,
 			})
 		}
 
@@ -459,7 +473,7 @@ export class TasksService {
 			if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) continue
 			const info = siteInfo.get(task.websiteId)
 			if (!info) continue
-			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio, foundCount: info.foundCount, boost: info.boost })
+			candidates.push({ task, isPaid: info.isPaid, fillRatio: info.fillRatio, foundCount: info.foundCount, boost: info.boost, daysSinceLastVisit: info.daysSinceLastVisit })
 		}
 
 		// ─── Сортировка внутри пула ───────────────────────────────────────────────
@@ -477,6 +491,8 @@ export class TasksService {
 			salted.sort((a, b) => {
 				if (a.foundCount !== b.foundCount) return b.foundCount - a.foundCount
 				if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
+				// тайбрейкер: сайты, которые давно не посещали, получают приоритет
+				if (a.daysSinceLastVisit !== b.daysSinceLastVisit) return b.daysSinceLastVisit - a.daysSinceLastVisit
 				return a._salt - b._salt
 			})
 			return salted
