@@ -307,30 +307,20 @@ export class AdminController {
 		return this.adminService.deleteYandexKeyword(id)
 	}
 
-	// ─── Telegram посевы ───
-	@Get('telegram-campaigns')
-	async listTelegramCampaigns() {
-		return this.adminService.listTelegramCampaigns()
+	// ─── Telegram каналы ───
+	@Get('telegram-channels')
+	async listTelegramChannels() {
+		return this.adminService.listTelegramChannels()
 	}
 
-	@Post('telegram-campaigns')
-	async createTelegramCampaign(@Body() body: any) {
-		return this.adminService.createTelegramCampaign(body)
+	@Post('telegram-channels')
+	async createTelegramChannel(@Body() body: any) {
+		return this.adminService.createTelegramChannel(body)
 	}
 
-	@Put('telegram-campaigns/:id')
-	async updateTelegramCampaign(@Param('id') id: string, @Body() body: any) {
-		return this.adminService.updateTelegramCampaign(id, body)
-	}
-
-	@Delete('telegram-campaigns/:id')
-	async deleteTelegramCampaign(@Param('id') id: string) {
-		return this.adminService.deleteTelegramCampaign(id)
-	}
-
-	@Post('telegram-campaigns/:id/channels')
-	async addTelegramChannel(@Param('id') id: string, @Body() body: any) {
-		return this.adminService.addTelegramChannel(id, body)
+	@Get('telegram-channels/:id')
+	async getTelegramChannel(@Param('id') id: string) {
+		return this.adminService.getTelegramChannel(id)
 	}
 
 	@Put('telegram-channels/:id')
@@ -397,4 +387,5 @@ export class AdminController {
 	async enableAutoMaxVisitsAll() {
 		return this.adminService.enableAutoMaxVisitsAll()
 	}
+
 }

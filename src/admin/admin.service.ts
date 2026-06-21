@@ -798,52 +798,23 @@ export class AdminService {
 		return this.prisma.yandexAdKeyword.delete({ where: { id } })
 	}
 
-	// ─── Telegram посевы ───
+	// ─── Telegram каналы (плоский список) ───
 
-	async listTelegramCampaigns() {
-		return this.prisma.telegramAdCampaign.findMany({
+	async listTelegramChannels() {
+		return this.prisma.telegramAdChannel.findMany({
 			orderBy: { createdAt: 'desc' },
-			include: { channels: { orderBy: { createdAt: 'asc' } } },
 		})
 	}
 
-	async createTelegramCampaign(data: any) {
-		return this.prisma.telegramAdCampaign.create({
-			data: {
-				name: data.name?.trim() || null,
-				postText: data.postText ?? null,
-				landingUrl: data.landingUrl?.trim() || null,
-				budget: Math.max(0, Math.floor(data.budget ?? 0)),
-				expectedViews: Math.max(0, Math.floor(data.expectedViews ?? 0)),
-				expectedClicks: Math.max(0, Math.floor(data.expectedClicks ?? 0)),
-				expectedLeads: Math.max(0, Math.floor(data.expectedLeads ?? 0)),
-				notes: data.notes ?? null,
-			},
-			include: { channels: true },
-		})
-	}
-
-	async updateTelegramCampaign(id: string, data: any) {
-		const patch: any = {}
-		for (const k of ['name', 'postText', 'landingUrl', 'notes']) {
-			if (data[k] !== undefined) patch[k] = data[k] ?? null
-		}
-		for (const k of ['budget', 'expectedViews', 'expectedClicks', 'expectedLeads']) {
-			if (data[k] !== undefined) patch[k] = Math.max(0, Math.floor(data[k]))
-		}
-		return this.prisma.telegramAdCampaign.update({ where: { id }, data: patch })
-	}
-
-	async deleteTelegramCampaign(id: string) {
-		return this.prisma.telegramAdCampaign.delete({ where: { id } })
-	}
-
-	async addTelegramChannel(campaignId: string, data: any) {
+	async createTelegramChannel(data: any) {
 		return this.prisma.telegramAdChannel.create({
 			data: {
-				campaignId,
 				link: (data.link ?? '').trim(),
 				name: data.name?.trim() || null,
+				postText: data.postText?.trim() || null,
+				promoCode: data.promoCode?.trim().toUpperCase() || null,
+				postedAt: data.postedAt ? new Date(data.postedAt) : null,
+				isActive: !!data.isActive,
 				adReturn: data.adReturn != null ? Math.floor(data.adReturn) : null,
 				subscribers: data.subscribers != null ? Math.floor(data.subscribers) : null,
 				reach24: data.reach24 != null ? Math.floor(data.reach24) : null,
@@ -851,19 +822,77 @@ export class AdminService {
 				postCost: data.postCost != null ? Math.floor(data.postCost) : null,
 				isAuthor: !!data.isAuthor,
 				shouldBuy: !!data.shouldBuy,
+				about: data.about?.trim() || null,
 			},
 		})
+	}
+
+	async getTelegramChannel(id: string) {
+		const ch = await this.prisma.telegramAdChannel.findUnique({ where: { id } })
+		if (!ch) return null
+
+		let promoStats: {
+			code: string
+			registrations: number
+			sitesCreated: number
+			keywordsAdded: number
+			payingCount: number
+			totalRevenue: number
+		} | null = null
+
+		const promoCode = ch.promoCode?.trim().toUpperCase()
+		if (promoCode) {
+			const rows = await this.prisma.$queryRaw<Array<{
+				registrations: bigint
+				sites: bigint
+				keywords: bigint
+				paying_count: bigint
+				total_revenue: string
+			}>>`
+				WITH promo_users AS (
+					SELECT id FROM users WHERE UPPER("promoCode") = ${promoCode}
+				)
+				SELECT
+					COUNT(DISTINCT u.id)::bigint AS registrations,
+					COUNT(DISTINCT w.id)::bigint AS sites,
+					COUNT(DISTINCT t.id)::bigint AS keywords,
+					COUNT(DISTINCT CASE WHEN p.status = 'SUCCEEDED' THEN u.id END)::bigint AS paying_count,
+					COALESCE(SUM(CASE WHEN p.status = 'SUCCEEDED' THEN p.amount ELSE 0 END), 0)::text AS total_revenue
+				FROM promo_users pu
+				JOIN users u ON u.id = pu.id
+				LEFT JOIN websites w ON w."userId" = u.id
+				LEFT JOIN tasks t ON t."websiteId" = w.id
+				LEFT JOIN payments p ON p."userId" = u.id
+			`
+			if (rows.length > 0) {
+				promoStats = {
+					code: promoCode,
+					registrations: Number(rows[0].registrations),
+					sitesCreated: Number(rows[0].sites),
+					keywordsAdded: Number(rows[0].keywords),
+					payingCount: Number(rows[0].paying_count),
+					totalRevenue: Number(rows[0].total_revenue),
+				}
+			}
+		}
+
+		return { ...ch, promoStats }
 	}
 
 	async updateTelegramChannel(id: string, data: any) {
 		const patch: any = {}
 		if (data.link !== undefined) patch.link = String(data.link).trim()
 		if (data.name !== undefined) patch.name = data.name?.trim() || null
+		if (data.postText !== undefined) patch.postText = data.postText?.trim() || null
+		if (data.promoCode !== undefined) patch.promoCode = data.promoCode?.trim().toUpperCase() || null
+		if (data.postedAt !== undefined) patch.postedAt = data.postedAt ? new Date(data.postedAt) : null
+		if (data.isActive !== undefined) patch.isActive = !!data.isActive
+		if (data.about !== undefined) patch.about = data.about?.trim() || null
+		if (data.isAuthor !== undefined) patch.isAuthor = !!data.isAuthor
+		if (data.shouldBuy !== undefined) patch.shouldBuy = !!data.shouldBuy
 		for (const k of ['adReturn', 'subscribers', 'reach24', 'err24', 'postCost']) {
 			if (data[k] !== undefined) patch[k] = data[k] === null ? null : Math.max(0, Math.floor(data[k]))
 		}
-		if (data.isAuthor !== undefined) patch.isAuthor = !!data.isAuthor
-		if (data.shouldBuy !== undefined) patch.shouldBuy = !!data.shouldBuy
 		return this.prisma.telegramAdChannel.update({ where: { id }, data: patch })
 	}
 
@@ -1208,13 +1237,14 @@ export class AdminService {
 			task_id: string; url: string; keyword: string; user_email: string
 			yandex_curr: number | null; yandex_prev: number | null
 			google_curr: number | null; google_prev: number | null
-			improvement: number
+			improvement: number; last_improved_at: Date
 		}>>`
 			WITH ranked AS (
 				SELECT
 					ph."taskId",
 					ph."yandexPosition",
 					ph."googlePosition",
+					ph."createdAt",
 					ROW_NUMBER() OVER (PARTITION BY ph."taskId" ORDER BY ph."createdAt" DESC) AS rn
 				FROM position_history ph
 			)
@@ -1227,6 +1257,7 @@ export class AdminService {
 				prev."yandexPosition"   AS yandex_prev,
 				curr."googlePosition"   AS google_curr,
 				prev."googlePosition"   AS google_prev,
+				curr."createdAt"        AS last_improved_at,
 				GREATEST(
 					COALESCE(prev."yandexPosition" - curr."yandexPosition", 0),
 					COALESCE(prev."googlePosition" - curr."googlePosition", 0)
@@ -1323,6 +1354,7 @@ export class AdminService {
 				googleCurr: r.google_curr,
 				googlePrev: r.google_prev,
 				improvement: Number(r.improvement),
+				lastImprovedAt: r.last_improved_at,
 			})),
 			risingTotal: Number(risingTotal[0]?.cnt ?? 0),
 			disappeared: disappeared.map(r => ({
@@ -1451,4 +1483,5 @@ export class AdminService {
 		})
 		return { updated: result.count }
 	}
+
 }

@@ -73,6 +73,12 @@ export class TasksController {
 		)
 	}
 
+	@Throttle({ short: { limit: 3, ttl: 60000 } })
+	@Post('request-help')
+	async requestHelp(@Request() req) {
+		return this.tasksService.sendHelpRequest(req.user.id)
+	}
+
 	@Put(':id')
 	async updateTask(@Request() req, @Param('id') taskId: string, @Body() dto: UpdateTaskDto) {
 		return this.tasksService.updateTask(req.user.id, taskId, dto)

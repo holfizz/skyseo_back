@@ -69,16 +69,116 @@ export class TelegramService implements OnModuleDestroy {
 		}
 	}
 
+	// ─── Авторассылка ───────────────────────────────────────────────────────────
+	// Состояние рассылки: один экземпляр в памяти (сервер не перезапускается между запусками)
+	private spamRunning = false
+	private spamAbort = false
+	private spamIntervalMs = 10 * 60 * 1000 // дефолт 10 мин
+	// Ожидающий ввод интервала (chatId → true)
+	private spamAwaitingInterval = new Set<number | string>()
+
+	// Случайный интервал: база * (1 ± jitter%), где jitter растёт с интервалом
+	private randDelay(baseMs: number): number {
+		// При 10 сек → ±10%, при 10 мин → ±10%, при 60 мин → ±15%, при 24ч → ±20%
+		const jitterPct = Math.min(0.1 + (baseMs / (24 * 60 * 60 * 1000)) * 0.1, 0.25)
+		const delta = baseMs * jitterPct
+		return Math.round(baseMs - delta + Math.random() * 2 * delta)
+	}
+
+	private async runSpam(intervalMs: number) {
+		this.spamRunning = true
+		this.spamAbort = false
+		this.spamIntervalMs = intervalMs
+
+		const leads = await this.prisma.outreachLead.findMany({
+			where: { status: 'NEW', email: { not: null } },
+			orderBy: { createdAt: 'asc' },
+		})
+
+		let sent = 0
+		let failed = 0
+		const startedAt = Date.now()
+
+		await this.sendAdminNotification(
+			`📨 <b>Авторассылка запущена</b>\n` +
+			`Лидов: <b>${leads.length}</b> · Интервал: ~${Math.round(intervalMs / 1000)} сек`,
+		)
+
+		for (const lead of leads) {
+			if (this.spamAbort) break
+			if (!lead.email) continue
+
+			try {
+				await this.prisma.outreachLead.update({
+					where: { id: lead.id },
+					data: {
+						emailsSent: { increment: 1 },
+						contactedAt: lead.contactedAt ?? new Date(),
+						contactedVia: 'email',
+						status: 'CONTACTED',
+					},
+				})
+				// Импортируем NotificationsService через prisma — используем прямой HTTP к SMTP
+				// (не можем инжектировать через setupCommands, вызываем через метод сервиса)
+				await this.sendRawEmailViaNotifications(lead.email, lead.message)
+				sent++
+			} catch {
+				failed++
+			}
+
+			if (this.spamAbort) break
+
+			// Пауза перед следующей отправкой (кроме последней)
+			if (leads.indexOf(lead) < leads.length - 1) {
+				const delay = this.randDelay(intervalMs)
+				await new Promise<void>(res => {
+					const timer = setTimeout(res, delay)
+					// Проверяем abort каждые 2 сек
+					const check = setInterval(() => { if (this.spamAbort) { clearTimeout(timer); clearInterval(check); res() } }, 2000)
+					void timer
+					void check
+				})
+			}
+		}
+
+		this.spamRunning = false
+		const elapsed = Math.round((Date.now() - startedAt) / 1000)
+		const aborted = this.spamAbort ? ' (прервано)' : ''
+
+		await this.sendAdminNotification(
+			`✅ <b>Авторассылка завершена${aborted}</b>\n\n` +
+			`📨 Отправлено: <b>${sent}</b>\n` +
+			`❌ Ошибок: <b>${failed}</b>\n` +
+			`⏱ Время: ${Math.floor(elapsed / 60)} мин ${elapsed % 60} сек`,
+		)
+	}
+
+	// Вызывается через notifications.service — нужен доступ к нему. Получаем через lazy import.
+	private notificationsService: any = null
+	setNotificationsService(svc: any) { this.notificationsService = svc }
+
+	private async sendRawEmailViaNotifications(email: string, text: string) {
+		if (!this.notificationsService) throw new Error('NotificationsService not set')
+		await this.notificationsService.sendRawEmail(email, 'SkySEO — поднимите сайт в топ Яндекса', text)
+	}
+
+	// ────────────────────────────────────────────────────────────────────────────
+
+	private isAdmin(ctx: any): boolean {
+		return String(ctx.from?.id) === String(this.adminId)
+	}
+
 	private setupCommands() {
 		if (!this.bot) return
 
 		// Команда /start
 		this.bot.command('start', async ctx => {
+			const extra = this.isAdmin(ctx) ? '\n/spam - Авторассылка по лидам' : ''
 			await ctx.reply(
 				'👋 Привет! Я бот SkySEO.\n\n' +
 					'Доступные команды:\n' +
 					'/stats - Общая статистика платформы\n' +
-					'/daily - Статистика за сегодня',
+					'/daily - Статистика за сегодня' + extra,
 			)
 		})
 
@@ -102,6 +202,104 @@ export class TelegramService implements OnModuleDestroy {
 				console.error('[TelegramService] Error getting daily stats:', error)
 				await ctx.reply('❌ Ошибка при получении статистики')
 			}
+		})
+
+		// Команда /spam — запуск / остановка авторассылки (только для админа)
+		this.bot.command('spam', async ctx => {
+			if (!this.isAdmin(ctx)) return
+
+			if (this.spamRunning) {
+				// Уже запущена — предложить остановить
+				await ctx.reply(
+					`📨 <b>Авторассылка уже идёт</b>\n` +
+					`Интервал: ~${Math.round(this.spamIntervalMs / 1000)} сек\n\n` +
+					`Остановить? Напиши /spamstop`,
+					{ parse_mode: 'HTML' },
+				)
+				return
+			}
+
+			// Считаем сколько лидов будет отправлено
+			const count = await this.prisma.outreachLead.count({
+				where: { status: 'NEW', email: { not: null } },
+			}).catch(() => 0)
+
+			if (count === 0) {
+				await ctx.reply('📭 Нет лидов со статусом NEW и email для рассылки.')
+				return
+			}
+
+			this.spamAwaitingInterval.add(ctx.from!.id)
+			await ctx.reply(
+				`📨 <b>Авторассылка</b>\n\n` +
+				`Будет отправлено: <b>${count}</b> писем\n\n` +
+				`Укажи интервал между письмами в секундах:\n` +
+				`(например: <code>600</code> = 10 минут, <code>30</code> = 30 секунд)\n\n` +
+				`Интервал будет случайным ±10% от указанного.`,
+				{ parse_mode: 'HTML' },
+			)
+		})
+
+		// Команда /spamstop — остановка рассылки
+		this.bot.command('spamstop', async ctx => {
+			if (!this.isAdmin(ctx)) return
+			if (!this.spamRunning) {
+				await ctx.reply('ℹ️ Рассылка не запущена.')
+				return
+			}
+			this.spamAbort = true
+			await ctx.reply('⏹ Остановка рассылки... Дождись завершения текущего письма.')
+		})
+
+		// Обработка текстовых сообщений — ввод интервала после /spam
+		this.bot.on('text', async ctx => {
+			if (!this.isAdmin(ctx)) return
+			const chatId = ctx.from?.id
+			if (!chatId || !this.spamAwaitingInterval.has(chatId)) return
+
+			const secs = parseInt(ctx.message.text.trim(), 10)
+			if (isNaN(secs) || secs < 5) {
+				await ctx.reply('❌ Неверный интервал. Введи число секунд (минимум 5).')
+				return
+			}
+
+			this.spamAwaitingInterval.delete(chatId)
+			const count = await this.prisma.outreachLead.count({
+				where: { status: 'NEW', email: { not: null } },
+			}).catch(() => 0)
+			const estMin = Math.round((count * secs) / 60)
+
+			await ctx.reply(
+				`✅ <b>Подтверди запуск рассылки</b>\n\n` +
+				`📬 Писем: <b>${count}</b>\n` +
+				`⏱ Интервал: ~${secs} сек (±10%)\n` +
+				`🕐 Примерное время: ~${estMin} мин\n\n` +
+				`Запустить? Напиши <code>да</code> или <code>нет</code>`,
+				{ parse_mode: 'HTML' },
+			)
+
+			// Сохраняем интервал и ждём подтверждения
+			const pendingMs = secs * 1000
+			const confirmHandler = async (msg: any) => {
+				if (String(msg.from?.id) !== String(chatId)) return
+				const text = msg.text?.toLowerCase().trim()
+				if (text === 'да' || text === 'yes') {
+					// Запускаем в фоне
+					this.runSpam(pendingMs).catch(e => {
+						this.spamRunning = false
+						this.sendAdminNotification(`❌ <b>Рассылка упала с ошибкой:</b>\n${e?.message}`).catch(() => {})
+					})
+				} else {
+					await ctx.reply('❌ Рассылка отменена.')
+				}
+			}
+
+			// Одноразовый обработчик подтверждения (next message from same user)
+			this.bot!.on('text', async ctx2 => {
+				if (String(ctx2.from?.id) !== String(chatId)) return
+				if (this.spamRunning || this.spamAwaitingInterval.has(chatId)) return
+				await confirmHandler(ctx2.message)
+			})
 		})
 	}
 

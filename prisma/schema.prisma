@@ -440,42 +440,26 @@ model YandexAdKeyword {
   @@map("yandex_ad_keywords")
 }
 
-// Telegram посевы
-model TelegramAdCampaign {
-  id             String   @id @default(uuid())
-  name           String?
-  postText       String?
-  landingUrl     String? // ссылка на лендинг или TG-бот
-  budget         Int      @default(0)
-  expectedViews  Int      @default(0)
-  expectedClicks Int      @default(0)
-  expectedLeads  Int      @default(0)
-  notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  channels TelegramAdChannel[]
-
-  @@map("telegram_ad_campaigns")
-}
-
+// Telegram посевы — плоский список каналов без группировки
 model TelegramAdChannel {
-  id          String   @id @default(uuid())
-  campaignId  String
+  id          String    @id @default(uuid())
   link        String
   name        String?
-  adReturn    Int? // рекламная отдача
+  postText    String?   // текст рекламного поста
+  promoCode   String?   // промокод для отслеживания конверсий
+  postedAt    DateTime? // дата выкладки поста
+  isActive    Boolean   @default(false) // флаг «начали работать»
+  adReturn    Int?      // рекламная отдача ₽
   subscribers Int?
-  reach24     Int? // охваты за 24ч
-  err24       Int? // ERR в сотых процента (5985 = 59.85%)
-  postCost    Int? // стоимость поста ₽
-  isAuthor    Boolean  @default(false)
-  shouldBuy   Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  reach24     Int?      // охваты за 24ч
+  err24       Int?      // ERR (сырое значение из скрапера)
+  postCost    Int?      // стоимость поста ₽
+  isAuthor    Boolean   @default(false)
+  shouldBuy   Boolean   @default(false)
+  about       String?   // описание канала (из TGStat)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  campaign TelegramAdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  @@index([campaignId])
   @@map("telegram_ad_channels")
 }
 

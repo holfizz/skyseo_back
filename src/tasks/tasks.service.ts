@@ -1,9 +1,12 @@
 import {
 	BadRequestException,
+	HttpException,
+	HttpStatus,
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common'
 import { AppConfigService } from '../app-config/app-config.service'
+import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { UsersService } from '../users/users.service'
 import { CreateTaskDto, UpdateTaskDto } from './dto'
@@ -87,10 +90,13 @@ function validateKeyword(keyword: string): void {
 
 @Injectable()
 export class TasksService {
+	private readonly helpRequestLastSent = new Map<string, number>()
+
 	constructor(
 		private prisma: PrismaService,
 		private usersService: UsersService,
 		private appConfig: AppConfigService,
+		private notifications: NotificationsService,
 	) {}
 
 	async create(userId: string, dto: CreateTaskDto) {
@@ -1147,5 +1153,51 @@ export class TasksService {
 			blockedByRecentVisit10d: diag.blockedByRecentVisit10d,
 			sitesAtDailyCap: diag.sitesAtDailyCap,
 		}
+	}
+
+	async sendHelpRequest(userId: string): Promise<{ success: true; nextAllowedIn?: never }> {
+		const COOLDOWN_MS = 30_000
+		const now = Date.now()
+		const last = this.helpRequestLastSent.get(userId) ?? 0
+		if (now - last < COOLDOWN_MS) {
+			const waitSec = Math.ceil((COOLDOWN_MS - (now - last)) / 1000)
+			throw new HttpException(
+				`Слишком частые запросы. Подождите ${waitSec} сек.`,
+				HttpStatus.TOO_MANY_REQUESTS,
+			)
+		}
+		this.helpRequestLastSent.set(userId, now)
+
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { email: true },
+		})
+		const websites = await this.prisma.website.findMany({
+			where: { userId },
+			select: { url: true, name: true },
+			take: 5,
+		})
+		const siteList = websites.length
+			? websites.map(w => `• ${w.name || w.url} (${w.url})`).join('\n')
+			: '— сайты не добавлены —'
+
+		const adminEmail = process.env.ADMIN_EMAIL || 'gorlach7v@gmail.com'
+
+		await Promise.all([
+			// Уведомление администратору
+			this.notifications.sendRawEmail(
+				adminEmail,
+				`SkySEO: запрос помощи от ${user.email}`,
+				`Пользователь ${user.email} запросил помощь менеджера.\n\nСайты:\n${siteList}\n\nВремя: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`,
+			),
+			// Подтверждение пользователю
+			this.notifications.sendRawEmail(
+				user.email,
+				'SkySEO: ваша заявка принята',
+				`Здравствуйте!\n\nМы получили вашу заявку и свяжемся с вами в ближайшее время.\nНаш менеджер поможет подобрать ключевые слова и настроить сайт.\n\nВы также можете написать нам напрямую: @skyseo_support\n\nС уважением,\nКоманда SkySEO`,
+			),
+		])
+
+		return { success: true }
 	}
 }
