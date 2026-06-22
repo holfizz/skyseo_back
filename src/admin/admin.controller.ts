@@ -388,4 +388,14 @@ export class AdminController {
 		return this.adminService.enableAutoMaxVisitsAll()
 	}
 
+	@Post('bulk-email')
+	async startBulkEmail(@Body() body: { subject: string; message: string }) {
+		return this.adminService.startBulkEmail(body.subject, body.message)
+	}
+
+	@Get('bulk-email/status')
+	async getBulkEmailStatus() {
+		return this.adminService.getBulkEmailStatus()
+	}
+
 }

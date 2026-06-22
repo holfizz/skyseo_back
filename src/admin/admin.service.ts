@@ -12,17 +12,29 @@ import {
 } from '../app-config/app-config.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { TelegramService } from '../telegram/telegram.service'
 import { TasksService } from '../tasks/tasks.service'
 import { UsersService } from '../users/users.service'
 
 @Injectable()
 export class AdminService {
+	private bulkEmailJob = {
+		running: false,
+		total: 0,
+		sent: 0,
+		failed: 0,
+		startedAt: null as Date | null,
+		finishedAt: null as Date | null,
+		subject: '',
+	}
+
 	constructor(
 		private prisma: PrismaService,
 		private usersService: UsersService,
 		private appConfig: AppConfigService,
 		private notifications: NotificationsService,
 		private tasksService: TasksService,
+		private telegram: TelegramService,
 	) {}
 
 	async getGoogleConfigForAdmin() {
@@ -1482,6 +1494,46 @@ export class AdminService {
 			data: { autoMaxVisits: true },
 		})
 		return { updated: result.count }
+	}
+
+	async startBulkEmail(subject: string, message: string) {
+		if (this.bulkEmailJob.running) return { error: 'Рассылка уже запущена' }
+		const users = await this.prisma.user.findMany({
+			select: { id: true, email: true },
+			orderBy: { createdAt: 'asc' },
+		})
+		this.bulkEmailJob = {
+			running: true,
+			total: users.length,
+			sent: 0,
+			failed: 0,
+			startedAt: new Date(),
+			finishedAt: null,
+			subject,
+		}
+		this.runBulkEmail(users, subject, message).catch(() => {})
+		return { started: true, total: users.length }
+	}
+
+	private async runBulkEmail(users: { id: string; email: string }[], subject: string, message: string) {
+		for (const user of users) {
+			try {
+				await this.notifications.sendRawEmail(user.email, subject, message)
+				this.bulkEmailJob.sent++
+			} catch {
+				this.bulkEmailJob.failed++
+			}
+			await new Promise(r => setTimeout(r, 600))
+		}
+		this.bulkEmailJob.running = false
+		this.bulkEmailJob.finishedAt = new Date()
+		await this.telegram.sendAdminNotification(
+			`✅ <b>Рассылка завершена</b>\nТема: <i>${subject}</i>\nОтправлено: <b>${this.bulkEmailJob.sent}</b>\nОшибок: <b>${this.bulkEmailJob.failed}</b>`,
+		).catch(() => {})
+	}
+
+	getBulkEmailStatus() {
+		return { ...this.bulkEmailJob }
 	}
 
 }
