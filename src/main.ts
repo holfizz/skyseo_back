@@ -34,6 +34,8 @@ async function bootstrap() {
 			'http://localhost:5173',
 			'https://skyseo.site',
 			'http://skyseo.site',
+			'https://pro.skyseo.site',
+			'https://go.skyseo.site',
 		],
 		credentials: true,
 		methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
