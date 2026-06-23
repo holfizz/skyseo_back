@@ -224,6 +224,11 @@ export class AdminController {
 		return this.adminService.getSiteTrend(taskId)
 	}
 
+	@Get('conversion-funnel')
+	async getConversionFunnel() {
+		return this.adminService.getConversionFunnel()
+	}
+
 	// ─── CRUD воронки ───
 	@Get('funnel-entries')
 	async listFunnelEntries(@Query('limit') limit?: string) {

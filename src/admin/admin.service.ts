@@ -691,6 +691,15 @@ export class AdminService {
 		return rows.map(r => r.channel)
 	}
 
+	async getConversionFunnel() {
+		const [registered, qualified, paid] = await Promise.all([
+			this.prisma.user.count(),
+			this.prisma.user.count({ where: { websites: { some: {} } } }),
+			this.prisma.user.count({ where: { payments: { some: { status: 'SUCCEEDED' } } } }),
+		])
+		return { registered, qualified, paid }
+	}
+
 	async createFunnelEntry(data: {
 		date: string
 		channel: string
