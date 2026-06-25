@@ -435,6 +435,43 @@ export class TelegramService implements OnModuleDestroy {
 		await this.sendAdminNotification(message, this.TOPIC_PAYMENTS)
 	}
 
+	async sendRestrictedKeywordReport(data: {
+		userEmail: string
+		keyword: string
+		websiteUrl: string
+		message: string
+		telegram?: string
+	}) {
+		const msg =
+			`🔓 <b>Запрос на активацию ключевика</b>\n\n` +
+			`👤 Аккаунт: ${data.userEmail}\n` +
+			(data.telegram ? `📱 Телеграм: ${data.telegram}\n` : '') +
+			`🌐 Сайт: ${data.websiteUrl}\n` +
+			`🔑 Ключевик: <b>${data.keyword}</b>\n` +
+			(data.message ? `\n💬 Сообщение: ${data.message}\n` : '') +
+			`\n🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+
+		await this.sendAdminNotification(msg, this.TOPIC_COMPLAINTS)
+	}
+
+	async sendRestrictedSiteReport(data: {
+		userEmail: string
+		websiteName: string
+		websiteUrl: string
+		message: string
+		telegram?: string
+	}) {
+		const msg =
+			`🔓 <b>Запрос на активацию сайта</b>\n\n` +
+			`👤 Аккаунт: ${data.userEmail}\n` +
+			(data.telegram ? `📱 Телеграм: ${data.telegram}\n` : '') +
+			`🌐 Сайт: ${data.websiteName} (${data.websiteUrl})\n` +
+			(data.message ? `\n💬 Сообщение: ${data.message}\n` : '') +
+			`\n🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+
+		await this.sendAdminNotification(msg, this.TOPIC_COMPLAINTS)
+	}
+
 	async sendAppInstallNotification(email: string, appVersion?: string) {
 		const message =
 			`📱 <b>Установка приложения</b>\n\n` +
@@ -507,14 +544,24 @@ export class TelegramService implements OnModuleDestroy {
 		userEmail: string
 		websiteName: string
 		websiteUrl: string
+		similarSites?: { url: string; user: { email: string } }[]
 	}) {
 		if (!this.isEnabled || !this.bot) return
-		const message =
+
+		let message =
 			`🌐 <b>Новый сайт — требует одобрения</b>\n\n` +
 			`👤 Аккаунт: ${data.userEmail}\n` +
 			`📌 Название: ${data.websiteName}\n` +
-			`🔗 Ссылка: ${data.websiteUrl}\n` +
-			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+			`🔗 Ссылка: ${data.websiteUrl}\n`
+
+		if (data.similarSites && data.similarSites.length > 0) {
+			message += `\n⚠️ <b>Похожие домены на площадке (${data.similarSites.length}):</b>\n`
+			data.similarSites.forEach(s => {
+				message += `• ${s.url} — ${s.user.email}\n`
+			})
+		}
+
+		message += `\n🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
 		try {
 			await this.bot.telegram.sendMessage(this.GROUP_CHAT_ID, message, {

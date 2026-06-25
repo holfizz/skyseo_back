@@ -51,6 +51,11 @@ export class TasksController {
 		return this.tasksService.assignTask(taskId, req.user.id)
 	}
 
+	@Post(':id/report-restricted')
+	async reportRestricted(@Request() req, @Param('id') taskId: string, @Body() body: { message?: string; telegram?: string }) {
+		return this.tasksService.reportRestrictedKeyword(req.user.id, taskId, body?.message ?? '', body?.telegram ?? '')
+	}
+
 	@Get(':id/position-history')
 	async getPositionHistory(
 		@Param('id') taskId: string,

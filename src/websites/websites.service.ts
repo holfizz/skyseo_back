@@ -9,6 +9,16 @@ import { PrismaService } from '../prisma/prisma.service'
 import { AppConfigService } from '../app-config/app-config.service'
 import { CreateWebsiteDto, UpdateWebsiteDto } from './dto'
 
+function extractRootDomain(url: string): string {
+	try {
+		const hostname = new URL(url.startsWith('http') ? url : `https://${url}`).hostname
+		const parts = hostname.replace(/^www\./, '').split('.')
+		return parts.length >= 2 ? parts.slice(-2).join('.') : hostname
+	} catch {
+		return url
+	}
+}
+
 const URL_FORBIDDEN_WORDS = [
 	'porn', 'sex', 'xxx', 'erotic', 'adult', 'casino', 'betting',
 	'escort', 'слот', 'ставки', 'казино', 'порно', 'секс',
@@ -97,11 +107,19 @@ export class WebsitesService {
 			},
 		})
 
+		const rootDomain = extractRootDomain(dto.url)
+		const similarSites = await this.prisma.website.findMany({
+			where: { id: { not: website.id }, url: { contains: rootDomain } },
+			select: { url: true, user: { select: { email: true } } },
+			take: 10,
+		})
+
 		this.telegram.sendWebsiteCreatedNotification({
 			websiteId: website.id,
 			userEmail,
 			websiteName: dto.name,
 			websiteUrl: dto.url,
+			similarSites,
 		}).catch(() => {})
 
 		return website
@@ -150,5 +168,18 @@ export class WebsitesService {
 		return this.prisma.website.delete({
 			where: { id },
 		})
+	}
+
+	async reportRestricted(id: string, userId: string, message: string, telegram?: string) {
+		const website = await this.findOne(id, userId)
+		const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
+		await this.telegram.sendRestrictedSiteReport({
+			userEmail: user?.email ?? 'неизвестно',
+			websiteName: website.name,
+			websiteUrl: website.url,
+			message: message?.trim() || '',
+			telegram: telegram?.trim() || '',
+		})
+		return { success: true }
 	}
 }

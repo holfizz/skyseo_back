@@ -8,6 +8,7 @@ import {
 import { AppConfigService } from '../app-config/app-config.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
 import { CreateTaskDto, UpdateTaskDto } from './dto'
 
@@ -97,6 +98,7 @@ export class TasksService {
 		private usersService: UsersService,
 		private appConfig: AppConfigService,
 		private notifications: NotificationsService,
+		private telegram: TelegramService,
 	) {}
 
 	async create(userId: string, dto: CreateTaskDto) {
@@ -1198,6 +1200,26 @@ export class TasksService {
 				`Здравствуйте!\n\nМы получили вашу заявку и свяжемся с вами в ближайшее время.\nНаш менеджер поможет подобрать ключевые слова и настроить сайт.\n\nВы также можете написать нам напрямую: @skyseo_support\n\nС уважением,\nКоманда SkySEO`,
 			),
 		])
+
+		return { success: true }
+	}
+
+	async reportRestrictedKeyword(userId: string, taskId: string, message: string, telegram?: string) {
+		const task = await this.prisma.task.findFirst({
+			where: { id: taskId, website: { userId } },
+			include: { website: true },
+		})
+		if (!task) throw new NotFoundException('Задача не найдена')
+
+		const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
+
+		await this.telegram.sendRestrictedKeywordReport({
+			userEmail: user?.email ?? 'неизвестно',
+			keyword: task.keyword,
+			websiteUrl: task.website.url,
+			message: message?.trim() || '',
+			telegram: telegram?.trim() || '',
+		})
 
 		return { success: true }
 	}

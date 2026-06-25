@@ -46,4 +46,9 @@ export class WebsitesController {
 	async delete(@Request() req, @Param('id') id: string) {
 		return this.websitesService.delete(id, req.user.id)
 	}
+
+	@Post(':id/report-restricted')
+	async reportRestricted(@Request() req, @Param('id') id: string, @Body() body: { message?: string; telegram?: string }) {
+		return this.websitesService.reportRestricted(id, req.user.id, body?.message ?? '', body?.telegram ?? '')
+	}
 }

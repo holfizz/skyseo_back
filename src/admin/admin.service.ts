@@ -1,4 +1,14 @@
 import { Injectable } from '@nestjs/common'
+
+function extractRootDomain(url: string): string {
+	try {
+		const hostname = new URL(url.startsWith('http') ? url : `https://${url}`).hostname
+		const parts = hostname.replace(/^www\./, '').split('.')
+		return parts.length >= 2 ? parts.slice(-2).join('.') : hostname
+	} catch {
+		return url
+	}
+}
 import {
 	AppConfigService,
 	DEFAULT_GOOGLE_CONSENT,
@@ -98,7 +108,7 @@ export class AdminService {
 	}
 
 	async getPendingWebsites() {
-		return this.prisma.website.findMany({
+		const pending = await this.prisma.website.findMany({
 			where: { isApproved: false, isRestricted: false },
 			orderBy: { createdAt: 'desc' },
 			select: {
@@ -110,6 +120,16 @@ export class AdminService {
 				_count: { select: { tasks: true } },
 			},
 		})
+
+		return Promise.all(pending.map(async (site) => {
+			const rootDomain = extractRootDomain(site.url)
+			const similarSites = await this.prisma.website.findMany({
+				where: { id: { not: site.id }, url: { contains: rootDomain } },
+				select: { url: true, user: { select: { email: true } } },
+				take: 10,
+			})
+			return { ...site, similarSites }
+		}))
 	}
 
 	async approveWebsite(websiteId: string) {
