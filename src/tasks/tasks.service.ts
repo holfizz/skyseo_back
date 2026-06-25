@@ -287,6 +287,7 @@ export class TasksService {
 			},
 			website: {
 				isActive: true,
+				isApproved: true,
 				userId: { not: executorId },
 				...(blockedWebsiteIds.length > 0
 					? { id: { notIn: blockedWebsiteIds } }

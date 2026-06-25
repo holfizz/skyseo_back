@@ -301,6 +301,76 @@ export class TelegramService implements OnModuleDestroy {
 				await confirmHandler(ctx2.message)
 			})
 		})
+
+		// Одобрение / отклонение сайтов через inline-кнопки
+		this.bot.on('callback_query', async ctx => {
+			if (!this.isAdmin(ctx)) {
+				await ctx.answerCbQuery('Нет доступа')
+				return
+			}
+
+			const data = (ctx.callbackQuery as any).data as string | undefined
+			if (!data) return
+
+			if (data.startsWith('approve_site_')) {
+				const websiteId = data.replace('approve_site_', '')
+				try {
+					await this.prisma.website.update({
+						where: { id: websiteId },
+						data: { isApproved: true },
+					})
+					await ctx.answerCbQuery('✅ Одобрено')
+					await ctx.editMessageReplyMarkup({ inline_keyboard: [[
+						{ text: '✅ Одобрен', callback_data: 'noop' },
+					]] })
+				} catch (e) {
+					await ctx.answerCbQuery('Ошибка: ' + e.message)
+				}
+				return
+			}
+
+			if (data.startsWith('reject_site_confirm_')) {
+				const websiteId = data.replace('reject_site_confirm_', '')
+				try {
+					await this.prisma.$transaction([
+						this.prisma.website.update({
+							where: { id: websiteId },
+							data: { isRestricted: true },
+						}),
+						this.prisma.task.updateMany({
+							where: { websiteId, isActive: true },
+							data: { keywordStatus: 'RESTRICTED' },
+						}),
+					])
+					await ctx.answerCbQuery('❌ Отклонён')
+					await ctx.editMessageReplyMarkup({ inline_keyboard: [[
+						{ text: '❌ Отклонён', callback_data: 'noop' },
+					]] })
+				} catch (e) {
+					await ctx.answerCbQuery('Ошибка: ' + e.message)
+				}
+				return
+			}
+
+			if (data.startsWith('reject_site_cancel_')) {
+				await ctx.answerCbQuery('Отменено')
+				await ctx.editMessageReplyMarkup({ inline_keyboard: [[
+					{ text: '✅ Одобрить', callback_data: data.replace('reject_site_cancel_', 'approve_site_') },
+					{ text: '❌ Отклонить', callback_data: data.replace('reject_site_cancel_', 'reject_site_') },
+				]] })
+				return
+			}
+
+			if (data.startsWith('reject_site_')) {
+				const websiteId = data.replace('reject_site_', '')
+				await ctx.answerCbQuery('Подтвердите отклонение')
+				await ctx.editMessageReplyMarkup({ inline_keyboard: [[
+					{ text: '🚫 Да, отклонить', callback_data: `reject_site_confirm_${websiteId}` },
+					{ text: '↩️ Назад', callback_data: `reject_site_cancel_${websiteId}` },
+				]] })
+				return
+			}
+		})
 	}
 
 	onModuleDestroy() {
@@ -433,18 +503,33 @@ export class TelegramService implements OnModuleDestroy {
 	}
 
 	async sendWebsiteCreatedNotification(data: {
+		websiteId: string
 		userEmail: string
 		websiteName: string
 		websiteUrl: string
 	}) {
+		if (!this.isEnabled || !this.bot) return
 		const message =
-			`🌐 <b>Новый сайт добавлен</b>\n\n` +
+			`🌐 <b>Новый сайт — требует одобрения</b>\n\n` +
 			`👤 Аккаунт: ${data.userEmail}\n` +
 			`📌 Название: ${data.websiteName}\n` +
 			`🔗 Ссылка: ${data.websiteUrl}\n` +
 			`🕐 Время: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
-		await this.sendAdminNotification(message, this.TOPIC_WEBSITES)
+		try {
+			await this.bot.telegram.sendMessage(this.GROUP_CHAT_ID, message, {
+				parse_mode: 'HTML',
+				message_thread_id: this.TOPIC_WEBSITES,
+				reply_markup: {
+					inline_keyboard: [[
+						{ text: '✅ Одобрить', callback_data: `approve_site_${data.websiteId}` },
+						{ text: '❌ Отклонить', callback_data: `reject_site_${data.websiteId}` },
+					]],
+				},
+			} as any)
+		} catch (err) {
+			console.error('[TelegramService] sendWebsiteCreatedNotification error:', err.message)
+		}
 	}
 
 	async sendContactFormNotification(data: {

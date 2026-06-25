@@ -98,6 +98,7 @@ export class WebsitesService {
 		})
 
 		this.telegram.sendWebsiteCreatedNotification({
+			websiteId: website.id,
 			userEmail,
 			websiteName: dto.name,
 			websiteUrl: dto.url,

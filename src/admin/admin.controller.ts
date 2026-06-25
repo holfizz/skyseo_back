@@ -55,6 +55,21 @@ export class AdminController {
 		return this.adminService.updateWebsite(id, body)
 	}
 
+	@Get('websites/pending')
+	async getPendingWebsites() {
+		return this.adminService.getPendingWebsites()
+	}
+
+	@Post('websites/:id/approve')
+	async approveWebsite(@Param('id') id: string) {
+		return this.adminService.approveWebsite(id)
+	}
+
+	@Post('websites/:id/reject')
+	async rejectWebsite(@Param('id') id: string) {
+		return this.adminService.rejectWebsite(id)
+	}
+
 	@Get('analytics')
 	async getAnalytics(
 		@Query('from') from?: string,

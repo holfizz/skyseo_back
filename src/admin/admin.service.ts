@@ -97,6 +97,42 @@ export class AdminService {
 		return this.prisma.website.update({ where: { id: websiteId }, data })
 	}
 
+	async getPendingWebsites() {
+		return this.prisma.website.findMany({
+			where: { isApproved: false, isRestricted: false },
+			orderBy: { createdAt: 'desc' },
+			select: {
+				id: true,
+				name: true,
+				url: true,
+				createdAt: true,
+				user: { select: { id: true, email: true } },
+				_count: { select: { tasks: true } },
+			},
+		})
+	}
+
+	async approveWebsite(websiteId: string) {
+		return this.prisma.website.update({
+			where: { id: websiteId },
+			data: { isApproved: true },
+		})
+	}
+
+	async rejectWebsite(websiteId: string) {
+		const [website] = await this.prisma.$transaction([
+			this.prisma.website.update({
+				where: { id: websiteId },
+				data: { isRestricted: true },
+			}),
+			this.prisma.task.updateMany({
+				where: { websiteId, isActive: true },
+				data: { keywordStatus: 'RESTRICTED' },
+			}),
+		])
+		return website
+	}
+
 	async getAdminStatistics() {
 		const [
 			totalUsers,

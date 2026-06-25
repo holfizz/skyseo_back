@@ -58,6 +58,8 @@ model Website {
   url               String
   city              String?
   isActive          Boolean  @default(true)
+  isApproved        Boolean  @default(false) // true после одобрения админом; пока false — не попадает в выдачу задач
+  isRestricted      Boolean  @default(false) // true если отклонён — показывает баннер "вы ограничены" у юзера
   dailyVisitsTarget Int? // Опциональный явный потолок визитов на сайт в сутки. Null = сумма target'ов всех активных ключей.
   autoMaxVisits     Boolean  @default(false) // Крутить всегда по максимуму сети (ceil(среднее ПК/день / 14)), динамически растёт с сетью
   createdAt         DateTime @default(now())
