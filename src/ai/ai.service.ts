@@ -13,7 +13,12 @@ interface PageContent {
 interface KeywordSuggestion {
 	keyword: string
 	competition: number
-	keyword_type: 'primary' | 'secondary' | 'long_tail' | 'informational' | 'commercial'
+	keyword_type:
+		| 'primary'
+		| 'secondary'
+		| 'long_tail'
+		| 'informational'
+		| 'commercial'
 	reason: string
 }
 
@@ -36,8 +41,17 @@ export interface AnalyzeResult {
 }
 
 const FORBIDDEN_URL_PATTERNS = [
-	'porn', 'sex', 'xxx', 'erotic', 'adult', 'casino', 'betting',
-	'escort', 'слот', 'ставки', 'казино',
+	'porn',
+	'sex',
+	'xxx',
+	'erotic',
+	'adult',
+	'casino',
+	'betting',
+	'escort',
+	'слот',
+	'ставки',
+	'казино',
 ]
 
 @Injectable()
@@ -53,12 +67,15 @@ export class AiService {
 		html: string,
 		candidates: { i: number; text: string }[],
 	): Promise<{ isConsent: boolean; clickIndex: number | null }> {
-		const list = (candidates || []).slice(0, 40).map(c => `${c.i}: ${c.text}`).join('\n')
+		const list = (candidates || [])
+			.slice(0, 40)
+			.map(c => `${c.i}: ${c.text}`)
+			.join('\n')
 		const clipped = (html || '').slice(0, 8000)
 		try {
 			const response = await this.openai.chat.completions.create({
 				model: 'gpt-5-mini-2025-08-07',
-				temperature: 0,
+				temperature: 0.7,
 				max_completion_tokens: 60,
 				messages: [
 					{
@@ -83,7 +100,8 @@ export class AiService {
 			const parsed = JSON.parse(raw)
 			return {
 				isConsent: !!parsed.isConsent,
-				clickIndex: typeof parsed.clickIndex === 'number' ? parsed.clickIndex : null,
+				clickIndex:
+					typeof parsed.clickIndex === 'number' ? parsed.clickIndex : null,
 			}
 		} catch (e) {
 			console.error('[AiService] resolveConsent error:', (e as Error).message)
@@ -91,7 +109,11 @@ export class AiService {
 		}
 	}
 
-	async analyzeSite(url: string, context?: string, userId?: string): Promise<AnalyzeResult> {
+	async analyzeSite(
+		url: string,
+		context?: string,
+		userId?: string,
+	): Promise<AnalyzeResult> {
 		const siteUrl = this.normalizeUrl(url)
 
 		// Check forbidden URL
@@ -99,7 +121,13 @@ export class AiService {
 		for (const pattern of FORBIDDEN_URL_PATTERNS) {
 			if (urlLower.includes(pattern)) {
 				return {
-					site: { topic: '', language: 'ru', warning: false, reject_site: true, reject_reason: 'Сайт не может быть добавлен' },
+					site: {
+						topic: '',
+						language: 'ru',
+						warning: false,
+						reject_site: true,
+						reject_reason: 'Сайт не может быть добавлен',
+					},
 					pages: [],
 					sitemapPages: [],
 				}
@@ -121,10 +149,16 @@ export class AiService {
 			.filter(u => u !== siteUrl && !u.endsWith('.xml'))
 			.slice(0, 4)
 		const innerPages = await Promise.all(
-			innerUrls.map(u => this.fetchPageContent(u).catch(() => null))
+			innerUrls.map(u => this.fetchPageContent(u).catch(() => null)),
 		).then(pages => pages.filter(Boolean) as PageContent[])
 
-		const prompt = this.buildPrompt(siteUrl, mainPage, sitemapPages, innerPages, context)
+		const prompt = this.buildPrompt(
+			siteUrl,
+			mainPage,
+			sitemapPages,
+			innerPages,
+			context,
+		)
 
 		try {
 			const response = await this.openai.chat.completions.create({
@@ -143,18 +177,26 @@ export class AiService {
 			parsed.sitemapPages = sitemapPages.slice(0, 50)
 
 			if (userId) {
-				this.prisma.user.update({
-					where: { id: userId },
-					data: { aiAnalysesCount: { increment: 1 } },
-				}).catch(() => {})
+				this.prisma.user
+					.update({
+						where: { id: userId },
+						data: { aiAnalysesCount: { increment: 1 } },
+					})
+					.catch(() => {})
 			}
 
 			return parsed
 		} catch (err) {
 			const msg = (err as Error).message ?? ''
 			// Не пробрасываем сырую OpenAI-ошибку — она содержит ключ API (sk-proj-...)
-			if (msg.includes('API key') || msg.includes('401') || msg.includes('Unauthorized')) {
-				throw new BadRequestException('AI-анализ временно недоступен. Обратитесь к администратору.')
+			if (
+				msg.includes('API key') ||
+				msg.includes('401') ||
+				msg.includes('Unauthorized')
+			) {
+				throw new BadRequestException(
+					'AI-анализ временно недоступен. Обратитесь к администратору.',
+				)
 			}
 			throw new BadRequestException('Ошибка анализа сайта через AI')
 		}
@@ -225,10 +267,16 @@ export class AiService {
 		const formatPage = (p: PageContent) =>
 			`URL: ${p.url}\nTitle: ${p.title}\nH1: ${p.h1.slice(0, 2).join(' | ')}\nH2: ${p.h2.slice(0, 4).join(' | ')}`
 
-		const mainBlock = mainPage ? `=== Главная страница ===\n${formatPage(mainPage)}` : ''
+		const mainBlock = mainPage
+			? `=== Главная страница ===\n${formatPage(mainPage)}`
+			: ''
 
 		const innerBlock = innerPages.length
-			? innerPages.map((p, i) => `=== Внутренняя страница ${i + 1} ===\n${formatPage(p)}`).join('\n\n')
+			? innerPages
+					.map(
+						(p, i) => `=== Внутренняя страница ${i + 1} ===\n${formatPage(p)}`,
+					)
+					.join('\n\n')
 			: sitemapPages.length
 				? `Найдены страницы (контент недоступен):\n${sitemapPages.slice(0, 15).join('\n')}`
 				: ''
@@ -243,7 +291,10 @@ export class AiService {
 		].filter(Boolean)
 
 		const pagesJsonExample = pagesList
-			.map(p => `    { "url": "${p!.url}", "title": "${p!.title}", "keywords": [...] }`)
+			.map(
+				p =>
+					`    { "url": "${p!.url}", "title": "${p!.title}", "keywords": [...] }`,
+			)
 			.join(',\n')
 
 		return `Ты — SEO-специалист. Твоя задача — подобрать ключевые слова для привлечения покупателей и клиентов через Яндекс и Google.
@@ -307,12 +358,21 @@ ${pagesJsonExample || `    { "url": "${siteUrl}", "title": "", "keywords": [] }`
 		try {
 			const html = await this.fetchText(siteUrl)
 			// Check for noindex meta tag
-			if (/<meta[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html)) {
+			if (
+				/<meta[^>]*name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(
+					html,
+				)
+			) {
 				return true
 			}
 			// Check robots.txt for Disallow: /
-			const robots = await this.fetchText(`${siteUrl}/robots.txt`).catch(() => '')
-			if (/Disallow:\s*\/\s*$/m.test(robots) && !/Allow:\s*\/\s*$/m.test(robots)) {
+			const robots = await this.fetchText(`${siteUrl}/robots.txt`).catch(
+				() => '',
+			)
+			if (
+				/Disallow:\s*\/\s*$/m.test(robots) &&
+				!/Allow:\s*\/\s*$/m.test(robots)
+			) {
 				return true
 			}
 			return false
@@ -350,7 +410,9 @@ ${pagesJsonExample || `    { "url": "${siteUrl}", "title": "", "keywords": [] }`
 	private parseSitemapXml(xml: string): string[] {
 		const urls: string[] = []
 		// Handle sitemap index
-		const sitemapMatches = xml.matchAll(/<sitemap>[\s\S]*?<loc>(.*?)<\/loc>[\s\S]*?<\/sitemap>/gi)
+		const sitemapMatches = xml.matchAll(
+			/<sitemap>[\s\S]*?<loc>(.*?)<\/loc>[\s\S]*?<\/sitemap>/gi,
+		)
 		for (const m of sitemapMatches) {
 			// For sitemap index, we just return the child sitemap URLs themselves as page candidates
 			// In production you'd recurse, but for simplicity return them as-is
@@ -359,7 +421,9 @@ ${pagesJsonExample || `    { "url": "${siteUrl}", "title": "", "keywords": [] }`
 		if (urls.length > 0) return urls
 
 		// Regular sitemap
-		const urlMatches = xml.matchAll(/<url>[\s\S]*?<loc>(.*?)<\/loc>[\s\S]*?<\/url>/gi)
+		const urlMatches = xml.matchAll(
+			/<url>[\s\S]*?<loc>(.*?)<\/loc>[\s\S]*?<\/url>/gi,
+		)
 		for (const m of urlMatches) {
 			urls.push(m[1].trim())
 		}
@@ -382,8 +446,19 @@ ${pagesJsonExample || `    { "url": "${siteUrl}", "title": "", "keywords": [] }`
 	}
 
 	private extractMeta(html: string, name: string): string {
-		const m = html.match(new RegExp(`<meta[^>]*name=["']${name}["'][^>]*content=["']([^"']+)["']`, 'i'))
-			|| html.match(new RegExp(`<meta[^>]*content=["']([^"']+)["'][^>]*name=["']${name}["']`, 'i'))
+		const m =
+			html.match(
+				new RegExp(
+					`<meta[^>]*name=["']${name}["'][^>]*content=["']([^"']+)["']`,
+					'i',
+				),
+			) ||
+			html.match(
+				new RegExp(
+					`<meta[^>]*content=["']([^"']+)["'][^>]*name=["']${name}["']`,
+					'i',
+				),
+			)
 		return m ? m[1].trim() : ''
 	}
 
