@@ -25,6 +25,7 @@ export class UsersService {
 		appVersion?: string
 		appStatus?: AppStatus
 		userType?: UserType
+		telegramContact?: string
 	}) {
 		return this.prisma.user.create({
 			data: {
@@ -102,7 +103,7 @@ export class UsersService {
 	}
 
 	async getProfile(userId: string) {
-		return this.prisma.user.findUnique({
+		const user = await this.prisma.user.findUnique({
 			where: { id: userId },
 			select: {
 				id: true,
@@ -115,8 +116,20 @@ export class UsersService {
 				referredBy: true,
 				city: true,
 				createdAt: true,
+				telegramChatId: true,
+				telegramUsername: true,
 			},
 		})
+		if (!user) return user
+		const paidCount = await this.prisma.payment.count({
+			where: { userId, status: 'SUCCEEDED' },
+		})
+		const { telegramChatId, ...rest } = user
+		return {
+			...rest,
+			telegramLinked: !!telegramChatId, // привязан ли Telegram-бот уведомлений
+			hasPaid: paidCount > 0, // была ли хоть одна успешная оплата (снимает лимиты)
+		}
 	}
 
 	async updateBalance(

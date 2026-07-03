@@ -101,7 +101,7 @@ export class TasksService {
 		private telegram: TelegramService,
 	) {}
 
-	async create(userId: string, dto: CreateTaskDto) {
+	async create(userId: string, dto: CreateTaskDto, isApp = false) {
 		// Проверка сайта
 		const website = await this.prisma.website.findUnique({
 			where: { id: dto.websiteId },
@@ -125,6 +125,17 @@ export class TasksService {
 		if (keywordCount >= 200) {
 			throw new BadRequestException(
 				'Достигнут лимит в 200 ключевых слов для этого сайта',
+			)
+		}
+
+		// Триал (нет покупок): максимум 5 ключевых слов на сайт (только веб).
+		const hasPaid =
+			(await this.prisma.payment.count({
+				where: { userId, status: 'SUCCEEDED' },
+			})) > 0
+		if (!isApp && !hasPaid && keywordCount >= 5) {
+			throw new BadRequestException(
+				'На бесплатном тарифе можно добавить до 5 ключевых слов. Пополните баланс, чтобы снять ограничение.',
 			)
 		}
 
@@ -858,6 +869,15 @@ export class TasksService {
 		yandexPosition: number | null,
 		googlePosition: number | null = null,
 	) {
+		// Baseline для уведомлений о росте: первая известная позиция запоминается без письма,
+		// дальше письмо шлётся только при выходе на новый рекорд (см. executions.service).
+		if (yandexPosition != null) {
+			await this.prisma.task.updateMany({
+				where: { id: taskId, notifiedBestPosition: null },
+				data: { notifiedBestPosition: yandexPosition },
+			})
+		}
+
 		// Prevent duplicate records within the same hour (e.g. rapid recheck spam)
 		const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
 		const recentRecord = await this.prisma.positionHistory.findFirst({

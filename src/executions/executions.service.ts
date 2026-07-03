@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { AlertsService } from '../alerts/alerts.service'
 import { AppConfigService } from '../app-config/app-config.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -12,6 +13,7 @@ export class ExecutionsService {
 		private usersService: UsersService,
 		private telegram: TelegramService,
 		private appConfig: AppConfigService,
+		private alerts: AlertsService,
 	) {}
 
 	// Получить начало текущей недели (понедельник 00:00)
@@ -362,33 +364,77 @@ export class ExecutionsService {
 				data: { status: 'PENDING', assignedAt: null, assignedExecutorId: null },
 			})
 
+			let riseInfo: { oldPos: number; newPos: number } | null = null
 			if (
 				shouldSavePosition &&
 				(hasPerEngineResult
 					? (dto.yandexPosition || dto.googlePosition)
 					: (dto.yandexPosition || dto.googlePosition || dto.position))
 			) {
+				const newYandexPos = hasPerEngineResult
+					? dto.yandexPosition ?? null
+					: dto.yandexPosition ?? dto.position ?? null
 				await tx.positionHistory.create({
 					data: {
 						taskId: execution.taskId,
-						yandexPosition: hasPerEngineResult
-							? dto.yandexPosition ?? null
-							: dto.yandexPosition ?? dto.position ?? null,
+						yandexPosition: newYandexPos,
 						googlePosition: hasPerEngineResult
 							? dto.googlePosition ?? null
 							: dto.googlePosition ?? dto.position ?? null,
 					},
 				})
+
+				// Уведомление о росте: только при выходе на новый рекорд позиции в Яндексе.
+				// Если рекорда ещё не было (baseline null) — просто фиксируем baseline без письма.
+				if (newYandexPos != null) {
+					const prevBest = execution.task.notifiedBestPosition
+					if (prevBest == null) {
+						await tx.task.update({
+							where: { id: execution.taskId },
+							data: { notifiedBestPosition: newYandexPos },
+						})
+					} else if (newYandexPos < prevBest) {
+						await tx.task.update({
+							where: { id: execution.taskId },
+							data: { notifiedBestPosition: newYandexPos },
+						})
+						riseInfo = { oldPos: prevBest, newPos: newYandexPos }
+					}
+				}
 			}
+
+			// Пересечение порога 300 баллов вниз (для письма «низкий баланс»)
+			const lowBalanceCrossed =
+				pointsSpent > 0 && ownerBalance >= 300 && ownerBalance - pointsSpent < 300
 
 			return {
 				execution: await tx.execution.findUnique({ where: { id: executionId } }),
 				ownerBalanceFailed: false,
+				riseInfo,
+				lowBalanceCrossed,
+				ownerBalanceAfter: ownerBalance - pointsSpent,
+				ownerId: execution.task.website.userId,
 			}
 		})
 
 		if (completion.ownerBalanceFailed) {
 			throw new Error('Недостаточно баллов у владельца сайта. Задача деактивирована.')
+		}
+
+		if (completion.riseInfo) {
+			this.alerts
+				.positionRose(completion.ownerId, {
+					keyword: execution.task.keyword ?? '',
+					siteName: execution.task.website.name,
+					oldPos: completion.riseInfo.oldPos,
+					newPos: completion.riseInfo.newPos,
+				})
+				.catch(() => {})
+		}
+		if (completion.lowBalanceCrossed) {
+			this.alerts
+				.lowBalance(completion.ownerId, completion.ownerBalanceAfter)
+				.catch(() => {})
 		}
 
 		console.log(`[ExecutionsService] Execution ${executionId} completed idempotently`)
@@ -502,6 +548,7 @@ export class ExecutionsService {
 			})
 
 			// Списание с владельца сайта — только если есть что списывать
+			let lowBalanceCrossed = false
 			if (pointsSpent > 0) {
 				await tx.user.update({
 					where: { id: execution.task.website.userId },
@@ -516,14 +563,23 @@ export class ExecutionsService {
 						taskId: execution.taskId,
 					},
 				})
+				lowBalanceCrossed = ownerBalance >= 300 && ownerBalance - pointsSpent < 300
 			}
 
-			return { credited: true as const }
+			return {
+				credited: true as const,
+				lowBalanceCrossed,
+				ownerBalanceAfter: ownerBalance - pointsSpent,
+				ownerId: execution.task.website.userId,
+			}
 		})
 
 		if ('alreadyCredited' in result) return { alreadyCredited: true }
 		if ('insufficientBalance' in result) {
 			throw new Error('Недостаточно баллов у владельца сайта')
+		}
+		if (result.lowBalanceCrossed) {
+			this.alerts.lowBalance(result.ownerId, result.ownerBalanceAfter).catch(() => {})
 		}
 		console.log(
 			`[ExecutionsService] creditEngine: ${label} +${pointsEarned} для exec ${executionId}`,

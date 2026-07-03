@@ -23,7 +23,9 @@ export class TasksController {
 
 	@Post()
 	async create(@Request() req, @Body() dto: CreateTaskDto) {
-		return this.tasksService.create(req.user.id, dto)
+		// Триальный лимит на ключи применяем только к веб-версии; приложение не трогаем
+		const isApp = String(req.headers?.['user-agent'] || '').includes('SkySEO-Desktop')
+		return this.tasksService.create(req.user.id, dto, isApp)
 	}
 
 	@Get('my')

@@ -39,4 +39,10 @@ export class PaymentsController {
 	async getPaymentStatus(@Request() req, @Param('id') id: string) {
 		return this.paymentsService.getPaymentStatus(id, req.user.id)
 	}
+
+	// Оплата со скидкой 10% по одноразовому токену из письма/TG (без авторизации — токен сам по себе доступ)
+	@Get('repeat/:token')
+	async repeatWithDiscount(@Param('token') token: string) {
+		return this.paymentsService.createDiscountedRepeat(token)
+	}
 }

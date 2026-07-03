@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { AlertsModule } from '../alerts/alerts.module'
 import { AnalyticsModule } from '../analytics/analytics.module'
 import { AppConfigModule } from '../app-config/app-config.module'
 import { MetrikaModule } from '../metrika/metrika.module'
@@ -10,7 +11,7 @@ import { AdminController } from './admin.controller'
 import { AdminService } from './admin.service'
 
 @Module({
-	imports: [UsersModule, AnalyticsModule, MetrikaModule, AppConfigModule, NotificationsModule, TasksModule, TelegramModule.forRoot()],
+	imports: [UsersModule, AnalyticsModule, MetrikaModule, AppConfigModule, NotificationsModule, TasksModule, TelegramModule.forRoot(), AlertsModule],
 	controllers: [AdminController],
 	providers: [AdminService],
 })

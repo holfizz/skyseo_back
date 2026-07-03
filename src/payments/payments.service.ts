@@ -1,6 +1,8 @@
+import { randomUUID } from 'crypto'
 import * as https from 'https'
-import { BadRequestException, Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
+import { AlertsService } from '../alerts/alerts.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -8,7 +10,7 @@ import { UsersService } from '../users/users.service'
 import { CreatePaymentDto } from './dto'
 
 @Injectable()
-export class PaymentsService {
+export class PaymentsService implements OnModuleInit {
 	private shopId: string
 	private secretKey: string
 
@@ -18,9 +20,23 @@ export class PaymentsService {
 		private telegramService: TelegramService,
 		private notificationsService: NotificationsService,
 		private configService: ConfigService,
+		private alerts: AlertsService,
 	) {
 		this.shopId = this.configService.get('YOOKASSA_SHOP_ID')
 		this.secretKey = this.configService.get('YOOKASSA_SECRET_KEY')
+	}
+
+	onModuleInit() {
+		// Дожим брошенных платежей: раз в 15 минут ищем неоплаченные заявки и шлём скидку 10%.
+		setInterval(() => {
+			this.processAbandonedPayments().catch(err =>
+				console.error('[Payments] abandoned offers error:', err?.message),
+			)
+		}, 15 * 60 * 1000)
+	}
+
+	private get frontendUrl(): string {
+		return this.configService.get('FRONTEND_URL') || 'https://skyseo.site'
 	}
 
 	async createPayment(userId: string, dto: CreatePaymentDto) {
@@ -159,6 +175,11 @@ export class PaymentsService {
 			// Реферальный бонус — +10% пригласившему
 			await this.grantReferralBonus(payment.user.referredBy, payment.points)
 
+			// Уведомление пользователю (Telegram-бот уведомлений)
+			this.alerts
+				.paymentSucceeded(payment.userId, Number(payment.amount), payment.points)
+				.catch(() => {})
+
 			console.log('[Payments] Balance updated', {
 				paymentId: payment.id,
 				pointsAdded: payment.points,
@@ -211,6 +232,100 @@ export class PaymentsService {
 			where: { userId },
 			orderBy: { createdAt: 'desc' },
 		})
+	}
+
+	// Скидка 10% на «те же баллы»
+	private discountedAmount(amount: number): number {
+		return Math.max(100, Math.round(amount * 0.9))
+	}
+
+	// Находит брошенные (неоплаченные) заявки и один раз шлёт скидочное предложение.
+	async processAbandonedPayments() {
+		const now = Date.now()
+		const abandoned = await this.prisma.payment.findMany({
+			where: {
+				status: 'PENDING',
+				offerSentAt: null,
+				confirmationUrl: { not: null },
+				// прошло хотя бы 30 минут, но не старше суток
+				createdAt: {
+					gte: new Date(now - 24 * 60 * 60 * 1000),
+					lte: new Date(now - 30 * 60 * 1000),
+				},
+			},
+			orderBy: { createdAt: 'desc' },
+			take: 50,
+		})
+
+		for (const p of abandoned) {
+			// Не слать, если пользователь уже что-то оплатил (успешный платёж существует)
+			const paidCount = await this.prisma.payment.count({
+				where: { userId: p.userId, status: 'SUCCEEDED' },
+			})
+			if (paidCount > 0) {
+				await this.prisma.payment.update({
+					where: { id: p.id },
+					data: { offerSentAt: new Date() }, // помечаем, чтобы не проверять снова
+				})
+				continue
+			}
+
+			const token = randomUUID()
+			const amount = this.discountedAmount(Number(p.amount))
+			await this.prisma.payment.update({
+				where: { id: p.id },
+				data: { offerSentAt: new Date(), discountToken: token },
+			})
+			this.alerts
+				.abandonedPaymentOffer(p.userId, {
+					points: p.points,
+					amount,
+					url: `${this.frontendUrl}/payment/repeat?token=${token}`,
+				})
+				.catch(() => {})
+		}
+
+		return { offered: abandoned.length }
+	}
+
+	// Создаёт новый платёж со скидкой 10% по одноразовому токену и возвращает ссылку на оплату.
+	async createDiscountedRepeat(token: string): Promise<{ confirmationUrl: string }> {
+		const original = await this.prisma.payment.findUnique({
+			where: { discountToken: token },
+			include: { user: { select: { id: true, email: true } } },
+		})
+		if (!original) {
+			throw new BadRequestException('Ссылка недействительна')
+		}
+		if (original.status === 'SUCCEEDED') {
+			throw new BadRequestException('Этот платёж уже оплачен')
+		}
+
+		const amount = this.discountedAmount(Number(original.amount))
+		const payment = await this.prisma.payment.create({
+			data: {
+				userId: original.userId,
+				amount,
+				points: original.points, // те же баллы
+				status: 'PENDING',
+			},
+		})
+		const yk = await this.createYooKassaPayment(
+			payment.id,
+			amount,
+			original.user.email,
+		)
+		const updated = await this.prisma.payment.update({
+			where: { id: payment.id },
+			data: {
+				externalId: yk.id,
+				confirmationUrl: yk.confirmation?.confirmation_url,
+			},
+		})
+		if (!updated.confirmationUrl) {
+			throw new BadRequestException('Не удалось создать платёж, попробуйте позже')
+		}
+		return { confirmationUrl: updated.confirmationUrl }
 	}
 
 	async getPaymentStatus(paymentId: string, userId: string) {
@@ -279,6 +394,11 @@ export class PaymentsService {
 
 					// Реферальный бонус — +10% пригласившему (тот же путь, что и в webhook)
 					await this.grantReferralBonus(payment.user.referredBy, payment.points)
+
+					// Уведомление пользователю (Telegram-бот уведомлений)
+					this.alerts
+						.paymentSucceeded(payment.userId, Number(payment.amount), payment.points)
+						.catch(() => {})
 
 					console.log('[Payments] Balance updated for payment', {
 						paymentId: payment.id,

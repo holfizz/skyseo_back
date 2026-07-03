@@ -77,7 +77,7 @@ export class WebsitesService {
 		}
 	}
 
-	async create(userId: string, userEmail: string, dto: CreateWebsiteDto) {
+	async create(userId: string, userEmail: string, dto: CreateWebsiteDto, isApp = false) {
 		validateWebsiteUrl(dto.url)
 
 		await this.checkSiteReachable(dto.url)
@@ -94,6 +94,20 @@ export class WebsitesService {
 			throw new BadRequestException(
 				'Сайт с таким URL уже существует в вашем списке',
 			)
+		}
+
+		// Лимит бесплатного тарифа: 1 сайт (только веб). После первой покупки — без ограничений.
+		const hasPaid =
+			(await this.prisma.payment.count({
+				where: { userId, status: 'SUCCEEDED' },
+			})) > 0
+		if (!isApp && !hasPaid) {
+			const siteCount = await this.prisma.website.count({ where: { userId } })
+			if (siteCount >= 1) {
+				throw new BadRequestException(
+					'На бесплатном тарифе можно добавить только 1 сайт. Пополните баланс — и добавляйте сайты без ограничений.',
+				)
+			}
 		}
 
 		const website = await this.prisma.website.create({

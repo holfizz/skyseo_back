@@ -1,4 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common'
+import { AlertsModule } from '../alerts/alerts.module'
 import { PrismaModule } from '../prisma/prisma.module'
 import { TelegramController } from './telegram.controller'
 import { TelegramService } from './telegram.service'
@@ -14,7 +15,7 @@ export class TelegramModule {
 
 		return {
 			module: TelegramModule,
-			imports: [PrismaModule],
+			imports: [PrismaModule, AlertsModule],
 			controllers: [TelegramController],
 			providers: [TelegramService],
 			exports: [TelegramService],

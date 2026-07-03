@@ -537,6 +537,114 @@ export class NotificationsService {
 		return this.sendEmail(to, subject, `<pre style="font-family:inherit;white-space:pre-wrap;font-size:14px">${text}</pre>`)
 	}
 
+	// ── Общий каркас письма (шапка/подвал бренда) для новых уведомлений ──
+	private emailShell(
+		heading: string,
+		bodyHtml: string,
+		cta?: { text: string; url: string },
+	): string {
+		const button = cta
+			? `<div style="text-align: center; margin: 30px 0 10px 0;">
+          <a href="${cta.url}" style="display: inline-block; background: #007dff; color: #ffffff; padding: 16px 44px; text-decoration: none; font-weight: 600; font-size: 16px; letter-spacing: 1px; text-transform: uppercase; border-radius: 8px;">${cta.text}</a>
+        </div>`
+			: ''
+		return `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">
+        <div style="background: #181818; padding: 40px 20px; text-align: center;">
+          <h1 style="color: #ffffff; font-size: 24px; font-weight: 600; margin: 0; letter-spacing: 1px;">SkySEO</h1>
+        </div>
+        <div style="padding: 40px;">
+          <h2 style="color: #181818; font-size: 22px; font-weight: 600; margin: 0 0 20px 0;">${heading}</h2>
+          ${bodyHtml}
+          ${button}
+        </div>
+        <div style="background: #181818; padding: 40px; text-align: center; color: #ffffff;">
+          <p style="margin: 0 0 5px 0; font-size: 14px;">С уважением,</p>
+          <p style="margin: 0; font-size: 16px; font-weight: 600;">Команда SkySEO</p>
+        </div>
+      </div>`
+	}
+
+	// Рост позиции ключевика (только на новый рекорд) — «ваш сайт вырос»
+	async sendPositionRiseEmail(
+		email: string,
+		data: { keyword: string; siteName: string; oldPos: number; newPos: number },
+	) {
+		const body = `
+      <p style="color: #181818; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+        Ваш сайт <strong>${data.siteName}</strong> поднялся в Яндексе по запросу <strong>«${data.keyword}»</strong>.
+      </p>
+      <div style="background: #ffd54e; padding: 32px; margin: 0 0 8px 0; text-align: center; border: 2px solid #181818;">
+        <p style="color: #181818; margin: 0 0 8px 0; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 2px;">Позиция</p>
+        <p style="color: #181818; font-size: 40px; font-weight: 700; margin: 0;">${data.oldPos} → ${data.newPos}</p>
+      </div>`
+		await this.sendEmail(
+			email,
+			`Рост позиции: ${data.siteName} — «${data.keyword}»`,
+			this.emailShell('Позиции растут', body, {
+				text: 'Открыть кабинет',
+				url: 'https://skyseo.site/cabinet',
+			}),
+		)
+	}
+
+	// Сайт одобрен модерацией
+	async sendSiteApprovedEmail(email: string, siteName: string) {
+		const body = `
+      <p style="color: #181818; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+        Сайт <strong>${siteName}</strong> одобрен и добавлен в продвижение. Первые визиты уже пошли —
+        первые результаты обычно видны через 7–14 дней.
+      </p>`
+		await this.sendEmail(
+			email,
+			`Сайт одобрен: ${siteName}`,
+			this.emailShell('Сайт одобрен', body, {
+				text: 'Открыть кабинет',
+				url: 'https://skyseo.site/cabinet',
+			}),
+		)
+	}
+
+	// Сайт отклонён модерацией
+	async sendSiteRejectedEmail(email: string, siteName: string) {
+		const body = `
+      <p style="color: #181818; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+        Сайт <strong>${siteName}</strong> не прошёл модерацию. Это бывает, если сайт слишком новый,
+        не в топ-50 или требует базовой SEO-настройки. Напишите в поддержку — подскажем, что поправить.
+      </p>`
+		await this.sendEmail(
+			email,
+			`Сайт не одобрен: ${siteName}`,
+			this.emailShell('Сайт не одобрен', body, {
+				text: 'Открыть кабинет',
+				url: 'https://skyseo.site/cabinet',
+			}),
+		)
+	}
+
+	// Скидка на брошенный (неоплаченный) платёж
+	async sendAbandonedPaymentEmail(
+		email: string,
+		data: { points: number; amount: number; url: string },
+	) {
+		const body = `
+      <p style="color: #181818; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+        Вы начинали пополнение баланса, но не завершили оплату. Дарим скидку 10% —
+        те же <strong>${data.points}</strong> баллов за <strong>${data.amount} ₽</strong>.
+      </p>
+      <p style="color: #666666; font-size: 14px; line-height: 1.6; margin: 0;">
+        Если результата не будет — вернём деньги в полном объёме.
+      </p>`
+		await this.sendEmail(
+			email,
+			'Скидка 10% на пополнение баланса',
+			this.emailShell('Ваша скидка 10%', body, {
+				text: 'Оплатить со скидкой',
+				url: data.url,
+			}),
+		)
+	}
+
 	private async sendEmail(to: string, subject: string, html: string) {
 		try {
 			if (this.useSmtp && this.smtpTransporter) {

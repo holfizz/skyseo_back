@@ -31,4 +31,8 @@ export class RegisterDto {
 	@IsOptional()
 	@IsString()
 	role?: string // frontend userType selection: marketer | seo | entrepreneur | startup
+
+	@IsOptional()
+	@IsString()
+	telegram?: string // необязательный Telegram-контакт, указанный при регистрации
 }

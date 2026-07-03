@@ -104,6 +104,39 @@ async function testEmails() {
 			],
 		})
 		console.log('✅ Еженедельный отчет отправлен\n')
+		await sleep(2000)
+
+		// 7. Рост позиции
+		console.log('📧 7/10 Отправка письма о росте позиции...')
+		await notificationsService.sendPositionRiseEmail(testEmail, {
+			keyword: 'купить сумку биркин москва',
+			siteName: 'Мой Сайт',
+			oldPos: 13,
+			newPos: 8,
+		})
+		console.log('✅ Письмо о росте позиции отправлено\n')
+		await sleep(2000)
+
+		// 8. Сайт одобрен
+		console.log('📧 8/10 Отправка письма об одобрении сайта...')
+		await notificationsService.sendSiteApprovedEmail(testEmail, 'Мой Сайт')
+		console.log('✅ Письмо об одобрении отправлено\n')
+		await sleep(2000)
+
+		// 9. Сайт отклонён
+		console.log('📧 9/10 Отправка письма об отклонении сайта...')
+		await notificationsService.sendSiteRejectedEmail(testEmail, 'Мой Сайт')
+		console.log('✅ Письмо об отклонении отправлено\n')
+		await sleep(2000)
+
+		// 10. Скидка на брошенный платёж
+		console.log('📧 10/10 Отправка письма со скидкой на брошенный платёж...')
+		await notificationsService.sendAbandonedPaymentEmail(testEmail, {
+			points: 50000,
+			amount: 4941,
+			url: 'https://skyseo.site/payment/repeat?token=demo',
+		})
+		console.log('✅ Письмо со скидкой отправлено\n')
 
 		console.log('🎉 Все письма успешно отправлены на', testEmail)
 		console.log('📬 Проверьте почту (включая папку "Спам")')
@@ -111,6 +144,8 @@ async function testEmails() {
 		console.error('❌ Ошибка при отправке писем:', error)
 	} finally {
 		await app.close()
+		// Принудительный выход: фоновые setInterval (планировщики) иначе держат процесс
+		process.exit(0)
 	}
 }
 

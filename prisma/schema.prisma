@@ -37,6 +37,13 @@ model User {
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
   priorityBoost          Int       @default(1) // Множитель приоритета в очереди задач (1 = норма, выше = чаще)
+  // Привязка Telegram-бота уведомлений (@skyseo_notification_bot)
+  telegramChatId            String?   @unique // chat_id пользователя в боте уведомлений; null = не привязан
+  telegramUsername          String? // @username на момент привязки (для отображения в админке)
+  telegramLinkCode          String?   @unique // 6-значный код привязки (одноразовый)
+  telegramLinkCodeExpiresAt DateTime? // Срок годности кода привязки
+  telegramLinkedAt          DateTime? // Когда привязал бота
+  telegramContact           String? // Telegram-контакт, указанный при регистрации (необязательное поле)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -94,6 +101,7 @@ model Task {
   pageDurationTo   Int        @default(180) // Максимальная длительность просмотра страницы (сек)
   isActive         Boolean    @default(true)
   keywordStatus    KeywordRestrictionStatus @default(ACTIVE)
+  notifiedBestPosition Int? // Лучшая позиция в Яндексе, о которой уже уведомляли (для писем о росте только на новый рекорд). Стартовое значение = первая замеренная позиция (baseline, без письма)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   assignedAt         DateTime?
@@ -246,6 +254,8 @@ model Payment {
   provider        String        @default("yookassa")
   externalId      String?       @unique // ID платежа в YooKassa
   confirmationUrl String?
+  offerSentAt     DateTime? // Когда отправили письмо/TG со скидкой на брошенный (PENDING) платёж
+  discountToken   String?   @unique // Токен для ссылки «оплатить со скидкой 10%» (одноразовый)
   createdAt       DateTime      @default(now())
   paidAt          DateTime?
 

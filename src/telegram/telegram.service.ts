@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Telegraf } from 'telegraf'
+import { AlertsService } from '../alerts/alerts.service'
 import { PrismaService } from '../prisma/prisma.service'
 
 @Injectable()
@@ -20,6 +21,7 @@ export class TelegramService implements OnModuleDestroy {
 	constructor(
 		private configService: ConfigService,
 		private prisma: PrismaService,
+		private alerts: AlertsService,
 	) {
 		this.adminId = this.configService.get('TELEGRAM_ADMIN_ID')
 		const token = this.configService.get('TELEGRAM_BOT_TOKEN')
@@ -315,10 +317,11 @@ export class TelegramService implements OnModuleDestroy {
 			if (data.startsWith('approve_site_')) {
 				const websiteId = data.replace('approve_site_', '')
 				try {
-					await this.prisma.website.update({
+					const site = await this.prisma.website.update({
 						where: { id: websiteId },
 						data: { isApproved: true },
 					})
+					this.alerts.siteApproved(site.userId, site.name).catch(() => {})
 					await ctx.answerCbQuery('✅ Одобрено')
 					await ctx.editMessageReplyMarkup({ inline_keyboard: [[
 						{ text: '✅ Одобрен', callback_data: 'noop' },
@@ -332,7 +335,7 @@ export class TelegramService implements OnModuleDestroy {
 			if (data.startsWith('reject_site_confirm_')) {
 				const websiteId = data.replace('reject_site_confirm_', '')
 				try {
-					await this.prisma.$transaction([
+					const [site] = await this.prisma.$transaction([
 						this.prisma.website.update({
 							where: { id: websiteId },
 							data: { isRestricted: true },
@@ -342,6 +345,7 @@ export class TelegramService implements OnModuleDestroy {
 							data: { keywordStatus: 'RESTRICTED' },
 						}),
 					])
+					this.alerts.siteRejected(site.userId, site.name).catch(() => {})
 					await ctx.answerCbQuery('❌ Отклонён')
 					await ctx.editMessageReplyMarkup({ inline_keyboard: [[
 						{ text: '❌ Отклонён', callback_data: 'noop' },

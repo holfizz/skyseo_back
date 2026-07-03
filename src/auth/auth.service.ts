@@ -292,6 +292,7 @@ export class AuthService {
 			// Регистрация из приложения (есть appVersion) → сразу ACTIVE, иначе дефолт NEVER (веб)
 			appStatus: dto.appVersion ? 'ACTIVE' : undefined,
 			userType: mappedUserType,
+			telegramContact: dto.telegram?.trim() || undefined,
 		})
 
 		// Бонус по промокоду — отдельная запись в balance_history для отчётности

@@ -20,7 +20,9 @@ export class WebsitesController {
 
 	@Post()
 	async create(@Request() req, @Body() dto: CreateWebsiteDto) {
-		return this.websitesService.create(req.user.id, req.user.email, dto)
+		// Лимиты бесплатного тарифа применяем только к веб-версии; десктоп-приложение не трогаем
+		const isApp = String(req.headers?.['user-agent'] || '').includes('SkySEO-Desktop')
+		return this.websitesService.create(req.user.id, req.user.email, dto, isApp)
 	}
 
 	@Get()

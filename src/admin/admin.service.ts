@@ -20,6 +20,7 @@ import {
 	KEY_POINTS_NOT_FOUND_EARNED,
 	KEY_POINTS_NOT_FOUND_SPENT,
 } from '../app-config/app-config.service'
+import { AlertsService } from '../alerts/alerts.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -45,6 +46,7 @@ export class AdminService {
 		private notifications: NotificationsService,
 		private tasksService: TasksService,
 		private telegram: TelegramService,
+		private alerts: AlertsService,
 	) {}
 
 	async getGoogleConfigForAdmin() {
@@ -133,10 +135,12 @@ export class AdminService {
 	}
 
 	async approveWebsite(websiteId: string) {
-		return this.prisma.website.update({
+		const website = await this.prisma.website.update({
 			where: { id: websiteId },
 			data: { isApproved: true },
 		})
+		this.alerts.siteApproved(website.userId, website.name).catch(() => {})
+		return website
 	}
 
 	async rejectWebsite(websiteId: string) {
@@ -150,6 +154,7 @@ export class AdminService {
 				data: { keywordStatus: 'RESTRICTED' },
 			}),
 		])
+		this.alerts.siteRejected(website.userId, website.name).catch(() => {})
 		return website
 	}
 
@@ -295,6 +300,8 @@ export class AdminService {
 			appVersion: true,
 			appStatus: true,
 			createdAt: true,
+			telegramChatId: true,
+			telegramUsername: true,
 			_count: {
 				select: {
 					websites: true,

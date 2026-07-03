@@ -12,6 +12,8 @@ import { AppVersionModule } from './app-version/app-version.module'
 import { AuthModule } from './auth/auth.module'
 import { ExecutionsModule } from './executions/executions.module'
 import { HealthModule } from './health/health.module'
+import { AlertsModule } from './alerts/alerts.module'
+import { NotifyBotModule } from './notify-bot/notify-bot.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { PaymentsModule } from './payments/payments.module'
 import { PrismaModule } from './prisma/prisma.module'
@@ -42,6 +44,8 @@ import { WebsitesModule } from './websites/websites.module'
 		PaymentsModule,
 		TelegramModule.forRoot(),
 		NotificationsModule,
+		NotifyBotModule,
+		AlertsModule,
 		AdminModule,
 		OutreachModule,
 		InboxModule,
