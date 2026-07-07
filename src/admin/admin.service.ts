@@ -314,7 +314,25 @@ export class AdminService {
 			this.prisma.user.findMany({ select, where, orderBy, skip: offset, take: limit }),
 			this.prisma.user.count({ where }),
 		])
-		return { users, total, offset, limit }
+		// Сумма реальных покупок (SUCCEEDED) по этим юзерам — для колонки «куплено».
+		const ids = users.map(u => u.id)
+		const paid = ids.length
+			? await this.prisma.payment.groupBy({
+				by: ['userId'],
+				where: { userId: { in: ids }, status: 'SUCCEEDED' },
+				_sum: { points: true, amount: true },
+			})
+			: []
+		const paidByUser = new Map(paid.map(p => [p.userId, p]))
+		const usersWithPurchases = users.map(u => {
+			const p = paidByUser.get(u.id)
+			return {
+				...u,
+				purchasedPoints: p?._sum.points ?? 0,
+				purchasedRub: p?._sum.amount ? Number(p._sum.amount) : 0,
+			}
+		})
+		return { users: usersWithPurchases, total, offset, limit }
 	}
 
 	async getAllSites(search = '', offset = 0, limit = 100, sortBy = 'createdAt', sortDir: 'asc' | 'desc' = 'desc') {
@@ -390,6 +408,13 @@ export class AdminService {
 									useGoogle: true,
 									maxYandexVisits: true,
 									maxGoogleVisits: true,
+									notifiedBestPosition: true,
+									// Последняя известная позиция ключа (для админ-статистики + топ-10)
+									positionHistory: {
+										orderBy: { createdAt: 'desc' as const },
+										take: 1,
+										select: { yandexPosition: true, googlePosition: true },
+									},
 									_count: { select: { executions: true } },
 								},
 							},
