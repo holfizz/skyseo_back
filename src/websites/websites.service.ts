@@ -7,6 +7,7 @@ import {
 import { TelegramService } from '../telegram/telegram.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { AppConfigService } from '../app-config/app-config.service'
+import { TasksService } from '../tasks/tasks.service'
 import { CreateWebsiteDto, UpdateWebsiteDto } from './dto'
 
 function extractRootDomain(url: string): string {
@@ -39,6 +40,7 @@ export class WebsitesService {
 		private prisma: PrismaService,
 		private telegram: TelegramService,
 		private appConfig: AppConfigService,
+		private tasks: TasksService,
 	) {}
 
 	// Не даём владельцу поставить потолок больше, чем сейчас тянет сеть
@@ -140,10 +142,18 @@ export class WebsitesService {
 	}
 
 	async findAll(userId: string) {
-		return this.prisma.website.findMany({
-			where: { userId },
-			orderBy: { createdAt: 'desc' },
-		})
+		const [websites, availability] = await Promise.all([
+			this.prisma.website.findMany({
+				where: { userId },
+				orderBy: { createdAt: 'desc' },
+			}),
+			this.tasks.getDailyAvailabilityForUser(userId),
+		])
+		// todayAvailable = сколько визитов в день доступно сайту сегодня с учётом разгона
+		return websites.map(w => ({
+			...w,
+			todayAvailable: availability.get(w.id) ?? null,
+		}))
 	}
 
 	async findOne(id: string, userId: string) {

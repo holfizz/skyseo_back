@@ -998,6 +998,53 @@ export class TasksService {
 		return maxPerDay
 	}
 
+	// Сколько визитов в день доступно каждому активному сайту пользователя СЕГОДНЯ
+	// с учётом плавного разгона (rampedDailyCap) и потолка сети. Та же формула, что в
+	// computeAvailability, но без суточного jitter — для честного показа в кабинете.
+	async getDailyAvailabilityForUser(userId: string): Promise<Map<string, number>> {
+		const sites = await this.prisma.website.findMany({
+			where: { userId, isActive: true },
+			select: {
+				id: true,
+				createdAt: true,
+				dailyVisitsTarget: true,
+				autoMaxVisits: true,
+			},
+		})
+		if (sites.length === 0) return new Map()
+
+		const networkCap = await this.getNetworkPerSiteCapacity()
+		const siteIds = sites.map(s => s.id)
+		const tasks = await this.prisma.task.findMany({
+			where: { websiteId: { in: siteIds }, isActive: true, keywordStatus: 'ACTIVE' },
+			select: {
+				websiteId: true,
+				type: true,
+				maxYandexVisits: true,
+				maxGoogleVisits: true,
+				useYandex: true,
+				useGoogle: true,
+			},
+		})
+		const targetMap = new Map<string, number>()
+		for (const t of tasks) {
+			targetMap.set(
+				t.websiteId,
+				(targetMap.get(t.websiteId) ?? 0) + this.getTaskDailyTarget(t),
+			)
+		}
+
+		const out = new Map<string, number>()
+		for (const s of sites) {
+			const userSiteTarget = s.autoMaxVisits
+				? networkCap
+				: (s.dailyVisitsTarget ?? targetMap.get(s.id) ?? 0)
+			const cappedTarget = Math.min(userSiteTarget, networkCap)
+			out.set(s.id, Math.round(this.rampedDailyCap(cappedTarget, s.createdAt)))
+		}
+		return out
+	}
+
 	// Дневной разброс ±10%, чтобы выдача не была каждый день ровно равна потолку.
 	// Детерминирован по (сайт + календарный день) — стабилен в течение суток, иначе
 	// при каждом запросе доступности cap бы «прыгал» и todayOnSite≷cap мерцал.
