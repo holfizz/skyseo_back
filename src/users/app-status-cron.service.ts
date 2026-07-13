@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { WinbackService } from '../winback/winback.service'
 
 // Инференс заброшенности приложения (на Mac хук удаления невозможен, поэтому считаем по активности).
 // Сигнал «жив» = свежайший из ТРЁХ app-only событий (GREATEST игнорит NULL):
@@ -16,7 +17,10 @@ const INACTIVE_DAYS = 7
 export class AppStatusCronService implements OnModuleInit {
 	private readonly logger = new Logger(AppStatusCronService.name)
 
-	constructor(private prisma: PrismaService) {}
+	constructor(
+		private prisma: PrismaService,
+		private winback: WinbackService,
+	) {}
 
 	onModuleInit() {
 		// Прогон вскоре после старта + далее раз в сутки. Интервал не держит процесс (unref).
@@ -26,7 +30,8 @@ export class AppStatusCronService implements OnModuleInit {
 
 	private async run() {
 		try {
-			const affected = await this.prisma.$executeRaw`
+			// RETURNING id — чтобы знать, кто именно отвалился, и отправить каждому win-back письмо.
+			const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
 				UPDATE users u
 				SET "appStatus" = 'UNINSTALLED'::"AppStatus"
 				WHERE u."appStatus" IN ('ACTIVE'::"AppStatus", 'REINSTALLED'::"AppStatus")
@@ -39,9 +44,14 @@ export class AppStatusCronService implements OnModuleInit {
 						u."lastSeenAt",
 						u."appLastLoginAt"
 					) < (now() AT TIME ZONE 'UTC') - (${INACTIVE_DAYS}::int * interval '1 day')
+				RETURNING u.id
 			`
-			if (affected > 0) {
-				this.logger.log(`appStatus → UNINSTALLED по тишине ≥${INACTIVE_DAYS}д: ${affected}`)
+			if (rows.length > 0) {
+				this.logger.log(`appStatus → UNINSTALLED по тишине ≥${INACTIVE_DAYS}д: ${rows.length}`)
+				// Win-back письмо каждому только что отвалившемуся (метод сам идемпотентен и не бросает).
+				for (const r of rows) {
+					await this.winback.onUninstall(r.id)
+				}
 			}
 		} catch (e) {
 			this.logger.error('Инференс appStatus не выполнен', e as Error)

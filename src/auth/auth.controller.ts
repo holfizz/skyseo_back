@@ -9,12 +9,14 @@ import {
 import { JwtAuthGuard } from './jwt-auth.guard'
 import { lookupPromoCode } from './promo-codes'
 import { PrismaService } from '../prisma/prisma.service'
+import { WinbackService } from '../winback/winback.service'
 
 @Controller('auth')
 export class AuthController {
 	constructor(
 		private authService: AuthService,
 		private prisma: PrismaService,
+		private winback: WinbackService,
 	) {}
 
 	// Единое поле: код может быть промокодом (бонус новичку) ИЛИ кодом друга (реферал)
@@ -156,6 +158,8 @@ export class AuthController {
 			where: { id: user.id },
 			data: { appStatus: 'UNINSTALLED' },
 		})
+		// Win-back: письмо «вернитесь — +500» (один раз). Метод сам не бросает.
+		await this.winback.onUninstall(user.id)
 		return { ok: true }
 	}
 

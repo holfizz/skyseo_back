@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Post, Request, UseGuards } from '@nestjs/common'
 import { randomUUID } from 'crypto'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { RewardsService } from '../rewards/rewards.service'
 import { UsersService } from './users.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { WinbackService } from '../winback/winback.service'
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -10,6 +12,8 @@ export class UsersController {
 	constructor(
 		private usersService: UsersService,
 		private prisma: PrismaService,
+		private rewards: RewardsService,
+		private winback: WinbackService,
 	) {}
 
 	@Get('profile')
@@ -34,6 +38,10 @@ export class UsersController {
 	// удаления heartbeat'ов нет, поэтому UNINSTALLED не «оживёт» ложно.
 	@Post('heartbeat')
 	async heartbeat(@Request() req, @Body('appVersion') appVersion?: string) {
+		// req.user грузится свежим из БД на каждый запрос (JwtStrategy), поэтому статус актуален.
+		// Если он был UNINSTALLED — этот heartbeat и есть возврат (edge UNINSTALLED→ACTIVE).
+		const wasUninstalled = req.user.appStatus === 'UNINSTALLED'
+
 		await this.prisma.$executeRaw`
 			UPDATE users
 			SET "lastSeenAt" = NOW(),
@@ -46,6 +54,15 @@ export class UsersController {
 				where: { id: req.user.id },
 				data: { appVersion },
 			})
+		}
+		// Ежедневная награда за онлайн: раз в сутки, пока приложение шлёт heartbeat.
+		// Не роняем heartbeat, если начисление вдруг упало.
+		await this.rewards
+			.claimDaily(req.user.id, req.user.isSuspicious)
+			.catch(() => {})
+		// Win-back: вернулся после письма → +500 (один раз) + пинг владельцу. Метод сам не бросает.
+		if (wasUninstalled) {
+			await this.winback.onReturn(req.user.id)
 		}
 		return { ok: true }
 	}

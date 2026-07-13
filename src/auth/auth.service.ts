@@ -13,6 +13,7 @@ import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
+import { WinbackService } from '../winback/winback.service'
 import { LoginDto, RegisterDto } from './dto'
 import { lookupPromoCode } from './promo-codes'
 
@@ -171,6 +172,7 @@ export class AuthService {
 		private telegramService: TelegramService,
 		private notificationsService: NotificationsService,
 		private prisma: PrismaService,
+		private winback: WinbackService,
 	) {}
 
 	private validateEmailDomain(email: string): void {
@@ -364,6 +366,8 @@ export class AuthService {
 			}
 			if (user.appStatus === 'UNINSTALLED') {
 				updateData.appStatus = 'REINSTALLED'
+				// Возврат после удаления → win-back бонус +500 (один раз) + пинг владельцу в TG
+				this.winback.onReturn(user.id).catch(() => {})
 			} else if (user.appStatus !== 'ACTIVE') {
 				updateData.appStatus = 'ACTIVE'
 			}

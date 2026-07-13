@@ -34,6 +34,8 @@ model User {
   appStatus              AppStatus @default(NEVER)
   appLastLoginAt         DateTime? // Последний логин с приложения (не с веб)
   uninstallToken         String?   @unique // Стабильный токен для beacon-пинга от деинсталлятора Windows
+  winbackEmailSentAt     DateTime? // win-back: письмо «вернись +500» отправлено (один раз за всё время)
+  winbackBonusGrantedAt  DateTime? // win-back: бонус +500 за возвращение начислен (один раз за всё время)
   weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
   aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
   priorityBoost          Int       @default(1) // Множитель приоритета в очереди задач (1 = норма, выше = чаще)
@@ -53,6 +55,7 @@ model User {
   balanceHistory      BalanceHistory[]
   passwordResetTokens PasswordResetToken[]
   captchaEvents       CaptchaEvent[]
+  dailyRewards        DailyReward[]
 
   @@index([registrationIp, createdAt])
   @@map("users")
@@ -245,6 +248,23 @@ model BalanceHistory {
   @@map("balance_history")
 }
 
+// Ежедневная награда за то, что приложение было в сети (heartbeat) в этот день.
+// Идемпотентность и календарь строятся на @@unique([userId, date]) (date = полночь UTC).
+model DailyReward {
+  id        String   @id @default(uuid())
+  userId    String
+  date      DateTime // полночь UTC того дня, за который начислено
+  points    Int      @default(50)
+  streak    Int      @default(1) // длина серии на этот день (пропуск дня → сбрасывается в 1)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("daily_rewards")
+}
+
 model Payment {
   id              String        @id @default(uuid())
   userId          String
@@ -362,6 +382,8 @@ enum BalanceHistoryType {
   REFUND
   ADMIN_ADJUSTMENT
   REFERRAL_BONUS
+  DAILY_REWARD
+  WINBACK_BONUS
 }
 
 enum FailureReason {

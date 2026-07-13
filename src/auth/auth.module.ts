@@ -6,6 +6,7 @@ import { NotificationsModule } from '../notifications/notifications.module'
 import { PrismaModule } from '../prisma/prisma.module'
 import { TelegramModule } from '../telegram/telegram.module'
 import { UsersModule } from '../users/users.module'
+import { WinbackModule } from '../winback/winback.module'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
@@ -16,6 +17,7 @@ import { JwtStrategy } from './jwt.strategy'
 		PassportModule,
 		TelegramModule.forRoot(),
 		NotificationsModule,
+		WinbackModule,
 		PrismaModule,
 		JwtModule.registerAsync({
 			inject: [ConfigService],
