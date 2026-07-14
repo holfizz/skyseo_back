@@ -7,9 +7,12 @@ import { RewardsService } from './rewards.service'
 export class RewardsController {
 	constructor(private rewards: RewardsService) {}
 
-	// Данные для экрана стрика в приложении. Начисление идёт на heartbeat, здесь только чтение.
+	// Данные для экрана стрика в приложении.
+	// Сначала начисляем за сегодня (идемпотентно), потом отдаём — иначе при открытии
+	// экрана огонёк за сегодня не появится, пока не отработает heartbeat (гонка fetch↔claim).
 	@Get('streak')
 	async getStreak(@Request() req) {
+		await this.rewards.claimDaily(req.user.id, req.user.isSuspicious).catch(() => {})
 		return this.rewards.getStreak(req.user.id)
 	}
 }
