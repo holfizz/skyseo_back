@@ -18,6 +18,7 @@ import { NotificationsModule } from './notifications/notifications.module'
 import { PaymentsModule } from './payments/payments.module'
 import { PrismaModule } from './prisma/prisma.module'
 import { RewardsModule } from './rewards/rewards.module'
+import { SmmModule } from './smm/smm.module'
 import { StatisticsModule } from './statistics/statistics.module'
 import { TasksModule } from './tasks/tasks.module'
 import { TelegramModule } from './telegram/telegram.module'
@@ -49,6 +50,7 @@ import { WebsitesModule } from './websites/websites.module'
 		NotifyBotModule,
 		AlertsModule,
 		AdminModule,
+		SmmModule,
 		OutreachModule,
 		InboxModule,
 		AnalyticsModule,

@@ -19,6 +19,7 @@ model User {
   referralSource         String? // Откуда узнал
   referralCode           String?   @unique // Реферальный код пользователя
   referredBy             String? // ID пользователя, который пригласил
+  marketingCode          String? // Код SMM-поста (utm_campaign) из трекинг-ссылки; ставится напрямую при регистрации (фоллбэк — по IP)
   promoCode              String? // Промокод, введённый при регистрации (для трекинга источников/партнёров)
   city                   String? // Город пользователя
   isActive               Boolean   @default(true)
@@ -58,6 +59,7 @@ model User {
   dailyRewards        DailyReward[]
 
   @@index([registrationIp, createdAt])
+  @@index([marketingCode])
   @@map("users")
 }
 
@@ -339,6 +341,7 @@ model PasswordResetToken {
 enum Role {
   USER
   ADMIN
+  SMM
 }
 
 enum UserType {
@@ -498,6 +501,21 @@ model TelegramAdChannel {
 }
 
 // Ручной учёт воронки по каналам. Заполняется в админке.
+// SMM-пост: одна запись = один пост в ТГ-канале с трекинг-ссылкой.
+// Регистрации/оплаты атрибутируются к посту по code (== utm_campaign в ссылке).
+model MarketingPost {
+  id          String   @id @default(uuid())
+  code        String   @unique // короткий код в utm_campaign ссылки
+  title       String // название поста (для SMM)
+  tgUrl       String? // ссылка на сам пост в ТГ (для справки)
+  tgText      String? // текст поста (для справки)
+  destination String   @default("/") // путь на сайте, куда ведёт ссылка
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("marketing_posts")
+}
+
 model FunnelEntry {
   id            String   @id @default(uuid())
   date          DateTime @db.Date

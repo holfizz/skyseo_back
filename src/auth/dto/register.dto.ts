@@ -22,6 +22,10 @@ export class RegisterDto {
 
 	@IsOptional()
 	@IsString()
+	marketingCode?: string // код SMM-поста (utm_campaign) из трекинг-ссылки
+
+	@IsOptional()
+	@IsString()
 	city?: string
 
 	@IsOptional()

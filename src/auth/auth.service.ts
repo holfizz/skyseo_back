@@ -265,6 +265,23 @@ export class AuthService {
 			await resolveReferrer(recentClick?.ref?.trim().toUpperCase())
 		}
 
+		// Атрибуция к SMM-посту: код поста (utm_campaign) едет в трекинг-ссылке и
+		// сохраняется фронтом — берём его напрямую из регистрации (надёжно, не зависит от IP).
+		// Фоллбэк — последний клик по трекинг-ссылке с этого IP за 72ч, если фронт код не прислал.
+		let marketingCode: string | undefined = dto.marketingCode?.trim() || undefined
+		if (!marketingCode && ipAddress) {
+			const campaignClick = await this.prisma.pageEvent.findFirst({
+				where: {
+					utmCampaign: { not: null },
+					ip: ipAddress,
+					createdAt: { gte: new Date(Date.now() - 72 * 60 * 60 * 1000) },
+				},
+				orderBy: { createdAt: 'desc' },
+				select: { utmCampaign: true },
+			})
+			marketingCode = campaignClick?.utmCampaign?.trim() || undefined
+		}
+
 		const userTypeMap: Record<string, string> = {
 			marketer: 'MARKETER',
 			seo: 'SEO',
@@ -285,6 +302,7 @@ export class AuthService {
 			referralSource: dto.referralSource,
 			referralCode,
 			referredBy,
+			marketingCode,
 			promoCode: promo?.code,
 			city: dto.city || this.getCityFromIp(ipAddress),
 			lastLoginIp: ipAddress,
