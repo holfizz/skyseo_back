@@ -178,6 +178,12 @@ export class AdminController {
 		return this.adminService.getExecutionLog(limit ? Number(limit) : 300)
 	}
 
+	// Компактный трейс одного выполнения (шапка-итог + все шаги) — можно скопировать и прислать.
+	@Get('executions/:id/trace')
+	async getExecutionTrace(@Param('id') id: string) {
+		return this.adminService.getExecutionTrace(id)
+	}
+
 	// Письмо «вернись» — только по ручному нажатию админа
 	@Post('users/:id/winback-email')
 	async sendWinbackEmail(
