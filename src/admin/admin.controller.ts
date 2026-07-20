@@ -51,7 +51,7 @@ export class AdminController {
 	}
 
 	@Put('websites/:id')
-	async updateWebsite(@Param('id') id: string, @Body() body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean }) {
+	async updateWebsite(@Param('id') id: string, @Body() body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean; adPolicy?: string }) {
 		return this.adminService.updateWebsite(id, body)
 	}
 
@@ -117,6 +117,16 @@ export class AdminController {
 	@Get('users/:id')
 	async getUser(@Param('id') id: string) {
 		return this.adminService.getUserDetails(id)
+	}
+
+	// Журнал выполнений по сайтам пользователя (тот же формат, что в кабинете менеджера)
+	@Get('users/:id/logs')
+	async getUserLogs(@Param('id') id: string, @Query('limit') limit?: string) {
+		const n = Number(limit)
+		return this.adminService.getUserLogs(
+			id,
+			Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), 500) : 100,
+		)
 	}
 
 	@Put('users/:id/balance')

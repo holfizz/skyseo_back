@@ -21,6 +21,8 @@ import {
 	KEY_POINTS_NOT_FOUND_SPENT,
 } from '../app-config/app-config.service'
 import { AlertsService } from '../alerts/alerts.service'
+import { loadExecutionTrace } from '../common/execution-trace'
+import { ManagerService } from '../manager/manager.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -47,6 +49,7 @@ export class AdminService {
 		private tasksService: TasksService,
 		private telegram: TelegramService,
 		private alerts: AlertsService,
+		private managerService: ManagerService,
 	) {}
 
 	async getGoogleConfigForAdmin() {
@@ -96,9 +99,9 @@ export class AdminService {
 	// Админ правит просмотры/день и режим у ЛЮБОГО сайта (без проверки владельца).
 	async updateWebsite(
 		websiteId: string,
-		body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean },
+		body: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean; adPolicy?: string },
 	) {
-		const data: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean } = {}
+		const data: { dailyVisitsTarget?: number | null; autoMaxVisits?: boolean; adPolicy?: string } = {}
 		if (body.dailyVisitsTarget !== undefined) {
 			data.dailyVisitsTarget =
 				body.dailyVisitsTarget != null && body.dailyVisitsTarget > 0
@@ -106,6 +109,10 @@ export class AdminService {
 					: null
 		}
 		if (body.autoMaxVisits !== undefined) data.autoMaxVisits = body.autoMaxVisits
+		// Белый список: мусорное значение молча игнорируем, а не пишем в БД и не роняем 500
+		if (body.adPolicy !== undefined && ['EXCLUDE', 'ONLY', 'ALL'].includes(body.adPolicy)) {
+			data.adPolicy = body.adPolicy
+		}
 		return this.prisma.website.update({ where: { id: websiteId }, data })
 	}
 
@@ -354,6 +361,7 @@ export class AdminService {
 					name: true,
 					url: true,
 					isActive: true,
+					adPolicy: true,
 					createdAt: true,
 					user: { select: { id: true, email: true } },
 					_count: { select: { tasks: true } },
@@ -1317,43 +1325,12 @@ export class AdminService {
 	// Компактный трейс одного выполнения: шапка с итогом + все события по времени.
 	// Отдаёт готовый text (можно скопировать и прислать на разбор) + саму структуру.
 	async getExecutionTrace(id: string) {
-		const ex = await this.prisma.execution.findUnique({
-			where: { id },
-			select: {
-				id: true, status: true, completionKind: true, failureReason: true,
-				foundInTop: true, position: true,
-				yandexFoundInTop: true, googleFoundInTop: true, yandexPosition: true, googlePosition: true,
-				targetVisited: true, directNavigationUsed: true, pagesVisited: true, duration: true,
-				createdAt: true, completedAt: true,
-				task: { select: { keyword: true, useYandex: true, useGoogle: true, website: { select: { url: true } } } },
-				executor: { select: { email: true, appVersion: true } },
-				events: { select: { engine: true, type: true, stage: true, details: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
-			},
-		})
-		if (!ex) return { text: 'Выполнение не найдено', execution: null }
-		const hhmmss = (d: Date) => new Date(d).toLocaleTimeString('ru-RU', { hour12: false })
-		const engines = [ex.task?.useYandex && 'yandex', ex.task?.useGoogle && 'google'].filter(Boolean).join('+') || '—'
-		const L: string[] = []
-		L.push(`ВЫПОЛНЕНИЕ ${ex.id}`)
-		L.push(`сайт: ${ex.task?.website?.url ?? '—'}`)
-		L.push(`запрос: "${ex.task?.keyword ?? '—'}" | движки: ${engines}`)
-		L.push(`ПК: ${ex.executor?.email ?? '—'} · v${ex.executor?.appVersion ?? '?'}`)
-		L.push(`старт: ${new Date(ex.createdAt).toLocaleString('ru-RU')} | длит: ${ex.duration ?? '—'}с`)
-		L.push(`ИТОГ: ${ex.status} / ${ex.completionKind ?? '—'}${ex.failureReason ? ` (${ex.failureReason})` : ''}`)
-		L.push(`Яндекс: ${ex.yandexFoundInTop ? 'найден, поз.' + (ex.yandexPosition ?? '?') : 'НЕ найден'} · Google: ${ex.googleFoundInTop ? 'найден, поз.' + (ex.googlePosition ?? '?') : 'НЕ найден'}`)
-		L.push(`зашли на сайт: ${ex.targetVisited ? 'ДА' : 'НЕТ'}${ex.directNavigationUsed ? ' (прямой заход, не клик)' : ''} · страниц: ${ex.pagesVisited ?? 0}`)
-		L.push(`—— шаги (${ex.events.length}) ——`)
-		for (const e of ex.events) {
-			const d = (e.details && typeof e.details === 'object' ? e.details : {}) as Record<string, unknown>
-			let extra = ''
-			if ('results' in d) extra = `результатов=${d.results}`
-			else if ('parsed' in d) extra = `цель=${d.target} | спарсили: ${((d.parsed as string[]) || []).join(', ')}`
-			else if ('url' in d) extra = String(d.url).replace(/^https?:\/\//, '').slice(0, 60)
-			else if ('reason' in d) extra = String(d.reason)
-			else if ('dom' in d) extra = 'dom=' + JSON.stringify(d.dom).slice(0, 120)
-			L.push(`${hhmmss(e.createdAt)} [${e.engine ?? '-'}] ${e.stage}${extra ? ' — ' + extra : ''}`)
-		}
-		return { text: L.join('\n'), execution: ex }
+		return loadExecutionTrace(this.prisma, id)
+	}
+
+	// Журнал выполнений по сайтам одного пользователя — общая реализация с кабинетом менеджера.
+	async getUserLogs(userId: string, limit = 100) {
+		return this.managerService.getClientLogs(userId, limit)
 	}
 
 	// Письмо «вернись» — только по ручному нажатию админа. Текст редактируется на фронте,

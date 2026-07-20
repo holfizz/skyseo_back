@@ -651,6 +651,17 @@ export class ExecutionsService {
 		// Стр. 5 начинается с 14-го дня. NOT_IN_SERP от молодого аккаунта — не значит что
 		// сайта нет в выдаче, просто не долистал. Считаем к ограничению только от зрелых.
 		if (dto.failureReason === 'NOT_IN_SERP') {
+			// При adPolicy != EXCLUDE пул конкурентов ограничен промо, и pagesVisited
+			// (по которому приложение ставит NOT_IN_SERP) занижается самой настройкой.
+			// Такой сигнал не доказывает отсутствие сайта в выдаче — ключевик не ограничиваем.
+			const taskWebsite = await this.prisma.task.findUnique({
+				where: { id: execution.taskId },
+				select: { website: { select: { adPolicy: true } } },
+			})
+			if (taskWebsite?.website?.adPolicy && taskWebsite.website.adPolicy !== 'EXCLUDE') {
+				return updatedExecution
+			}
+
 			const executor = await this.prisma.user.findUnique({
 				where: { id: execution.executorId },
 				select: { createdAt: true },

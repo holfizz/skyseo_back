@@ -216,6 +216,8 @@ export class TasksService {
 				maxGoogleVisits: task.maxGoogleVisits,
 				useYandex: task.useYandex,
 				useGoogle: task.useGoogle,
+				// Режим рекламы в выдаче; старое приложение поле просто игнорирует
+				adPolicy: task.website.adPolicy ?? 'EXCLUDE',
 				createdAt: task.createdAt,
 				alreadyCompleted: false,
 				remainingExecutions: 1,

@@ -74,6 +74,7 @@ model Website {
   isRestricted      Boolean  @default(false) // true если отклонён — показывает баннер "вы ограничены" у юзера
   dailyVisitsTarget Int? // Опциональный явный потолок визитов на сайт в сутки. Null = сумма target'ов всех активных ключей.
   autoMaxVisits     Boolean  @default(false) // Крутить всегда по максимуму сети (ceil(среднее ПК/день / 14)), динамически растёт с сетью
+  adPolicy          String   @default("EXCLUDE") // Что открывать в выдаче Яндекса: EXCLUDE — не заходить на промо (реклама), ONLY — только промо, ALL — и то и другое
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -342,6 +343,7 @@ enum Role {
   USER
   ADMIN
   SMM
+  MANAGER
 }
 
 enum UserType {

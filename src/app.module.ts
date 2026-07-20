@@ -12,6 +12,7 @@ import { AppVersionModule } from './app-version/app-version.module'
 import { AuthModule } from './auth/auth.module'
 import { ExecutionsModule } from './executions/executions.module'
 import { HealthModule } from './health/health.module'
+import { ManagerModule } from './manager/manager.module'
 import { AlertsModule } from './alerts/alerts.module'
 import { NotifyBotModule } from './notify-bot/notify-bot.module'
 import { NotificationsModule } from './notifications/notifications.module'
@@ -51,6 +52,7 @@ import { WebsitesModule } from './websites/websites.module'
 		AlertsModule,
 		AdminModule,
 		SmmModule,
+		ManagerModule,
 		OutreachModule,
 		InboxModule,
 		AnalyticsModule,
