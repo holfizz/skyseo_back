@@ -55,6 +55,7 @@ model User {
   payments            Payment[]
   balanceHistory      BalanceHistory[]
   passwordResetTokens PasswordResetToken[]
+  clientNotes         ClientNote[]         @relation("ClientNotes")
   captchaEvents       CaptchaEvent[]
   dailyRewards        DailyReward[]
 
@@ -279,6 +280,7 @@ model Payment {
   confirmationUrl String?
   offerSentAt     DateTime? // Когда отправили письмо/TG со скидкой на брошенный (PENDING) платёж
   discountToken   String?   @unique // Токен для ссылки «оплатить со скидкой 10%» (одноразовый)
+  issuedBy        String? // email менеджера/админа, вручную проведшего платёж (provider=manual). null = обычная онлайн-оплата
   createdAt       DateTime      @default(now())
   paidAt          DateTime?
 
@@ -286,6 +288,21 @@ model Payment {
 
   @@index([userId])
   @@map("payments")
+}
+
+// Внутренние заметки менеджера по клиенту. Клиент их НЕ видит. На клиента их
+// может быть сколько угодно.
+model ClientNote {
+  id          String   @id @default(uuid())
+  clientId    String // пользователь-клиент, к которому относится заметка
+  authorEmail String // email менеджера/админа, написавшего заметку
+  text        String
+  createdAt   DateTime @default(now())
+
+  client User @relation("ClientNotes", fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, createdAt])
+  @@map("client_notes")
 }
 
 model AppVersion {

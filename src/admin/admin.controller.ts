@@ -424,6 +424,25 @@ export class AdminController {
 		return this.adminService.enableAutoMaxVisitsAll()
 	}
 
+	// Ручной оплаченный заказ: сайт + ключи + провести оплату (клиент платил на р/с)
+	@Post('manual-order')
+	async createManualOrder(
+		@Body()
+		body: {
+			email: string
+			siteName?: string
+			siteUrl: string
+			city?: string
+			keywords: string[]
+			amount: number
+			points: number
+			autoMaxVisits?: boolean
+			maxVisits?: number
+		},
+	) {
+		return this.adminService.createManualOrder(body)
+	}
+
 	@Post('bulk-email')
 	async startBulkEmail(@Body() body: { subject: string; message: string }) {
 		return this.adminService.startBulkEmail(body.subject, body.message)

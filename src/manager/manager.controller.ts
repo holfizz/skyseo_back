@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../common/decorators/user.decorator'
 import { ManagerGuard } from './manager.guard'
@@ -44,5 +44,54 @@ export class ManagerController {
 	@Get('executions/:id/trace')
 	getTrace(@Param('id') id: string, @CurrentUser() user: any) {
 		return this.manager.getTrace(id, user)
+	}
+
+	// ——— Операции над клиентом ———
+
+	// Добавить сайт + ключи клиенту
+	@Post('clients/:id/sites')
+	addSite(
+		@Param('id') id: string,
+		@Body()
+		body: { name?: string; url: string; city?: string; keywords: string[]; autoMaxVisits?: boolean; maxVisits?: number },
+	) {
+		return this.manager.addSite(id, body)
+	}
+
+	// Заметки (клиент не видит)
+	@Get('clients/:id/notes')
+	listNotes(@Param('id') id: string) {
+		return this.manager.listNotes(id)
+	}
+
+	@Post('clients/:id/notes')
+	addNote(@Param('id') id: string, @Body() body: { text: string }, @CurrentUser() user: any) {
+		return this.manager.addNote(id, user?.email ?? 'неизвестно', body?.text)
+	}
+
+	@Delete('notes/:noteId')
+	deleteNote(@Param('noteId') noteId: string) {
+		return this.manager.deleteNote(noteId)
+	}
+
+	// Выбить чек (провести оплату вручную) — фиксируем оператора из токена
+	@Post('clients/:id/payment')
+	issuePayment(
+		@Param('id') id: string,
+		@Body() body: { amount: number; points: number },
+		@CurrentUser() user: any,
+	) {
+		return this.manager.issuePayment(id, body, user?.email ?? 'неизвестно')
+	}
+
+	// Удаление с подтверждением (подтверждение на фронте)
+	@Delete('sites/:siteId')
+	deleteSite(@Param('siteId') siteId: string) {
+		return this.manager.deleteSite(siteId)
+	}
+
+	@Delete('keywords/:taskId')
+	deleteKeyword(@Param('taskId') taskId: string) {
+		return this.manager.deleteKeyword(taskId)
 	}
 }

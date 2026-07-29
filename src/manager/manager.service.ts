@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { loadExecutionTrace } from '../common/execution-trace'
 import { PrismaService } from '../prisma/prisma.service'
+import { TelegramService } from '../telegram/telegram.service'
 
 export type Health = 'ok' | 'warn' | 'bad' | 'idle'
 
@@ -48,7 +49,10 @@ const EMPTY_COUNTERS: Counters = {
 
 @Injectable()
 export class ManagerService {
-	constructor(private prisma: PrismaService) {}
+	constructor(
+		private prisma: PrismaService,
+		private telegram: TelegramService,
+	) {}
 
 	private successRate(visits7d: number, attempts7d: number): number {
 		if (!attempts7d) return 0
@@ -815,5 +819,178 @@ export class ManagerService {
 			if (!ex.task?.website) throw new NotFoundException('Выполнение не найдено')
 		}
 		return loadExecutionTrace(this.prisma, executionId)
+	}
+
+	// ——— Операции менеджера над клиентом ———
+
+	// Клиент существует? (для операций может ещё не иметь сайтов — например addSite первый)
+	private async assertUser(clientId: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: clientId },
+			select: { id: true, email: true },
+		})
+		if (!user) throw new NotFoundException('Клиент не найден')
+		return user
+	}
+
+	// Добавить сайт клиенту + ключи. Сайт сразу одобрен (менеджер завёл вручную).
+	async addSite(
+		clientId: string,
+		dto: {
+			name?: string
+			url: string
+			city?: string
+			keywords: string[]
+			autoMaxVisits?: boolean
+			maxVisits?: number
+		},
+	) {
+		await this.assertUser(clientId)
+		const url = dto.url?.trim()
+		if (!url) throw new BadRequestException('Укажите URL сайта')
+		const keywords = (dto.keywords || []).map(k => k.trim()).filter(Boolean)
+		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
+		const geo = dto.city?.trim() || 'Москва'
+		const maxVisits = dto.maxVisits && dto.maxVisits > 0 ? Math.round(dto.maxVisits) : 10
+		const autoMaxVisits = dto.autoMaxVisits !== false
+
+		return this.prisma.$transaction(async tx => {
+			let site = await tx.website.findFirst({
+				where: { userId: clientId, url },
+				select: { id: true },
+			})
+			if (site) {
+				await tx.website.update({
+					where: { id: site.id },
+					data: { isActive: true, isApproved: true, isRestricted: false, autoMaxVisits },
+				})
+			} else {
+				site = await tx.website.create({
+					data: {
+						userId: clientId,
+						name: dto.name?.trim() || url,
+						url,
+						city: dto.city?.trim() || null,
+						isActive: true,
+						isApproved: true,
+						autoMaxVisits,
+					},
+					select: { id: true },
+				})
+			}
+			for (const keyword of keywords) {
+				await tx.task.create({
+					data: {
+						websiteId: site.id,
+						type: 'SEARCH_AND_VISIT',
+						keyword,
+						geo,
+						isActive: true,
+						keywordStatus: 'ACTIVE',
+						useYandex: true,
+						useGoogle: true,
+						maxYandexVisits: maxVisits,
+						maxGoogleVisits: maxVisits,
+					},
+				})
+			}
+			return { ok: true, siteId: site.id, keywordsCreated: keywords.length }
+		})
+	}
+
+	// ——— Заметки (внутренние, клиент не видит) ———
+
+	async listNotes(clientId: string) {
+		await this.assertUser(clientId)
+		return this.prisma.clientNote.findMany({
+			where: { clientId },
+			orderBy: { createdAt: 'desc' },
+			select: { id: true, text: true, authorEmail: true, createdAt: true },
+		})
+	}
+
+	async addNote(clientId: string, authorEmail: string, text: string) {
+		await this.assertUser(clientId)
+		const t = text?.trim()
+		if (!t) throw new BadRequestException('Пустая заметка')
+		return this.prisma.clientNote.create({
+			data: { clientId, authorEmail, text: t },
+			select: { id: true, text: true, authorEmail: true, createdAt: true },
+		})
+	}
+
+	async deleteNote(noteId: string) {
+		const note = await this.prisma.clientNote.findUnique({ where: { id: noteId }, select: { id: true } })
+		if (!note) throw new NotFoundException('Заметка не найдена')
+		await this.prisma.clientNote.delete({ where: { id: noteId } })
+		return { ok: true }
+	}
+
+	// ——— Выбить чек (провести оплату вручную) ———
+
+	async issuePayment(
+		clientId: string,
+		dto: { amount: number; points: number },
+		operatorEmail: string,
+	) {
+		const user = await this.assertUser(clientId)
+		const points = Math.round(Number(dto.points))
+		if (!points || points <= 0) throw new BadRequestException('Баллы должны быть больше 0')
+		const amount = Number(dto.amount) || 0
+
+		const payment = await this.prisma.$transaction(async tx => {
+			const p = await tx.payment.create({
+				data: {
+					userId: clientId,
+					amount,
+					points,
+					status: 'SUCCEEDED',
+					provider: 'manual',
+					issuedBy: operatorEmail,
+					paidAt: new Date(),
+				},
+				select: { id: true },
+			})
+			// Баллы + запись PAYMENT — делает клиента платным (приоритет выдачи) и финансирует визиты.
+			await tx.user.update({ where: { id: clientId }, data: { balance: { increment: points } } })
+			await tx.balanceHistory.create({
+				data: {
+					userId: clientId,
+					amount: points,
+					type: 'PAYMENT',
+					description: `Оплата на расчётный счёт — ${amount} ₽ (провёл ${operatorEmail})`,
+				},
+			})
+			return p
+		})
+
+		// Уведомление в Telegram — вне транзакции, сбой отправки не должен откатывать платёж.
+		this.telegram
+			.sendManualPaymentNotification({ clientEmail: user.email, amount, points, operatorEmail })
+			.catch(() => {})
+
+		return {
+			ok: true,
+			paymentId: payment.id,
+			amount,
+			points,
+			approxVisits: Math.floor(points / 30),
+		}
+	}
+
+	// ——— Удаление с подтверждением (подтверждение на фронте) ———
+
+	async deleteSite(siteId: string) {
+		const site = await this.prisma.website.findUnique({ where: { id: siteId }, select: { id: true } })
+		if (!site) throw new NotFoundException('Сайт не найден')
+		await this.prisma.website.delete({ where: { id: siteId } }) // задачи уйдут каскадом
+		return { ok: true }
+	}
+
+	async deleteKeyword(taskId: string) {
+		const task = await this.prisma.task.findUnique({ where: { id: taskId }, select: { id: true } })
+		if (!task) throw new NotFoundException('Ключевик не найден')
+		await this.prisma.task.delete({ where: { id: taskId } })
+		return { ok: true }
 	}
 }

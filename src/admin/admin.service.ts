@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 
 function extractRootDomain(url: string): string {
 	try {
@@ -114,6 +114,128 @@ export class AdminService {
 			data.adPolicy = body.adPolicy
 		}
 		return this.prisma.website.update({ where: { id: websiteId }, data })
+	}
+
+	// Ручной оплаченный заказ: клиент оплатил на расчётный счёт, админ заводит
+	// за него сайт + ключи и проводит оплату. Всё атомарно. Клиент становится
+	// платным (запись BalanceHistory type=PAYMENT даёт приоритет в выдаче), а
+	// начисленные баллы финансируют визиты.
+	async createManualOrder(body: {
+		email: string
+		siteName?: string
+		siteUrl: string
+		city?: string
+		keywords: string[]
+		amount: number
+		points: number
+		autoMaxVisits?: boolean
+		maxVisits?: number
+	}) {
+		const email = body.email?.trim().toLowerCase()
+		if (!email) throw new BadRequestException('Укажите email клиента')
+		const user = await this.prisma.user.findUnique({
+			where: { email },
+			select: { id: true, email: true },
+		})
+		if (!user) throw new NotFoundException(`Клиент ${body.email} не найден`)
+
+		const url = body.siteUrl?.trim()
+		if (!url) throw new BadRequestException('Укажите URL сайта')
+		const keywords = (body.keywords || []).map(k => k.trim()).filter(Boolean)
+		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
+		const points = Math.round(Number(body.points))
+		if (!points || points <= 0) throw new BadRequestException('Баллы должны быть больше 0')
+		const amount = Number(body.amount) || 0
+		const geo = body.city?.trim() || 'Москва'
+		const maxVisits = body.maxVisits && body.maxVisits > 0 ? Math.round(body.maxVisits) : 10
+		const autoMaxVisits = body.autoMaxVisits !== false // по умолчанию крутим по максимуму сети
+
+		const result = await this.prisma.$transaction(async tx => {
+			// Сайт: переиспользуем существующий у этого клиента с таким же URL, иначе создаём.
+			let site = await tx.website.findFirst({
+				where: { userId: user.id, url },
+				select: { id: true },
+			})
+			if (site) {
+				await tx.website.update({
+					where: { id: site.id },
+					data: { isActive: true, isApproved: true, isRestricted: false, autoMaxVisits },
+				})
+			} else {
+				site = await tx.website.create({
+					data: {
+						userId: user.id,
+						name: body.siteName?.trim() || url,
+						url,
+						city: body.city?.trim() || null,
+						isActive: true,
+						isApproved: true,
+						autoMaxVisits,
+					},
+					select: { id: true },
+				})
+			}
+
+			// Ключи — те же дефолты, что в обычном создании задачи.
+			for (const keyword of keywords) {
+				await tx.task.create({
+					data: {
+						websiteId: site.id,
+						type: 'SEARCH_AND_VISIT',
+						keyword,
+						geo,
+						isActive: true,
+						keywordStatus: 'ACTIVE',
+						useYandex: true,
+						useGoogle: true,
+						maxYandexVisits: maxVisits,
+						maxGoogleVisits: maxVisits,
+					},
+				})
+			}
+
+			// Оплата «вручную» — provider=manual отличает её от YooKassa в отчётности.
+			const payment = await tx.payment.create({
+				data: {
+					userId: user.id,
+					amount,
+					points,
+					status: 'SUCCEEDED',
+					provider: 'manual',
+					paidAt: new Date(),
+				},
+				select: { id: true },
+			})
+
+			// Начисляем баллы + запись PAYMENT — ровно то же, что делает обычный
+			// успешный платёж (см. usersService.updateBalance). Именно PAYMENT в
+			// balanceHistory делает клиента платным для приоритета выдачи.
+			await tx.user.update({
+				where: { id: user.id },
+				data: { balance: { increment: points } },
+			})
+			await tx.balanceHistory.create({
+				data: {
+					userId: user.id,
+					amount: points,
+					type: 'PAYMENT',
+					description: `Оплата на расчётный счёт — ${amount} ₽`,
+				},
+			})
+
+			return { siteId: site.id, paymentId: payment.id }
+		})
+
+		return {
+			ok: true,
+			email: user.email,
+			siteId: result.siteId,
+			paymentId: result.paymentId,
+			keywordsCreated: keywords.length,
+			points,
+			amount,
+			approxVisits: Math.floor(points / 30),
+		}
 	}
 
 	async getPendingWebsites() {

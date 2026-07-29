@@ -439,6 +439,24 @@ export class TelegramService implements OnModuleDestroy {
 		await this.sendAdminNotification(message, this.TOPIC_PAYMENTS)
 	}
 
+	// Уведомление о платеже, проведённом менеджером/админом вручную (клиент оплатил на р/с).
+	async sendManualPaymentNotification(data: {
+		clientEmail: string
+		amount: number
+		points: number
+		operatorEmail: string
+	}) {
+		const message =
+			`💰 <b>Платёж проведён вручную</b>\n\n` +
+			`👤 Клиент: ${data.clientEmail}\n` +
+			`💵 Сумма: ${data.amount.toFixed(2)} ₽\n` +
+			`⭐ Начислено баллов: ${data.points}\n` +
+			`🧑‍💼 Провёл: ${data.operatorEmail}\n` +
+			`🕐 ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
+
+		await this.sendAdminNotification(message, this.TOPIC_PAYMENTS)
+	}
+
 	async sendRestrictedKeywordReport(data: {
 		userEmail: string
 		keyword: string
