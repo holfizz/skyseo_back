@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { dedupeKeywords } from '../common/keywords'
 
 function extractRootDomain(url: string): string {
 	try {
@@ -141,14 +142,15 @@ export class AdminService {
 
 		const url = body.siteUrl?.trim()
 		if (!url) throw new BadRequestException('Укажите URL сайта')
-		const keywords = (body.keywords || []).map(k => k.trim()).filter(Boolean)
-		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
+		const incoming = dedupeKeywords(body.keywords || [])
+		if (incoming.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
 		const points = Math.round(Number(body.points))
 		if (!points || points <= 0) throw new BadRequestException('Баллы должны быть больше 0')
 		const amount = Number(body.amount) || 0
 		const geo = body.city?.trim() || 'Москва'
 		const maxVisits = body.maxVisits && body.maxVisits > 0 ? Math.round(body.maxVisits) : 10
-		const autoMaxVisits = body.autoMaxVisits !== false // по умолчанию крутим по максимуму сети
+		// По умолчанию false — работаем плавно; включить «по максимуму» можно вручную.
+		const autoMaxVisits = body.autoMaxVisits === true
 
 		const result = await this.prisma.$transaction(async tx => {
 			// Сайт: переиспользуем существующий у этого клиента с таким же URL, иначе создаём.
@@ -157,9 +159,10 @@ export class AdminService {
 				select: { id: true },
 			})
 			if (site) {
+				// Существующий сайт: autoMaxVisits НЕ трогаем (могли выставить вручную).
 				await tx.website.update({
 					where: { id: site.id },
-					data: { isActive: true, isApproved: true, isRestricted: false, autoMaxVisits },
+					data: { isActive: true, isApproved: true, isRestricted: false },
 				})
 			} else {
 				site = await tx.website.create({
@@ -176,8 +179,14 @@ export class AdminService {
 				})
 			}
 
-			// Ключи — те же дефолты, что в обычном создании задачи.
-			for (const keyword of keywords) {
+			// Дедуп против уже существующих ключей сайта — дубликаты пропускаем.
+			const existing = await tx.task.findMany({
+				where: { websiteId: site.id },
+				select: { keyword: true },
+			})
+			const existingSet = new Set(existing.map(t => (t.keyword || '').trim().toLowerCase()))
+			const toCreate = incoming.filter(k => !existingSet.has(k.toLowerCase()))
+			for (const keyword of toCreate) {
 				await tx.task.create({
 					data: {
 						websiteId: site.id,
@@ -223,7 +232,7 @@ export class AdminService {
 				},
 			})
 
-			return { siteId: site.id, paymentId: payment.id }
+			return { siteId: site.id, paymentId: payment.id, created: toCreate.length, skipped: incoming.length - toCreate.length }
 		})
 
 		return {
@@ -231,7 +240,8 @@ export class AdminService {
 			email: user.email,
 			siteId: result.siteId,
 			paymentId: result.paymentId,
-			keywordsCreated: keywords.length,
+			keywordsCreated: result.created,
+			keywordsSkipped: result.skipped,
 			points,
 			amount,
 			approxVisits: Math.floor(points / 30),

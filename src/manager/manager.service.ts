@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { loadExecutionTrace } from '../common/execution-trace'
+import { dedupeKeywords } from '../common/keywords'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
@@ -848,11 +849,12 @@ export class ManagerService {
 		await this.assertUser(clientId)
 		const url = dto.url?.trim()
 		if (!url) throw new BadRequestException('Укажите URL сайта')
-		const keywords = (dto.keywords || []).map(k => k.trim()).filter(Boolean)
-		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
+		const incoming = dedupeKeywords(dto.keywords || [])
+		if (incoming.length === 0) throw new BadRequestException('Добавьте хотя бы один ключевик')
 		const geo = dto.city?.trim() || 'Москва'
 		const maxVisits = dto.maxVisits && dto.maxVisits > 0 ? Math.round(dto.maxVisits) : 10
-		const autoMaxVisits = dto.autoMaxVisits !== false
+		// По умолчанию false — работаем плавно; включить «по максимуму» можно вручную.
+		const autoMaxVisits = dto.autoMaxVisits === true
 
 		return this.prisma.$transaction(async tx => {
 			let site = await tx.website.findFirst({
@@ -860,9 +862,11 @@ export class ManagerService {
 				select: { id: true },
 			})
 			if (site) {
+				// Существующий сайт: НЕ трогаем autoMaxVisits (могли выставить вручную),
+				// только оживляем и одобряем — дальше просто дописываем ключи.
 				await tx.website.update({
 					where: { id: site.id },
-					data: { isActive: true, isApproved: true, isRestricted: false, autoMaxVisits },
+					data: { isActive: true, isApproved: true, isRestricted: false },
 				})
 			} else {
 				site = await tx.website.create({
@@ -878,7 +882,14 @@ export class ManagerService {
 					select: { id: true },
 				})
 			}
-			for (const keyword of keywords) {
+			// Дедуп против уже существующих ключей сайта — дубликаты пропускаем.
+			const existing = await tx.task.findMany({
+				where: { websiteId: site.id },
+				select: { keyword: true },
+			})
+			const existingSet = new Set(existing.map(t => (t.keyword || '').trim().toLowerCase()))
+			const toCreate = incoming.filter(k => !existingSet.has(k.toLowerCase()))
+			for (const keyword of toCreate) {
 				await tx.task.create({
 					data: {
 						websiteId: site.id,
@@ -894,7 +905,12 @@ export class ManagerService {
 					},
 				})
 			}
-			return { ok: true, siteId: site.id, keywordsCreated: keywords.length }
+			return {
+				ok: true,
+				siteId: site.id,
+				keywordsCreated: toCreate.length,
+				keywordsSkipped: incoming.length - toCreate.length,
+			}
 		})
 	}
 
