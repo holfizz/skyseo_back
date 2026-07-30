@@ -19,6 +19,12 @@ export class AdminController {
 		return this.adminService.getAdminStatistics()
 	}
 
+	// Проверка ключей: объём Wordstat + позиция сайта в Яндексе (домен + ключи + опц. регион)
+	@Post('keyword-check')
+	checkKeywords(@Body() body: { domain: string; keywords: string[]; city?: string }) {
+		return this.adminService.checkKeywords(body)
+	}
+
 	// Куки Google (обход окна согласия) — читаются desktop-app'ом из БД
 	@Get('google-config')
 	async getGoogleConfig() {

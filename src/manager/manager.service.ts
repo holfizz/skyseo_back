@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { Prisma } from '@prisma/client'
 import { loadExecutionTrace } from '../common/execution-trace'
 import { dedupeKeywords } from '../common/keywords'
+import { checkKeywords, resolveRegion } from '../common/yandex-positions'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
@@ -53,6 +55,7 @@ export class ManagerService {
 	constructor(
 		private prisma: PrismaService,
 		private telegram: TelegramService,
+		private config: ConfigService,
 	) {}
 
 	private successRate(visits7d: number, attempts7d: number): number {
@@ -1008,5 +1011,26 @@ export class ManagerService {
 		if (!task) throw new NotFoundException('Ключевик не найден')
 		await this.prisma.task.delete({ where: { id: taskId } })
 		return { ok: true }
+	}
+
+	// ——— Проверка ключей (XMLRiver): объём Wordstat + позиция в Яндексе ———
+	// Домен + ключи + (опц.) регион → по каждому ключу частотность и позиция. Живой запрос, в БД не пишем.
+	// Без региона — вся Россия (федеральная выдача). Используется и менеджером, и админкой.
+	async checkPositions(dto: { domain: string; keywords: string[]; city?: string }) {
+		const user = this.config.get('XMLRIVER_USER') || ''
+		const key = this.config.get('XMLRIVER_KEY') || ''
+		if (!user || !key) {
+			throw new BadRequestException(
+				'Проверка ключей не настроена: добавьте XMLRIVER_USER и XMLRIVER_KEY в .env бэкенда',
+			)
+		}
+		const domain = (dto?.domain || '').trim()
+		if (!domain) throw new BadRequestException('Укажите домен сайта')
+		const keywords = dedupeKeywords(dto?.keywords || []).slice(0, 50)
+		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
+
+		const region = resolveRegion(dto?.city)
+		const { results, depth } = await checkKeywords({ user, key, domain, keywords, lr: region.lr })
+		return { region, depth, results }
 	}
 }

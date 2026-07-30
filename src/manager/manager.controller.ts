@@ -94,4 +94,10 @@ export class ManagerController {
 	deleteKeyword(@Param('taskId') taskId: string) {
 		return this.manager.deleteKeyword(taskId)
 	}
+
+	// Проверить позиции сайта в Яндексе: домен + ключи + (опц.) город
+	@Post('check-positions')
+	checkPositions(@Body() body: { domain: string; keywords: string[]; city?: string }) {
+		return this.manager.checkPositions(body)
+	}
 }

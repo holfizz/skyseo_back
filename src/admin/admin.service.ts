@@ -53,6 +53,11 @@ export class AdminService {
 		private managerService: ManagerService,
 	) {}
 
+	// Проверка ключей (объём Wordstat + позиция в Яндексе) — та же логика, что у менеджера.
+	async checkKeywords(dto: { domain: string; keywords: string[]; city?: string }) {
+		return this.managerService.checkPositions(dto)
+	}
+
 	async getGoogleConfigForAdmin() {
 		const [socs, consent] = await Promise.all([
 			this.appConfig.getWithMeta(KEY_GOOGLE_SOCS, DEFAULT_GOOGLE_SOCS),

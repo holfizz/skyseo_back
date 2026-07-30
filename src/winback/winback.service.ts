@@ -4,6 +4,10 @@ import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
 const WINBACK_BONUS = 500
+// Настоящий win-back — это возврат ПОСЛЕ реального отсутствия. Обновление/переустановка
+// приложения возвращается почти сразу (UNINSTALLED→REINSTALLED за минуты), и за такой
+// «возврат» бонус давать нельзя. Порог заведомо больше времени апдейта, но меньше реального ухода.
+const MIN_ABSENCE_MS = 60 * 60 * 1000 // 1 час
 
 @Injectable()
 export class WinbackService {
@@ -55,9 +59,21 @@ export class WinbackService {
 					balance: true,
 					winbackEmailSentAt: true,
 					winbackBonusGrantedAt: true,
+					lastSeenAt: true,
 				},
 			})
 			if (!user || !user.winbackEmailSentAt || user.winbackBonusGrantedAt) return
+
+			// Защита от ЛОЖНОГО бонуса при обновлении/переустановке приложения: оно возвращается
+			// почти сразу после ухода, а реальный win-back — спустя время. Меряем разрыв между
+			// последней активностью (lastSeenAt) и возвратом; слишком короткий = апдейт, не возврат.
+			const lastActive = user.lastSeenAt ?? user.winbackEmailSentAt
+			if (lastActive && Date.now() - lastActive.getTime() < MIN_ABSENCE_MS) {
+				this.logger.log(
+					`win-back пропуск: возврат <1ч после активности = обновление/переустановка (${user.email})`,
+				)
+				return
+			}
 
 			// Атомарно «занимаем» бонус: апдейт пройдёт только если он ещё не выдан —
 			// защита от двойного начисления при гонке (параллельные heartbeat'ы).
