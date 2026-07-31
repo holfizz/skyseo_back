@@ -45,6 +45,11 @@ export class AdminController {
 		return this.adminService.deletePin(id)
 	}
 
+	@Get('task-queue/site-search')
+	searchPinSites(@Query('q') q: string) {
+		return this.adminService.searchPinSites(q)
+	}
+
 	// Куки Google (обход окна согласия) — читаются desktop-app'ом из БД
 	@Get('google-config')
 	async getGoogleConfig() {

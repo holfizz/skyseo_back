@@ -227,6 +227,45 @@ export class AdminService {
 		return { ok: true }
 	}
 
+	// Поиск сайтов для стакана: по url/названию, с активными ключами (для выпадашки).
+	async searchPinSites(q: string) {
+		const term = (q || '').trim()
+		if (term.length < 2) return []
+		const sites = await this.prisma.website.findMany({
+			where: {
+				isActive: true,
+				OR: [
+					{ url: { contains: term, mode: 'insensitive' as const } },
+					{ name: { contains: term, mode: 'insensitive' as const } },
+				],
+			},
+			select: {
+				id: true,
+				url: true,
+				name: true,
+				isApproved: true,
+				user: { select: { email: true } },
+				tasks: {
+					where: { isActive: true, keywordStatus: 'ACTIVE' },
+					select: { id: true, keyword: true },
+					orderBy: { createdAt: 'asc' },
+				},
+			},
+			orderBy: { updatedAt: 'desc' },
+			take: 12,
+		})
+		return sites.map(s => ({
+			websiteId: s.id,
+			url: s.url,
+			name: s.name,
+			userEmail: s.user?.email ?? null,
+			isApproved: s.isApproved,
+			keywords: s.tasks
+				.filter(t => t.keyword)
+				.map(t => ({ taskId: t.id, keyword: t.keyword as string })),
+		}))
+	}
+
 	async getGoogleConfigForAdmin() {
 		const [socs, consent] = await Promise.all([
 			this.appConfig.getWithMeta(KEY_GOOGLE_SOCS, DEFAULT_GOOGLE_SOCS),

@@ -309,22 +309,34 @@ export class TasksService {
 			new Set([...sitesAtMonthlyLimit, ...sitesVisitedRecently]),
 		).filter((id): id is string => id !== null)
 
-		// Задачи, где ключевик не найден этим исполнителем — скрываем на 14 дней, затем
-		// перепроверяем (позиции меняются, в т.ч. благодаря самому ПФ). Мёртвые ключи
-		// и так уходят в keywordStatus=RESTRICTED после 10 подряд NOT_IN_SERP.
-		const notInSerpSince = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
-		const notInSerpTaskIds = await this.prisma.execution
-			.findMany({
-				where: {
-					executorId,
-					status: 'FAILED',
-					failureReason: 'NOT_IN_SERP',
-					completedAt: { gte: notInSerpSince },
-				},
-				select: { taskId: true },
-				distinct: ['taskId'],
+		// Ключи, которые ЭТОТ ПК не находит в выдаче (NOT_IN_SERP), выдаём реже тех, что он
+		// находит. Градация по числу неудач за 60 дней у этого исполнителя:
+		//   • 1–2 неудачи → прячем на 14 дней, потом перепроверяем (позиции меняются, в т.ч. от самого ПФ);
+		//   • >2 неудачи  → прячем на 45 дней (выдаётся заметно реже найденных ключей).
+		// Мёртвые ключи и так уходят в keywordStatus=RESTRICTED после 10 подряд NOT_IN_SERP (глобально).
+		const failLookback = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
+		const LIGHT_HIDE_MS = 14 * 24 * 60 * 60 * 1000
+		const HEAVY_HIDE_MS = 45 * 24 * 60 * 60 * 1000
+		const nowMs = Date.now()
+		const notInSerpStats = await this.prisma.execution.groupBy({
+			by: ['taskId'],
+			where: {
+				executorId,
+				status: 'FAILED',
+				failureReason: 'NOT_IN_SERP',
+				completedAt: { gte: failLookback },
+			},
+			_count: { _all: true },
+			_max: { completedAt: true },
+		})
+		const notInSerpTaskIds = notInSerpStats
+			.filter(s => {
+				const lastFail = s._max.completedAt?.getTime() ?? 0
+				const hideMs = s._count._all > 2 ? HEAVY_HIDE_MS : LIGHT_HIDE_MS
+				return nowMs - lastFail < hideMs
 			})
-			.then(r => r.map(e => e.taskId))
+			.map(s => s.taskId)
+			.filter((id): id is string => id !== null)
 
 		// Базовый фильтр доступных для исполнителя задач (без site-cap)
 		const eligibleTaskWhere = {
