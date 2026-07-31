@@ -10,6 +10,7 @@ import { AnalyticsModule } from './analytics/analytics.module'
 import { AppConfigModule } from './app-config/app-config.module'
 import { AppVersionModule } from './app-version/app-version.module'
 import { AuthModule } from './auth/auth.module'
+import { CrmModule } from './crm/crm.module'
 import { ExecutionsModule } from './executions/executions.module'
 import { HealthModule } from './health/health.module'
 import { ManagerModule } from './manager/manager.module'
@@ -60,6 +61,7 @@ import { WebsitesModule } from './websites/websites.module'
 		AppVersionModule,
 		AppConfigModule,
 		AiModule,
+		CrmModule,
 	],
 	providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

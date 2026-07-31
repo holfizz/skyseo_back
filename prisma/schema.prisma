@@ -118,11 +118,35 @@ model Task {
   website         Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   executions      Execution[]
   positionHistory PositionHistory[]
+  pins            PinnedTask[]
 
   @@index([status, priority])
   @@index([assignedExecutorId])
   @@index([websiteId, status, isActive, keywordStatus, createdAt])
   @@map("tasks")
+}
+
+// Принудительная очередь: админ вручную ставит задание в начало раздачи.
+// position — порядок выдачи следующим ПК (меньше = раньше). force=true обходит кулдауны/лимиты.
+// Пин «сгорает» после того, как один ПК успешно взял задание (consumedAt/By).
+model PinnedTask {
+  id                   String    @id @default(uuid())
+  taskId               String
+  position             Int       @default(1)
+  force                Boolean   @default(false)
+  // Мягкий таргет на конкретный ПК (executorId): пока targetUntilAt в будущем — пин уходит
+  // в начало только этому ПК; после — становится общим (любой некст ПК может взять).
+  targetExecutorId     String?
+  targetUntilAt        DateTime?
+  consumedByExecutorId String?
+  consumedAt           DateTime?
+  createdByEmail       String?
+  createdAt            DateTime  @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([consumedAt, position])
+  @@map("pinned_tasks")
 }
 
 model Execution {
@@ -593,4 +617,187 @@ model OutreachLead {
 
   @@index([status])
   @@map("outreach_leads")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM (Telegram Mini App на crm.skyseo.site). Отдельный контур: свои роли,
+// свой Telegram-бот (TELEGRAM_CRM_BOT_TOKEN), доступ по вайтлисту TG-ID из env.
+// Все модели АДДИТИВНЫ — старые таблицы не трогаются.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CrmRole {
+  ADMIN    // видит всё: всех сотрудников, кто что делает, подозрительные действия
+  EMPLOYEE // сотрудник: видит свои задачи/клиентов и общий пул
+}
+
+enum CrmClientStatus {
+  LEAD        // лид
+  NEGOTIATION // переговоры
+  ACTIVE      // в работе
+  PAUSED      // на паузе
+  CHURNED     // ушёл
+}
+
+enum CrmTaskStatus {
+  DRAFT       // черновик
+  TODO        // к выполнению
+  IN_PROGRESS // в работе
+  DONE        // готово
+}
+
+// Участник CRM. Заводится автоматически при первом входе через Telegram Mini App,
+// если его telegramId есть в вайтлисте env (CRM_ADMIN_TELEGRAM_IDS / CRM_MEMBER_TELEGRAM_IDS).
+model CrmUser {
+  id         String    @id @default(uuid())
+  telegramId String    @unique // Telegram user id (число как строка)
+  firstName  String?
+  lastName   String?
+  username   String? // @username на момент входа
+  photoUrl   String?
+  role       CrmRole   @default(EMPLOYEE)
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime?
+
+  assignedClients CrmClient[]   @relation("CrmClientAssignee")
+  assignedTasks   CrmTask[]     @relation("CrmTaskAssignee")
+  createdTasks    CrmTask[]     @relation("CrmTaskCreator")
+  createdClients  CrmClient[]   @relation("CrmClientCreator")
+  reminders       CrmReminder[] @relation("CrmReminderTarget")
+  activities      CrmActivity[] @relation("CrmActivityActor")
+
+  @@map("crm_users")
+}
+
+// Карточка клиента в CRM. Можно связать с аккаунтом платформы (userId → users.id),
+// тогда подтягиваются его сайты/ключи/позиции/визиты.
+model CrmClient {
+  id         String          @id @default(uuid())
+  title      String // название/имя клиента
+  company    String?
+  phone      String?
+  email      String?
+  telegram   String?
+  website    String?
+  status     CrmClientStatus @default(LEAD)
+  notes      String? // краткое описание/контекст
+  userId     String? // связь с аккаунтом платформы (users.id). Не FK: платформенный User живёт своей жизнью
+  assigneeId String? // ответственный сотрудник CRM
+  createdById String?
+  funnelId   String? // воронка, в которой находится клиент
+  stageId    String? // этап воронки (колонка канбана)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  assignee  CrmUser?        @relation("CrmClientAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy CrmUser?        @relation("CrmClientCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  funnel    CrmFunnel?      @relation("ClientFunnel", fields: [funnelId], references: [id], onDelete: SetNull)
+  stage     CrmFunnelStage? @relation("ClientStage", fields: [stageId], references: [id], onDelete: SetNull)
+  tasks     CrmTask[]
+
+  @@index([status])
+  @@index([assigneeId])
+  @@index([userId])
+  @@index([stageId])
+  @@map("crm_clients")
+}
+
+// Воронка (пайплайн). Произвольное число этапов, у каждого свой заголовок и цвет —
+// отображается как канбан. Клиент движется по этапам.
+model CrmFunnel {
+  id          String   @id @default(uuid())
+  name        String
+  color       String? // акцент воронки (hex)
+  position    Int      @default(0)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stages  CrmFunnelStage[]
+  clients CrmClient[]      @relation("ClientFunnel")
+
+  @@map("crm_funnels")
+}
+
+model CrmFunnelStage {
+  id        String   @id @default(uuid())
+  funnelId  String
+  title     String
+  color     String   @default("#a0b5ff")
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  funnel  CrmFunnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  clients CrmClient[] @relation("ClientStage")
+
+  @@index([funnelId, position])
+  @@map("crm_funnel_stages")
+}
+
+// Задача CRM. clientId = null → задача команды (не привязана к клиенту).
+// position — порядок внутри колонки канбана (для drag-and-drop).
+model CrmTask {
+  id          String        @id @default(uuid())
+  title       String
+  description String?
+  status      CrmTaskStatus @default(TODO)
+  priority    Int           @default(0) // -1 низкий, 0 обычный, 1 высокий, 2 срочный
+  dueAt       DateTime? // дедлайн
+  position    Int           @default(0) // порядок в колонке (DnD)
+  clientId    String?
+  assigneeId  String?
+  createdById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  completedAt DateTime?
+
+  client    CrmClient?    @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  assignee  CrmUser?      @relation("CrmTaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy CrmUser?      @relation("CrmTaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reminders CrmReminder[]
+
+  @@index([status, position])
+  @@index([assigneeId])
+  @@index([clientId])
+  @@index([dueAt])
+  @@map("crm_tasks")
+}
+
+// Напоминание по задаче. На одну задачу можно повесить сколько угодно напоминаний
+// (за час, за 10 минут, за день…). Каждое = отдельная строка с абсолютным remindAt.
+// Шедулер раз в минуту шлёт сработавшие в CRM-бот целевому сотруднику.
+model CrmReminder {
+  id          String    @id @default(uuid())
+  taskId      String
+  remindAt    DateTime // абсолютное время срабатывания
+  offsetLabel String? // «за 1 час», «за 10 минут» — для UI
+  targetId    String? // кому напомнить; null → назначенному на задачу
+  sent        Boolean   @default(false)
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  task   CrmTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  target CrmUser? @relation("CrmReminderTarget", fields: [targetId], references: [id], onDelete: SetNull)
+
+  @@index([sent, remindAt])
+  @@index([taskId])
+  @@map("crm_reminders")
+}
+
+// Журнал действий в CRM — для роли админа: кто что делал + флаг подозрительных действий.
+model CrmActivity {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String // "client.create" | "task.move" | "reminder.create" | "login" …
+  entityType String? // "client" | "task" | "reminder"
+  entityId   String?
+  summary    String? // человекочитаемое описание
+  suspicious Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  actor CrmUser? @relation("CrmActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@map("crm_activity")
 }

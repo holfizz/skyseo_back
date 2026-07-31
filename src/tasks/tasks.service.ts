@@ -199,30 +199,71 @@ export class TasksService {
 		const safeLimit = Math.max(1, Math.min(limit, 100))
 		const { candidates } = await this.computeAvailability(executorId)
 
-		return candidates.slice(0, safeLimit).map(({ task }) => {
-			const reward = this.getTaskRewardBounds(task)
-			return {
-				id: task.id,
-				websiteId: task.websiteId,
-				websiteName: task.website.name,
-				websiteUrl: task.website.url,
-				keyword: task.keyword,
-				targetUrl: task.targetUrl,
-				type: task.type,
-				geo: task.geo,
-				pointsEarned: reward.max,
-				minPointsEarned: reward.min,
-				maxYandexVisits: task.maxYandexVisits,
-				maxGoogleVisits: task.maxGoogleVisits,
-				useYandex: task.useYandex,
-				useGoogle: task.useGoogle,
-				// Режим рекламы в выдаче; старое приложение поле просто игнорирует
-				adPolicy: task.website.adPolicy ?? 'EXCLUDE',
-				createdAt: task.createdAt,
-				alreadyCompleted: false,
-				remainingExecutions: 1,
-			}
+		let items = candidates.slice(0, safeLimit).map(({ task }) => this.toQueueItem(task))
+
+		// Принудительная очередь: передний пин (если есть и подходит этому ПК) — в самое начало.
+		const pinnedTask = await this.resolveFrontPinTask(executorId, candidates)
+		if (pinnedTask) {
+			items = items.filter(i => i.id !== pinnedTask.id)
+			items.unshift(this.toQueueItem(pinnedTask))
+			items = items.slice(0, safeLimit)
+		}
+		return items
+	}
+
+	private toQueueItem(task: any) {
+		const reward = this.getTaskRewardBounds(task)
+		return {
+			id: task.id,
+			websiteId: task.websiteId,
+			websiteName: task.website.name,
+			websiteUrl: task.website.url,
+			keyword: task.keyword,
+			targetUrl: task.targetUrl,
+			type: task.type,
+			geo: task.geo,
+			pointsEarned: reward.max,
+			minPointsEarned: reward.min,
+			maxYandexVisits: task.maxYandexVisits,
+			maxGoogleVisits: task.maxGoogleVisits,
+			useYandex: task.useYandex,
+			useGoogle: task.useGoogle,
+			// Режим рекламы в выдаче; старое приложение поле просто игнорирует
+			adPolicy: task.website.adPolicy ?? 'EXCLUDE',
+			createdAt: task.createdAt,
+			alreadyCompleted: false,
+			remainingExecutions: 1,
+		}
+	}
+
+	// Передний непотраченный пин, подходящий этому ПК. force=true → инжект (обход фильтров);
+	// force=false → бампим только если ПК и так имеет право на задание (оно есть в candidates).
+	// Пины перебираем по position; непригодный для этого ПК пропускаем (не блокируем очередь).
+	private async resolveFrontPinTask(
+		executorId: string,
+		candidates: Array<{ task: any }>,
+	): Promise<any | null> {
+		const pins = await this.prisma.pinnedTask.findMany({
+			where: { consumedAt: null },
+			orderBy: { position: 'asc' },
+			take: 20,
+			include: { task: { include: { website: true } } },
 		})
+		const now = Date.now()
+		for (const pin of pins) {
+			const task: any = pin.task
+			if (!task || !task.isActive || task.status !== 'PENDING' || task.keywordStatus !== 'ACTIVE') continue
+			if (!task.website || !task.website.isActive || !task.website.isApproved) continue
+			if (task.website.userId === executorId) continue // не свой сайт
+			// Мягкий таргет: пока окно активно — пин только назначенному ПК; после окна — общий.
+			const targetedActive =
+				!!pin.targetExecutorId && !!pin.targetUntilAt && pin.targetUntilAt.getTime() > now
+			if (targetedActive && pin.targetExecutorId !== executorId) continue
+			if (pin.force) return task
+			const eligible = candidates.find(c => c.task.id === task.id)
+			if (eligible) return eligible.task
+		}
+		return null
 	}
 
 	// Единый расчёт доступности: и выдача задач, и диагностика «почему 0» берут цифры
@@ -696,6 +737,14 @@ export class TasksService {
 					throw new BadRequestException('Cannot assign own task')
 				}
 
+				// Принудительный пин с force=true обходит все кулдауны/лимиты ниже (любой ПК может взять).
+				const pin = await prisma.pinnedTask.findFirst({
+					where: { taskId, consumedAt: null },
+					orderBy: { position: 'asc' },
+				})
+				const forced = pin?.force === true
+
+				if (!forced) {
 				const cooldownDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)
 				const alreadyCompleted = await prisma.execution.count({
 					where: {
@@ -797,6 +846,7 @@ export class TasksService {
 						'Daily site cap reached (warm-up / network limit)',
 					)
 				}
+				}
 
 				if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) {
 					await prisma.task.update({
@@ -826,6 +876,14 @@ export class TasksService {
 						assignedExecutorId: executorId,
 					},
 				})
+
+				// Пин «сгорает»: задание успешно взято этим ПК (клейм задачи уже сериализован по PENDING).
+				if (pin) {
+					await prisma.pinnedTask.updateMany({
+						where: { id: pin.id, consumedAt: null },
+						data: { consumedAt: new Date(), consumedByExecutorId: executorId },
+					})
+				}
 
 				return {
 					task: updatedTask,

@@ -36,6 +36,7 @@ async function bootstrap() {
 			'http://skyseo.site',
 			'https://pro.skyseo.site',
 			'https://go.skyseo.site',
+			'https://crm.skyseo.site',
 		],
 		credentials: true,
 		methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

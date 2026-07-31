@@ -58,6 +58,175 @@ export class AdminService {
 		return this.managerService.checkPositions(dto)
 	}
 
+	// ——— Принудительная очередь заданий (пины) ———
+	// Стакан: кто онлайн сейчас + ручная очередь. position — порядок выдачи следующим ПК.
+	async getTaskQueue() {
+		const pins = await this.prisma.pinnedTask.findMany({
+			take: 100,
+			include: {
+				task: {
+					include: { website: { select: { url: true, name: true, userId: true } } },
+				},
+			},
+		})
+		// email таргетов (пин хранит только executorId)
+		const targetIds = Array.from(
+			new Set(pins.map(p => p.targetExecutorId).filter((x): x is string => !!x)),
+		)
+		const targetUsers = targetIds.length
+			? await this.prisma.user.findMany({ where: { id: { in: targetIds } }, select: { id: true, email: true } })
+			: []
+		const targetEmailById = new Map(targetUsers.map(u => [u.id, u.email]))
+		const now = Date.now()
+
+		const mapped = pins.map(p => ({
+			id: p.id,
+			position: p.position,
+			force: p.force,
+			consumed: p.consumedAt != null,
+			consumedAt: p.consumedAt,
+			consumedByExecutorId: p.consumedByExecutorId,
+			createdByEmail: p.createdByEmail,
+			createdAt: p.createdAt,
+			taskId: p.taskId,
+			keyword: p.task?.keyword ?? null,
+			websiteUrl: p.task?.website?.url ?? null,
+			websiteName: p.task?.website?.name ?? null,
+			targetEmail: p.targetExecutorId ? targetEmailById.get(p.targetExecutorId) ?? p.targetExecutorId : null,
+			targetActive: !!p.targetUntilAt && p.targetUntilAt.getTime() > now,
+			targetUntilAt: p.targetUntilAt,
+		}))
+		// Ожидающие пины по позиции — вверх; сгоревшие (история) — вниз по времени.
+		mapped.sort((a, b) => {
+			if (a.consumed !== b.consumed) return a.consumed ? 1 : -1
+			if (!a.consumed) return a.position - b.position
+			return new Date(b.consumedAt as Date).getTime() - new Date(a.consumedAt as Date).getTime()
+		})
+		const recentPcs = await this.getRecentExecutors(60)
+		return { pins: mapped, recentPcs }
+	}
+
+	// ПК, активные за последние N минут — по одному на аккаунт (последняя активность).
+	private async getRecentExecutors(minutes: number) {
+		const since = new Date(Date.now() - minutes * 60 * 1000)
+		const execs = await this.prisma.execution.findMany({
+			where: { createdAt: { gte: since } },
+			include: {
+				executor: { select: { id: true, email: true, city: true } },
+				task: { include: { website: { select: { url: true } } } },
+			},
+			orderBy: { createdAt: 'desc' },
+		})
+		const seen = new Set<string>()
+		const out: Array<{
+			executorId: string
+			email: string
+			city: string | null
+			lastAt: Date
+			lastSite: string | null
+			lastStatus: string
+		}> = []
+		for (const e of execs) {
+			if (!e.executor || seen.has(e.executor.id)) continue
+			seen.add(e.executor.id)
+			out.push({
+				executorId: e.executor.id,
+				email: e.executor.email,
+				city: e.executor.city,
+				lastAt: e.createdAt,
+				lastSite: e.task?.website?.url ?? null,
+				lastStatus: e.status,
+			})
+		}
+		return out
+	}
+
+	private async nextPinPosition(): Promise<number> {
+		const last = await this.prisma.pinnedTask.findFirst({
+			where: { consumedAt: null },
+			orderBy: { position: 'desc' },
+			select: { position: true },
+		})
+		return (last?.position ?? 0) + 1
+	}
+
+	async addPin(
+		dto: {
+			taskId?: string
+			url?: string
+			keyword?: string
+			position?: number
+			force?: boolean
+			targetExecutorId?: string
+			targetEmail?: string
+			targetMinutes?: number
+		},
+		adminEmail: string,
+	) {
+		let taskId = dto.taskId?.trim()
+		if (!taskId) {
+			const url = (dto.url || '').trim()
+			if (!url) throw new BadRequestException('Укажите ссылку на сайт (или taskId)')
+			const website = await this.prisma.website.findFirst({
+				where: { url, isActive: true },
+				select: { id: true },
+			})
+			if (!website) throw new BadRequestException(`Сайт не найден или неактивен: ${url}`)
+			const kw = (dto.keyword || '').trim()
+			const task = await this.prisma.task.findFirst({
+				where: {
+					websiteId: website.id,
+					isActive: true,
+					keywordStatus: 'ACTIVE',
+					...(kw ? { keyword: { equals: kw, mode: 'insensitive' as const } } : {}),
+				},
+				orderBy: { createdAt: 'asc' },
+				select: { id: true },
+			})
+			if (!task) {
+				throw new BadRequestException(kw ? `Ключ не найден на сайте: «${kw}»` : 'У сайта нет активных ключей')
+			}
+			taskId = task.id
+		} else {
+			const exists = await this.prisma.task.findUnique({ where: { id: taskId }, select: { id: true } })
+			if (!exists) throw new BadRequestException('Задание не найдено')
+		}
+
+		const position =
+			dto.position && dto.position > 0 ? Math.round(dto.position) : await this.nextPinPosition()
+
+		// Мягкий таргет на конкретный ПК (по executorId или email). Окно по умолчанию 60 минут.
+		let targetExecutorId = dto.targetExecutorId?.trim() || undefined
+		if (!targetExecutorId && dto.targetEmail?.trim()) {
+			const u = await this.prisma.user.findFirst({
+				where: { email: { equals: dto.targetEmail.trim(), mode: 'insensitive' as const } },
+				select: { id: true },
+			})
+			if (!u) throw new BadRequestException('ПК (аккаунт) не найден по email')
+			targetExecutorId = u.id
+		}
+		const targetUntilAt = targetExecutorId
+			? new Date(Date.now() + (dto.targetMinutes && dto.targetMinutes > 0 ? dto.targetMinutes : 60) * 60 * 1000)
+			: null
+
+		const pin = await this.prisma.pinnedTask.create({
+			data: {
+				taskId,
+				position,
+				force: dto.force === true,
+				createdByEmail: adminEmail,
+				targetExecutorId: targetExecutorId ?? null,
+				targetUntilAt,
+			},
+		})
+		return { ok: true, id: pin.id }
+	}
+
+	async deletePin(id: string) {
+		await this.prisma.pinnedTask.delete({ where: { id } }).catch(() => {})
+		return { ok: true }
+	}
+
 	async getGoogleConfigForAdmin() {
 		const [socs, consent] = await Promise.all([
 			this.appConfig.getWithMeta(KEY_GOOGLE_SOCS, DEFAULT_GOOGLE_SOCS),

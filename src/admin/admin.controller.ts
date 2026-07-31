@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { CurrentUser } from '../common/decorators/user.decorator'
 import { AnalyticsService } from '../analytics/analytics.service'
 import { MetrikaService } from '../metrika/metrika.service'
 import { AdminGuard } from './admin.guard'
@@ -23,6 +24,25 @@ export class AdminController {
 	@Post('keyword-check')
 	checkKeywords(@Body() body: { domain: string; keywords: string[]; city?: string }) {
 		return this.adminService.checkKeywords(body)
+	}
+
+	// ——— Принудительная очередь заданий (стакан) ———
+	@Get('task-queue')
+	getTaskQueue() {
+		return this.adminService.getTaskQueue()
+	}
+
+	@Post('task-queue/pin')
+	addPin(
+		@Body() body: { taskId?: string; url?: string; keyword?: string; position?: number; force?: boolean },
+		@CurrentUser() user: any,
+	) {
+		return this.adminService.addPin(body, user?.email ?? 'admin')
+	}
+
+	@Delete('task-queue/pin/:id')
+	deletePin(@Param('id') id: string) {
+		return this.adminService.deletePin(id)
 	}
 
 	// Куки Google (обход окна согласия) — читаются desktop-app'ом из БД
