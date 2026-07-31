@@ -26,6 +26,26 @@ export class AdminController {
 		return this.adminService.checkKeywords(body)
 	}
 
+	@Post('site-check/:id')
+	checkSite(@Param('id') id: string, @CurrentUser() user: any) {
+		return this.adminService.checkSite(id, user?.email)
+	}
+
+	@Get('site-check/:id/history')
+	siteCheckHistory(@Param('id') id: string) {
+		return this.adminService.getSiteCheckHistory(id)
+	}
+
+	@Post('keyword-check-one/:taskId')
+	checkKeyword(@Param('taskId') taskId: string, @CurrentUser() user: any) {
+		return this.adminService.checkKeyword(taskId, user?.email)
+	}
+
+	@Get('balances')
+	getBalances() {
+		return this.adminService.getBalances()
+	}
+
 	// ——— Принудительная очередь заданий (стакан) ———
 	@Get('task-queue')
 	getTaskQueue() {

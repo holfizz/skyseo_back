@@ -260,6 +260,27 @@ model PositionHistory {
   @@map("position_history")
 }
 
+// Ручная проверка позиций через XMLRiver (кнопка «Проверить позиции» у админа).
+// Отдельный time-series от PositionHistory (которая пишется визитами приложения) —
+// накладывается на те же графики третьей линией. Сохраняется КАЖДАЯ проверка.
+model KeywordCheck {
+  id            String   @id @default(uuid())
+  websiteId     String
+  taskId        String? // связь с ключом-задачей (если ключ совпал)
+  keyword       String
+  position      Int? // позиция в Яндексе по XMLRiver (null = вне глубины проверки)
+  url           String? // страница, которая ранжируется
+  volume        Int? // частотность Wordstat на момент проверки
+  lr            Int // код региона Яндекса
+  city          String
+  createdByEmail String?
+  checkedAt     DateTime @default(now())
+
+  @@index([websiteId, checkedAt])
+  @@index([taskId, checkedAt])
+  @@map("keyword_checks")
+}
+
 model BalanceHistory {
   id          String             @id @default(uuid())
   userId      String

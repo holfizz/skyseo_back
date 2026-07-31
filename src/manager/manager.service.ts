@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config'
 import { Prisma } from '@prisma/client'
 import { loadExecutionTrace } from '../common/execution-trace'
 import { dedupeKeywords } from '../common/keywords'
-import { checkKeywords, resolveRegion } from '../common/yandex-positions'
+import { checkKeywords, getXmlriverBalance, resolveRegion } from '../common/yandex-positions'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 
@@ -1030,7 +1030,43 @@ export class ManagerService {
 		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
 
 		const region = resolveRegion(dto?.city)
+		// Стоимость проверки = дельта баланса XMLRiver до/после (точнее, чем считать запросы).
+		const balanceBefore = await getXmlriverBalance(user, key)
 		const { results, depth } = await checkKeywords({ user, key, domain, keywords, lr: region.lr })
-		return { region, depth, results }
+		const balanceAfter = await getXmlriverBalance(user, key)
+		const cost =
+			balanceBefore != null && balanceAfter != null
+				? Math.max(0, Math.round((balanceBefore - balanceAfter) * 100) / 100)
+				: null
+		return { region, depth, results, cost, balance: balanceAfter }
+	}
+
+	// Балансы для плашки: XMLRiver (живой) + OpenAI (best-effort; у OpenAI нет публичного API баланса).
+	async getBalances(): Promise<{ xmlriver: number | null; openai: number | null }> {
+		const user = this.config.get('XMLRIVER_USER') || ''
+		const key = this.config.get('XMLRIVER_KEY') || ''
+		const [xmlriver, openai] = await Promise.all([
+			getXmlriverBalance(user, key),
+			this.getOpenAiBalance(),
+		])
+		return { xmlriver, openai }
+	}
+
+	private async getOpenAiBalance(): Promise<number | null> {
+		const key = process.env.OPENAI_API_KEY
+		if (!key) return null
+		try {
+			// Легаси-эндпоинт биллинга. Для обычных API-ключей чаще всего 401/недоступен —
+			// тогда возвращаем null и в UI показываем «недоступно».
+			const res = await fetch('https://api.openai.com/dashboard/billing/credit_grants', {
+				headers: { Authorization: `Bearer ${key}` },
+			})
+			if (!res.ok) return null
+			const j: any = await res.json()
+			const v = Number(j?.total_available)
+			return Number.isFinite(v) ? v : null
+		} catch {
+			return null
+		}
 	}
 }

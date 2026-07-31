@@ -58,6 +58,179 @@ export class AdminService {
 		return this.managerService.checkPositions(dto)
 	}
 
+	// Проверка позиций сайта: сам подставляет домен + до 50 ключей, гоняет через XMLRiver
+	// и СОХРАНЯЕТ каждую проверку в keyword_checks (time-series для графиков).
+	async checkSite(websiteId: string, createdByEmail?: string) {
+		const site = await this.prisma.website.findUnique({
+			where: { id: websiteId },
+			select: {
+				url: true,
+				tasks: {
+					where: { isActive: true, keyword: { not: null } },
+					select: { id: true, keyword: true, geo: true },
+					orderBy: { createdAt: 'asc' },
+					take: 50,
+				},
+			},
+		})
+		if (!site) throw new BadRequestException('Сайт не найден')
+		const keywords = Array.from(
+			new Set(site.tasks.map(t => (t.keyword || '').trim()).filter(Boolean)),
+		).slice(0, 50)
+		if (keywords.length === 0) throw new BadRequestException('У сайта нет ключей для проверки')
+		const city = site.tasks.find(t => t.geo)?.geo || undefined
+
+		const res = await this.managerService.checkPositions({ domain: site.url, keywords, city })
+		const taskByKw = new Map(
+			site.tasks.filter(t => t.keyword).map(t => [t.keyword!.trim().toLowerCase(), t.id]),
+		)
+		const checkedAt = new Date()
+		const toSave = res.results
+			.filter(r => !r.error)
+			.map(r => ({
+				websiteId,
+				taskId: taskByKw.get(r.keyword.trim().toLowerCase()) ?? null,
+				keyword: r.keyword,
+				position: r.position ?? null,
+				url: r.url ?? null,
+				volume: r.volume ?? null,
+				lr: res.region.lr,
+				city: res.region.city,
+				createdByEmail: createdByEmail ?? null,
+				checkedAt,
+			}))
+		if (toSave.length) await this.prisma.keywordCheck.createMany({ data: toSave })
+
+		const results = res.results.map(r => ({
+			...r,
+			taskId: taskByKw.get(r.keyword.trim().toLowerCase()) ?? null,
+		}))
+		return { region: res.region, depth: res.depth, results, cost: res.cost, balance: res.balance, checkedAt }
+	}
+
+	// Проверка одного ключа (кнопка у конкретного ключа). Тоже сохраняется в историю.
+	async checkKeyword(taskId: string, createdByEmail?: string) {
+		const task = await this.prisma.task.findUnique({
+			where: { id: taskId },
+			select: { keyword: true, geo: true, websiteId: true, website: { select: { url: true } } },
+		})
+		if (!task || !task.keyword) throw new BadRequestException('Ключ не найден')
+		const res = await this.managerService.checkPositions({
+			domain: task.website.url,
+			keywords: [task.keyword],
+			city: task.geo || undefined,
+		})
+		const r = res.results[0]
+		const checkedAt = new Date()
+		if (r && !r.error) {
+			await this.prisma.keywordCheck.create({
+				data: {
+					websiteId: task.websiteId,
+					taskId,
+					keyword: r.keyword,
+					position: r.position ?? null,
+					url: r.url ?? null,
+					volume: r.volume ?? null,
+					lr: res.region.lr,
+					city: res.region.city,
+					createdByEmail: createdByEmail ?? null,
+					checkedAt,
+				},
+			})
+		}
+		return {
+			region: res.region,
+			depth: res.depth,
+			result: r ? { ...r, taskId } : null,
+			cost: res.cost,
+			balance: res.balance,
+			checkedAt,
+		}
+	}
+
+	// История для графиков: по каждому ключу мерджим XMLRiver-проверки (наши) и PositionHistory (визиты приложения).
+	async getSiteCheckHistory(websiteId: string) {
+		const tasks = await this.prisma.task.findMany({
+			where: { websiteId },
+			select: { id: true, keyword: true },
+			orderBy: { createdAt: 'asc' },
+		})
+		const taskIds = tasks.map(t => t.id)
+		const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
+		const [checks, posHist] = await Promise.all([
+			this.prisma.keywordCheck.findMany({
+				where: { websiteId, checkedAt: { gte: since } },
+				select: { taskId: true, keyword: true, position: true, checkedAt: true },
+				orderBy: { checkedAt: 'asc' },
+			}),
+			taskIds.length
+				? this.prisma.positionHistory.findMany({
+						where: { taskId: { in: taskIds }, date: { gte: since } },
+						select: { taskId: true, yandexPosition: true, googlePosition: true, date: true },
+						orderBy: { date: 'asc' },
+					})
+				: Promise.resolve([] as { taskId: string; yandexPosition: number | null; googlePosition: number | null; date: Date }[]),
+		])
+
+		// Бакетим один раз (O(N)) вместо filter в цикле по каждому ключу.
+		const checksByTask = new Map<string, typeof checks>()
+		const checksByKw = new Map<string, typeof checks>()
+		for (const c of checks) {
+			if (c.taskId) {
+				const a = checksByTask.get(c.taskId) ?? []
+				a.push(c)
+				checksByTask.set(c.taskId, a)
+			} else {
+				const kw = c.keyword.trim().toLowerCase()
+				const a = checksByKw.get(kw) ?? []
+				a.push(c)
+				checksByKw.set(kw, a)
+			}
+		}
+		const posByTask = new Map<string, typeof posHist>()
+		for (const p of posHist) {
+			const a = posByTask.get(p.taskId) ?? []
+			a.push(p)
+			posByTask.set(p.taskId, a)
+		}
+		// PositionHistory: 101 и null = «сайт не найден / вне топа» — в график не идут (как в getSiteTrend/getClientTrend).
+		const cleanPos = (v: number | null) => (v != null && v < 101 ? v : null)
+
+		return tasks
+			.map(t => {
+				const kwLc = (t.keyword || '').trim().toLowerCase()
+				const kwChecks = [...(checksByTask.get(t.id) ?? []), ...(checksByKw.get(kwLc) ?? [])]
+				const kwPos = posByTask.get(t.id) ?? []
+				const map = new Map<
+					number,
+					{ date: string; xmlriver: number | null; appYandex: number | null; appGoogle: number | null }
+				>()
+				const touch = (ms: number) => {
+					let e = map.get(ms)
+					if (!e) {
+						e = { date: new Date(ms).toISOString(), xmlriver: null, appYandex: null, appGoogle: null }
+						map.set(ms, e)
+					}
+					return e
+				}
+				for (const c of kwChecks) touch(new Date(c.checkedAt).getTime()).xmlriver = c.position
+				for (const p of kwPos) {
+					const e = touch(new Date(p.date).getTime())
+					e.appYandex = cleanPos(p.yandexPosition)
+					e.appGoogle = cleanPos(p.googlePosition)
+				}
+				const points = Array.from(map.entries())
+					.sort((a, b) => a[0] - b[0])
+					.map(([, v]) => v)
+				return { taskId: t.id, keyword: t.keyword, points }
+			})
+			.filter(k => k.points.some(p => p.xmlriver != null || p.appYandex != null || p.appGoogle != null))
+	}
+
+	async getBalances() {
+		return this.managerService.getBalances()
+	}
+
 	// ——— Принудительная очередь заданий (пины) ———
 	// Стакан: кто онлайн сейчас + ручная очередь. position — порядок выдачи следующим ПК.
 	async getTaskQueue() {

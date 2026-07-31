@@ -314,3 +314,18 @@ export async function checkKeywords(opts: {
 	})
 	return { depth, results }
 }
+
+// Баланс аккаунта XMLRiver в рублях (для плашки и подсчёта стоимости по дельте). null если не удалось.
+export async function getXmlriverBalance(user: string, key: string): Promise<number | null> {
+	if (!user || !key) return null
+	try {
+		const u = `https://xmlriver.com/api/get_balance/?user=${encodeURIComponent(user)}&key=${encodeURIComponent(key)}`
+		const res = await fetch(u)
+		if (!res.ok) return null
+		const text = (await res.text()).trim()
+		const n = Number(text.replace(',', '.').replace(/[^\d.\-]/g, ''))
+		return Number.isFinite(n) ? n : null
+	} catch {
+		return null
+	}
+}
