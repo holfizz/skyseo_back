@@ -27,8 +27,8 @@ export class AdminController {
 	}
 
 	@Post('site-check/:id')
-	checkSite(@Param('id') id: string, @CurrentUser() user: any) {
-		return this.adminService.checkSite(id, user?.email)
+	checkSite(@Param('id') id: string, @CurrentUser() user: any, @Body() body: { taskIds?: string[] }) {
+		return this.adminService.checkSite(id, user?.email, body?.taskIds)
 	}
 
 	@Get('site-check/:id/history')

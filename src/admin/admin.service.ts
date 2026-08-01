@@ -60,16 +60,23 @@ export class AdminService {
 
 	// Проверка позиций сайта: сам подставляет домен + до 50 ключей, гоняет через XMLRiver
 	// и СОХРАНЯЕТ каждую проверку в keyword_checks (time-series для графиков).
-	async checkSite(websiteId: string, createdByEmail?: string) {
+	async checkSite(websiteId: string, createdByEmail?: string, taskIds?: string[]) {
+		// taskIds — проверить только это подмножество ключей (фронт бьёт проверку на мелкие
+		// чанки, чтобы один запрос не упирался в таймаут nginx на больших сайтах).
+		const subset = taskIds?.filter(Boolean) ?? []
 		const site = await this.prisma.website.findUnique({
 			where: { id: websiteId },
 			select: {
 				url: true,
 				tasks: {
-					where: { isActive: true, keyword: { not: null } },
+					where: {
+						isActive: true,
+						keyword: { not: null },
+						...(subset.length ? { id: { in: subset } } : {}),
+					},
 					select: { id: true, keyword: true, geo: true },
 					orderBy: { createdAt: 'asc' },
-					take: 50,
+					take: subset.length ? undefined : 50,
 				},
 			},
 		})
