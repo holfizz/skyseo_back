@@ -168,14 +168,17 @@ async function checkOne(
 		if (error) return { keyword, position: null, url: null, error, scanned }
 
 		const urls = parseResultUrls(xml!)
-		if (urls.length === 0) break // результаты кончились
+		if (urls.length === 0) break // результаты реально кончились — только это конец выдачи
 		for (let i = 0; i < urls.length; i++) {
 			if (isMatch(domainHost, hostOf(urls[i]))) {
-				return { keyword, position: page * RESULTS_PER_PAGE + i + 1, url: urls[i], scanned: scanned + i + 1 }
+				// позиция = сколько просмотрели до этой страницы + индекс (точнее, чем page*10,
+				// когда страница неполная из-за отфильтрованной рекламы)
+				return { keyword, position: scanned + i + 1, url: urls[i], scanned: scanned + i + 1 }
 			}
 		}
 		scanned += urls.length
-		if (urls.length < RESULTS_PER_PAGE) break // это была последняя страница выдачи
+		// НЕ обрываем на urls.length < 10: неполная страница часто = отфильтрованная реклама,
+		// а не конец выдачи. Идём до maxPages (топ-50) либо до пустой страницы.
 	}
 	return { keyword, position: null, url: null, scanned } // не нашли в просмотренной глубине
 }
