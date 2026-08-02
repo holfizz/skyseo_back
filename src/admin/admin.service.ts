@@ -155,6 +155,45 @@ export class AdminService {
 		}
 	}
 
+	// Массовое добавление ключей к сайту (админ вставляет список). Дубликаты пропускаются.
+	// Гео и лимиты визитов наследуем от существующих ключей сайта, иначе — дефолты.
+	async addKeywordsToSite(websiteId: string, keywords: string[], city?: string) {
+		const site = await this.prisma.website.findUnique({
+			where: { id: websiteId },
+			select: {
+				id: true,
+				tasks: {
+					select: { keyword: true, geo: true, maxYandexVisits: true },
+					orderBy: { createdAt: 'asc' },
+				},
+			},
+		})
+		if (!site) throw new NotFoundException('Сайт не найден')
+		const incoming = dedupeKeywords(keywords || [])
+		if (incoming.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
+		const existingSet = new Set(site.tasks.map(t => (t.keyword || '').trim().toLowerCase()).filter(Boolean))
+		const toCreate = incoming.filter(k => !existingSet.has(k.toLowerCase()))
+		const geo = city?.trim() || site.tasks.find(t => t.geo)?.geo || 'Москва'
+		const maxVisits = site.tasks.find(t => t.maxYandexVisits != null)?.maxYandexVisits ?? 10
+		for (const keyword of toCreate) {
+			await this.prisma.task.create({
+				data: {
+					websiteId,
+					type: 'SEARCH_AND_VISIT',
+					keyword,
+					geo,
+					isActive: true,
+					keywordStatus: 'ACTIVE',
+					useYandex: true,
+					useGoogle: true,
+					maxYandexVisits: maxVisits,
+					maxGoogleVisits: maxVisits,
+				},
+			})
+		}
+		return { created: toCreate.length, skipped: incoming.length - toCreate.length }
+	}
+
 	// История для графиков: по каждому ключу мерджим XMLRiver-проверки (наши) и PositionHistory (визиты приложения).
 	async getSiteCheckHistory(websiteId: string) {
 		const tasks = await this.prisma.task.findMany({

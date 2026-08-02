@@ -36,6 +36,12 @@ export class AdminController {
 		return this.adminService.getSiteCheckHistory(id)
 	}
 
+	// Массовое добавление ключей к сайту
+	@Post('websites/:id/keywords')
+	addKeywords(@Param('id') id: string, @Body() body: { keywords: string[]; city?: string }) {
+		return this.adminService.addKeywordsToSite(id, body.keywords, body.city)
+	}
+
 	@Post('keyword-check-one/:taskId')
 	checkKeyword(@Param('taskId') taskId: string, @CurrentUser() user: any) {
 		return this.adminService.checkKeyword(taskId, user?.email)
