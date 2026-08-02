@@ -238,6 +238,178 @@ export class AdminService {
 		return this.managerService.getBalances()
 	}
 
+	// ——— Отчёты по позициям в Яндексе (XMLRiver) ———
+	// Админ вставляет домен + ключи → отчёт. «Перезапросить» создаёт новый прогон.
+	// Каждый прогон — снапшот позиций; сравнение прогонов = история «было → стало».
+
+	async listReports() {
+		const reports = await this.prisma.positionReport.findMany({
+			orderBy: { createdAt: 'desc' },
+			take: 200,
+			include: {
+				_count: { select: { runs: true } },
+				runs: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true, cost: true } },
+			},
+		})
+		return reports.map(r => ({
+			id: r.id,
+			domain: r.domain,
+			title: r.title,
+			city: r.city,
+			keywordsCount: r.keywords.length,
+			runsCount: r._count.runs,
+			lastRunAt: r.runs[0]?.createdAt ?? null,
+			lastCost: r.runs[0]?.cost ?? null,
+			createdAt: r.createdAt,
+		}))
+	}
+
+	async createReport(dto: { domain: string; title?: string; keywords: string[]; city?: string }, email?: string) {
+		const domain = (dto.domain || '').trim()
+		if (!domain) throw new BadRequestException('Укажите домен сайта')
+		const keywords = dedupeKeywords(dto.keywords || []).slice(0, 50)
+		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
+		const report = await this.prisma.positionReport.create({
+			data: {
+				domain,
+				title: dto.title?.trim() || null,
+				city: dto.city?.trim() || 'Москва',
+				keywords,
+				createdByEmail: email ?? null,
+			},
+			select: { id: true },
+		})
+		return { id: report.id }
+	}
+
+	async updateReport(id: string, dto: { title?: string | null; keywords?: string[]; city?: string; domain?: string }) {
+		const data: { title?: string | null; keywords?: string[]; city?: string; domain?: string } = {}
+		if (dto.title !== undefined) data.title = dto.title?.trim() || null
+		if (dto.domain !== undefined) {
+			const d = (dto.domain || '').trim()
+			if (!d) throw new BadRequestException('Укажите домен сайта')
+			data.domain = d
+		}
+		if (dto.city !== undefined) data.city = dto.city?.trim() || 'Москва'
+		if (dto.keywords !== undefined) {
+			const kws = dedupeKeywords(dto.keywords || []).slice(0, 50)
+			if (kws.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
+			data.keywords = kws
+		}
+		await this.prisma.positionReport.update({ where: { id }, data })
+		return this.getReport(id)
+	}
+
+	async deleteReport(id: string) {
+		await this.prisma.positionReport.delete({ where: { id } }).catch(() => {})
+		return { ok: true }
+	}
+
+	// Отчёт целиком: мета + прогоны (по возрастанию) + матрица «ключ × прогон».
+	async getReport(id: string) {
+		const report = await this.prisma.positionReport.findUnique({
+			where: { id },
+			include: { runs: { orderBy: { createdAt: 'asc' } } },
+		})
+		if (!report) throw new NotFoundException('Отчёт не найден')
+
+		type Cell = { position: number | null; url: string | null; volume: number | null; error: string | null }
+		const runResults = report.runs.map(run => (Array.isArray(run.results) ? (run.results as any[]) : []))
+
+		const runs = report.runs.map((run, i) => {
+			const positions = runResults[i].map(x => x?.position).filter((p): p is number => typeof p === 'number')
+			return {
+				id: run.id,
+				createdAt: run.createdAt,
+				cost: run.cost,
+				depth: run.depth,
+				createdByEmail: run.createdByEmail,
+				checked: runResults[i].length,
+				inTop10: positions.filter(p => p <= 10).length,
+				inTop50: positions.filter(p => p <= 50).length,
+				avgPosition: positions.length ? Math.round((positions.reduce((a, b) => a + b, 0) / positions.length) * 10) / 10 : null,
+			}
+		})
+
+		// Строки: по каждому ключу — позиция в каждом прогоне (в порядке прогонов).
+		const rows = report.keywords.map(kw => {
+			const lc = kw.trim().toLowerCase()
+			const cells: (Cell | null)[] = runResults.map(arr => {
+				const hit = arr.find(x => (x?.keyword || '').trim().toLowerCase() === lc)
+				return hit ? { position: hit.position ?? null, url: hit.url ?? null, volume: hit.volume ?? null, error: hit.error ?? null } : null
+			})
+			// Частотность — последняя известная (справа налево).
+			let volume: number | null = null
+			for (let i = cells.length - 1; i >= 0; i--) {
+				if (cells[i]?.volume != null) { volume = cells[i]!.volume; break }
+			}
+			return { keyword: kw, volume, cells }
+		})
+
+		return {
+			id: report.id,
+			domain: report.domain,
+			title: report.title,
+			city: report.city,
+			keywords: report.keywords,
+			createdAt: report.createdAt,
+			runs,
+			rows,
+		}
+	}
+
+	// Один чанк прогона. Без runId — создаёт прогон; с runId — дополняет его
+	// (фронт бьёт ключи на мелкие чанки, чтобы не упереться в таймаут nginx).
+	async runReport(id: string, keywords: string[], runId?: string, email?: string) {
+		const report = await this.prisma.positionReport.findUnique({
+			where: { id },
+			select: { domain: true, city: true },
+		})
+		if (!report) throw new NotFoundException('Отчёт не найден')
+		const chunk = dedupeKeywords(keywords || []).slice(0, 50)
+		if (chunk.length === 0) throw new BadRequestException('Нет ключей для проверки')
+
+		const res = await this.managerService.checkPositions({ domain: report.domain, keywords: chunk, city: report.city })
+		const chunkResults = res.results.map(r => ({
+			keyword: r.keyword,
+			position: r.position ?? null,
+			url: r.url ?? null,
+			volume: r.volume ?? null,
+			error: r.error ?? null,
+		}))
+
+		if (!runId) {
+			const run = await this.prisma.positionReportRun.create({
+				data: {
+					reportId: id,
+					results: chunkResults,
+					cost: res.cost ?? 0,
+					depth: res.depth ?? 0,
+					createdByEmail: email ?? null,
+				},
+				select: { id: true, cost: true, depth: true },
+			})
+			return { runId: run.id, cost: run.cost, depth: run.depth, balance: res.balance, region: res.region }
+		}
+
+		const run = await this.prisma.positionReportRun.findUnique({ where: { id: runId } })
+		if (!run || run.reportId !== id) throw new BadRequestException('Прогон не найден')
+		const prev = Array.isArray(run.results) ? (run.results as any[]) : []
+		const byKw = new Map(prev.map(x => [(x?.keyword || '').trim().toLowerCase(), x]))
+		for (const r of chunkResults) byKw.set(r.keyword.trim().toLowerCase(), r)
+		const merged = Array.from(byKw.values())
+		const updated = await this.prisma.positionReportRun.update({
+			where: { id: runId },
+			data: {
+				results: merged,
+				cost: (run.cost ?? 0) + (res.cost ?? 0),
+				depth: Math.max(run.depth ?? 0, res.depth ?? 0),
+			},
+			select: { cost: true, depth: true },
+		})
+		return { runId, cost: updated.cost, depth: updated.depth, balance: res.balance, region: res.region }
+	}
+
 	// ——— Принудительная очередь заданий (пины) ———
 	// Стакан: кто онлайн сейчас + ручная очередь. position — порядок выдачи следующим ПК.
 	async getTaskQueue() {

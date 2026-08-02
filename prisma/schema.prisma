@@ -281,6 +281,40 @@ model KeywordCheck {
   @@map("keyword_checks")
 }
 
+// Отчёт по позициям в Яндексе (XMLRiver). Админ вставляет домен + ключи один раз,
+// а дальше «перезапрашивает» — каждый прогон это снапшот позиций всех ключей.
+// Сравнение прогонов даёт историю «было так → на второй раз так → на третий так».
+model PositionReport {
+  id             String              @id @default(uuid())
+  domain         String
+  title          String?
+  city           String              @default("Москва")
+  keywords       String[]
+  createdByEmail String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  runs           PositionReportRun[]
+
+  @@index([createdAt])
+  @@map("position_reports")
+}
+
+// Один прогон отчёта: снапшот результатов по всем ключам на момент проверки.
+// results — JSON-массив [{ keyword, position, url, volume, error }].
+model PositionReportRun {
+  id             String         @id @default(uuid())
+  reportId       String
+  report         PositionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  results        Json
+  cost           Float?
+  depth          Int?
+  createdByEmail String?
+  createdAt      DateTime       @default(now())
+
+  @@index([reportId, createdAt])
+  @@map("position_report_runs")
+}
+
 model BalanceHistory {
   id          String             @id @default(uuid())
   userId      String

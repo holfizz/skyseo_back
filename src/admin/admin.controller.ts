@@ -46,6 +46,37 @@ export class AdminController {
 		return this.adminService.getBalances()
 	}
 
+	// ——— Отчёты по позициям в Яндексе ———
+	@Get('reports')
+	listReports() {
+		return this.adminService.listReports()
+	}
+
+	@Post('reports')
+	createReport(@Body() body: { domain: string; title?: string; keywords: string[]; city?: string }, @CurrentUser() user: any) {
+		return this.adminService.createReport(body, user?.email)
+	}
+
+	@Get('reports/:id')
+	getReport(@Param('id') id: string) {
+		return this.adminService.getReport(id)
+	}
+
+	@Put('reports/:id')
+	updateReport(@Param('id') id: string, @Body() body: { title?: string | null; keywords?: string[]; city?: string; domain?: string }) {
+		return this.adminService.updateReport(id, body)
+	}
+
+	@Delete('reports/:id')
+	deleteReport(@Param('id') id: string) {
+		return this.adminService.deleteReport(id)
+	}
+
+	@Post('reports/:id/run')
+	runReport(@Param('id') id: string, @Body() body: { keywords: string[]; runId?: string }, @CurrentUser() user: any) {
+		return this.adminService.runReport(id, body?.keywords, body?.runId, user?.email)
+	}
+
 	// ——— Принудительная очередь заданий (стакан) ———
 	@Get('task-queue')
 	getTaskQueue() {
