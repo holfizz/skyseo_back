@@ -472,6 +472,12 @@ export class AdminController {
 		return this.adminService.deleteAdminTask(id)
 	}
 
+	// Массовое удаление ключей (чекбоксы)
+	@Post('tasks/bulk-delete')
+	async deleteTasksBulk(@Body() body: { taskIds: string[] }) {
+		return this.adminService.deleteTasksBulk(body?.taskIds)
+	}
+
 	@Get('funnel')
 	async getFunnel(
 		@Query('from') from?: string,

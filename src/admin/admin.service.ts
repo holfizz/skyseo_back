@@ -2093,6 +2093,14 @@ export class AdminService {
 		return this.prisma.task.delete({ where: { id: taskId } })
 	}
 
+	// Массовое удаление ключей (чекбоксы на фронте). Каскады на связях как у одиночного delete.
+	async deleteTasksBulk(taskIds: string[]) {
+		const ids = (taskIds || []).filter(Boolean)
+		if (ids.length === 0) throw new BadRequestException('Не выбрано ни одного ключа')
+		const res = await this.prisma.task.deleteMany({ where: { id: { in: ids } } })
+		return { deleted: res.count }
+	}
+
 	async getSiteStats(page = 0, limit = 30) {
 		const offset = page * limit
 
