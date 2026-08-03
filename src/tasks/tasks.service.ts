@@ -315,8 +315,10 @@ export class TasksService {
 		//   • >2 неудачи  → прячем на 45 дней (выдаётся заметно реже найденных ключей).
 		// Мёртвые ключи и так уходят в keywordStatus=RESTRICTED после 10 подряд NOT_IN_SERP (глобально).
 		const failLookback = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
-		const LIGHT_HIDE_MS = 14 * 24 * 60 * 60 * 1000
-		const HEAVY_HIDE_MS = 45 * 24 * 60 * 60 * 1000
+		// Сеть маленькая — переоткрываем ключ тому же ПК быстро: 3 дня (1–2 промаха),
+		// 5 дней (3+ промаха). Позиции волатильны, ждать 2 недели смысла нет.
+		const LIGHT_HIDE_MS = 3 * 24 * 60 * 60 * 1000
+		const HEAVY_HIDE_MS = 5 * 24 * 60 * 60 * 1000
 		const nowMs = Date.now()
 		const notInSerpStats = await this.prisma.execution.groupBy({
 			by: ['taskId'],
@@ -338,6 +340,28 @@ export class TasksService {
 			.map(s => s.taskId)
 			.filter((id): id is string => id !== null)
 
+		// Задача, которая только что не выполнилась (не досталось браузера — LOCK_TIMEOUT, или
+		// не нашли сайт — NOT_IN_SERP), возвращается в НАЧАЛО очереди, чтобы её сразу подхватил
+		// ДРУГОЙ ПК (сам «провинившийся» ПК исключается ниже, см. eligibleTaskWhere).
+		// Кап ≤3 за 30 мин — чтобы «ядовитая» задача, которая всегда падает, не застряла в начале
+		// и не морила остальную очередь.
+		const recentFailCutoff = new Date(Date.now() - 30 * 60 * 1000)
+		const recentFailStats = await this.prisma.execution.groupBy({
+			by: ['taskId'],
+			where: {
+				status: 'FAILED',
+				failureReason: { in: ['LOCK_TIMEOUT', 'NOT_IN_SERP'] },
+				completedAt: { gte: recentFailCutoff },
+			},
+			_count: { _all: true },
+		})
+		const retryFrontTaskIds = new Set(
+			recentFailStats
+				.filter(s => s._count._all <= 3)
+				.map(s => s.taskId)
+				.filter((id): id is string => id !== null),
+		)
+
 		// Базовый фильтр доступных для исполнителя задач (без site-cap)
 		const eligibleTaskWhere = {
 			isActive: true,
@@ -349,8 +373,13 @@ export class TasksService {
 			executions: {
 				none: {
 					executorId,
-					status: 'COMPLETED' as const,
-					completedAt: { gte: cooldownDate },
+					OR: [
+						{ status: 'COMPLETED' as const, completedAt: { gte: cooldownDate } },
+						// «Не тому же ПК»: задачу, которую этот ПК только что завалил, 30 мин ему не
+						// отдаём — пусть подхватит другой (она в начале очереди). Окно, а не навсегда:
+						// в крошечной сети из одного ПК иначе задача застряла бы насовсем.
+						{ status: 'FAILED' as const, completedAt: { gte: recentFailCutoff } },
+					],
 				},
 			},
 			website: {
@@ -580,8 +609,10 @@ export class TasksService {
 		//   3. _salt (random)   — тай-брейк при полном равенстве; нужен чтобы несколько
 		//                         параллельных исполнителей не получали одну и ту же задачу №1.
 		const sortPool = (pool: typeof candidates) => {
-			const salted = pool.map(c => ({ ...c, _salt: Math.random() }))
+			const salted = pool.map(c => ({ ...c, _salt: Math.random(), _retry: retryFrontTaskIds.has(c.task.id) ? 1 : 0 }))
 			salted.sort((a, b) => {
+				// ретрай после LOCK_TIMEOUT (не досталось свободного ПК) — в начало очереди
+				if (a._retry !== b._retry) return b._retry - a._retry
 				if (a.foundCount !== b.foundCount) return b.foundCount - a.foundCount
 				if (a.fillRatio !== b.fillRatio) return a.fillRatio - b.fillRatio
 				// тайбрейкер: сайты, которые давно не посещали, получают приоритет

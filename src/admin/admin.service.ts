@@ -1249,6 +1249,13 @@ export class AdminService {
 										take: 1,
 										select: { yandexPosition: true, googlePosition: true },
 									},
+									// Последние завершённые попытки — для бейджа «×N сработало / не сработало»
+									executions: {
+										where: { completedAt: { not: null } },
+										orderBy: { completedAt: 'desc' as const },
+										take: 8,
+										select: { foundInTop: true, status: true },
+									},
 									_count: { select: { executions: true } },
 								},
 							},
