@@ -1041,32 +1041,11 @@ export class ManagerService {
 		return { region, depth, results, cost, balance: balanceAfter }
 	}
 
-	// Балансы для плашки: XMLRiver (живой) + OpenAI (best-effort; у OpenAI нет публичного API баланса).
-	async getBalances(): Promise<{ xmlriver: number | null; openai: number | null }> {
+	// Баланс XMLRiver (живой). OpenAI убран: у него нет публичного API баланса.
+	async getBalances(): Promise<{ xmlriver: number | null }> {
 		const user = this.config.get('XMLRIVER_USER') || ''
 		const key = this.config.get('XMLRIVER_KEY') || ''
-		const [xmlriver, openai] = await Promise.all([
-			getXmlriverBalance(user, key),
-			this.getOpenAiBalance(),
-		])
-		return { xmlriver, openai }
-	}
-
-	private async getOpenAiBalance(): Promise<number | null> {
-		const key = process.env.OPENAI_API_KEY
-		if (!key) return null
-		try {
-			// Легаси-эндпоинт биллинга. Для обычных API-ключей чаще всего 401/недоступен —
-			// тогда возвращаем null и в UI показываем «недоступно».
-			const res = await fetch('https://api.openai.com/dashboard/billing/credit_grants', {
-				headers: { Authorization: `Bearer ${key}` },
-			})
-			if (!res.ok) return null
-			const j: any = await res.json()
-			const v = Number(j?.total_available)
-			return Number.isFinite(v) ? v : null
-		} catch {
-			return null
-		}
+		const xmlriver = await getXmlriverBalance(user, key)
+		return { xmlriver }
 	}
 }

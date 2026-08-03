@@ -107,6 +107,18 @@ export class AdminController {
 		return this.adminService.searchPinSites(q)
 	}
 
+	// Глобальный поиск (юзеры + сайты + ключи) для хедер-строки
+	@Get('search')
+	globalSearch(@Query('q') q: string) {
+		return this.adminService.globalSearch(q)
+	}
+
+	// Платные клиенты: динамика позиций по сайтам
+	@Get('paid-clients')
+	getPaidClients() {
+		return this.adminService.getPaidClients()
+	}
+
 	// Куки Google (обход окна согласия) — читаются desktop-app'ом из БД
 	@Get('google-config')
 	async getGoogleConfig() {
@@ -250,8 +262,8 @@ export class AdminController {
 	}
 
 	@Get('payments')
-	async getAllPayments() {
-		return this.adminService.getAllPayments()
+	async getAllPayments(@Query('limit') limit?: string) {
+		return this.adminService.getAllPayments(limit ? Number(limit) : 100)
 	}
 
 	@Get('active-users')

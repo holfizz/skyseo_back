@@ -284,7 +284,7 @@ export class AdminService {
 	async listReports() {
 		const reports = await this.prisma.positionReport.findMany({
 			orderBy: { createdAt: 'desc' },
-			take: 200,
+			take: 500,
 			include: {
 				_count: { select: { runs: true } },
 				runs: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true, cost: true } },
@@ -306,7 +306,7 @@ export class AdminService {
 	async createReport(dto: { domain: string; title?: string; keywords: string[]; city?: string }, email?: string) {
 		const domain = (dto.domain || '').trim()
 		if (!domain) throw new BadRequestException('Укажите домен сайта')
-		const keywords = dedupeKeywords(dto.keywords || []).slice(0, 50)
+		const keywords = dedupeKeywords(dto.keywords || []).slice(0, 1000)
 		if (keywords.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
 		const report = await this.prisma.positionReport.create({
 			data: {
@@ -331,7 +331,7 @@ export class AdminService {
 		}
 		if (dto.city !== undefined) data.city = dto.city?.trim() || 'Москва'
 		if (dto.keywords !== undefined) {
-			const kws = dedupeKeywords(dto.keywords || []).slice(0, 50)
+			const kws = dedupeKeywords(dto.keywords || []).slice(0, 1000)
 			if (kws.length === 0) throw new BadRequestException('Добавьте хотя бы один ключ')
 			data.keywords = kws
 		}
@@ -643,7 +643,7 @@ export class AdminService {
 				},
 			},
 			orderBy: { updatedAt: 'desc' },
-			take: 12,
+			take: 25,
 		})
 		return sites.map(s => ({
 			websiteId: s.id,
@@ -655,6 +655,96 @@ export class AdminService {
 				.filter(t => t.keyword)
 				.map(t => ({ taskId: t.id, keyword: t.keyword as string })),
 		}))
+	}
+
+	// Платные клиенты: по каждому сайту — всего ключей + сколько поднялось/на месте/упало.
+	// Динамика по Яндексу: сравниваем первую и последнюю позицию за 60 дней (101/null = вне топа).
+	async getPaidClients() {
+		const paid = await this.prisma.payment.groupBy({ by: ['userId'], where: { status: 'SUCCEEDED' } })
+		const userIds = paid.map(p => p.userId)
+		if (!userIds.length) return { sites: [], totals: { sites: 0, keywords: 0, rose: 0, stayed: 0, fell: 0, notRanked: 0 } }
+		const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
+		const users = await this.prisma.user.findMany({
+			where: { id: { in: userIds } },
+			select: {
+				id: true,
+				email: true,
+				websites: {
+					select: {
+						id: true,
+						url: true,
+						name: true,
+						tasks: {
+							where: { isActive: true, keyword: { not: null } },
+							select: {
+								id: true,
+								positionHistory: {
+									where: { date: { gte: since } },
+									select: { yandexPosition: true, date: true },
+									orderBy: { date: 'asc' },
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		const clean = (v: number | null) => (v != null && v < 101 ? v : null)
+		const sites: Array<{ userId: string; email: string; websiteId: string; url: string; name: string | null; total: number; rose: number; stayed: number; fell: number; notRanked: number }> = []
+		for (const u of users) {
+			for (const w of u.websites) {
+				let rose = 0, fell = 0, stayed = 0, notRanked = 0
+				for (const t of w.tasks) {
+					const pts = t.positionHistory.map(p => clean(p.yandexPosition)).filter((v): v is number => v != null)
+					if (pts.length >= 2) {
+						const first = pts[0], last = pts[pts.length - 1]
+						if (last < first) rose++
+						else if (last > first) fell++
+						else stayed++
+					} else if (pts.length === 1) stayed++
+					else notRanked++
+				}
+				sites.push({ userId: u.id, email: u.email, websiteId: w.id, url: w.url, name: w.name, total: w.tasks.length, rose, stayed, fell, notRanked })
+			}
+		}
+		sites.sort((a, b) => b.rose - a.rose || b.total - a.total)
+		const totals = sites.reduce(
+			(acc, s) => ({ sites: acc.sites + 1, keywords: acc.keywords + s.total, rose: acc.rose + s.rose, stayed: acc.stayed + s.stayed, fell: acc.fell + s.fell, notRanked: acc.notRanked + s.notRanked }),
+			{ sites: 0, keywords: 0, rose: 0, stayed: 0, fell: 0, notRanked: 0 },
+		)
+		return { sites, totals }
+	}
+
+	// Глобальный поиск для хедер-строки: юзеры + сайты + ключи одним запросом.
+	async globalSearch(q: string) {
+		const term = (q || '').trim()
+		if (term.length < 2) return { users: [], sites: [], keywords: [] }
+		const like = { contains: term, mode: 'insensitive' as const }
+		const [users, sites, keywords] = await Promise.all([
+			this.prisma.user.findMany({
+				where: { OR: [{ email: like }, { city: like }] },
+				select: { id: true, email: true, city: true, balance: true },
+				take: 6,
+				orderBy: { createdAt: 'desc' },
+			}),
+			this.prisma.website.findMany({
+				where: { OR: [{ url: like }, { name: like }, { user: { email: like } }] },
+				select: { id: true, url: true, name: true, user: { select: { id: true, email: true } }, _count: { select: { tasks: true } } },
+				take: 6,
+				orderBy: { updatedAt: 'desc' },
+			}),
+			this.prisma.task.findMany({
+				where: { keyword: like },
+				select: { id: true, keyword: true, website: { select: { id: true, url: true, userId: true } } },
+				take: 8,
+				orderBy: { createdAt: 'desc' },
+			}),
+		])
+		return {
+			users: users.map(u => ({ id: u.id, email: u.email, city: u.city, balance: u.balance })),
+			sites: sites.map(s => ({ id: s.id, url: s.url, name: s.name, userId: s.user?.id ?? null, userEmail: s.user?.email ?? null, keywords: s._count.tasks })),
+			keywords: keywords.map(t => ({ taskId: t.id, keyword: t.keyword, websiteId: t.website?.id ?? null, url: t.website?.url ?? null, userId: t.website?.userId ?? null })),
+		}
 	}
 
 	async getGoogleConfigForAdmin() {
@@ -1166,15 +1256,15 @@ export class AdminService {
 					},
 					balanceHistory: {
 						orderBy: { createdAt: 'desc' },
-						take: 50,
+						take: 100,
 					},
 					payments: {
 						orderBy: { createdAt: 'desc' },
-						take: 20,
+						take: 50,
 					},
 					executions: {
 						orderBy: { createdAt: 'desc' },
-						take: 20,
+						take: 50,
 						include: {
 							task: {
 								include: {
