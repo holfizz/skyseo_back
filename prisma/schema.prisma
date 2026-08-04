@@ -14,7 +14,13 @@ model User {
   email                  String    @unique
   password               String
   balance                Int       @default(1000) // Приветственный бонус 1000 баллов
+  // ВАЖНО: role и roles живут вместе и всегда синхронны.
+  //   role  — «главная» роль, ВСЕГДА равна roles[0]. Её читает старый код и Electron-приложение.
+  //           Никогда не удалять: приложение обновляется тяжело, ломать контракт нельзя.
+  //   roles — источник правды для сайта. Несколько ролей = несколько разделов в CRM.
+  // Менять роли только через UsersService.setRoles() — он пишет оба поля разом.
   role                   Role      @default(USER)
+  roles                  Role[]    @default([])
   userType               UserType? // Кто вы: маркетолог, SEO, предприниматель, стартапер
   referralSource         String? // Откуда узнал
   referralCode           String?   @unique // Реферальный код пользователя
@@ -702,9 +708,14 @@ enum CrmTaskStatus {
 
 // Участник CRM. Заводится автоматически при первом входе через Telegram Mini App,
 // если его telegramId есть в вайтлисте env (CRM_ADMIN_TELEGRAM_IDS / CRM_MEMBER_TELEGRAM_IDS).
+// Профиль сотрудника в CRM. С переходом на общий вход платформы (email+пароль)
+// главная связь — userId → users.id; роль берётся из User.roles, а не из env.
+// Telegram теперь необязателен: он нужен для уведомлений и быстрого входа с телефона.
 model CrmUser {
   id         String    @id @default(uuid())
-  telegramId String    @unique // Telegram user id (число как строка)
+  userId     String?   @unique // аккаунт платформы (users.id) — основной способ входа
+  email      String? // денормализовано для отображения в списке команды
+  telegramId String?   @unique // Telegram user id (число как строка); null = не привязан
   firstName  String?
   lastName   String?
   username   String? // @username на момент входа
@@ -720,6 +731,8 @@ model CrmUser {
   createdClients  CrmClient[]   @relation("CrmClientCreator")
   reminders       CrmReminder[] @relation("CrmReminderTarget")
   activities      CrmActivity[] @relation("CrmActivityActor")
+  assignedLeads   CrmLead[]     @relation("CrmLeadAssignee")
+  assignedDeals   CrmDeal[]     @relation("CrmDealAssignee")
 
   @@map("crm_users")
 }
@@ -749,6 +762,7 @@ model CrmClient {
   funnel    CrmFunnel?      @relation("ClientFunnel", fields: [funnelId], references: [id], onDelete: SetNull)
   stage     CrmFunnelStage? @relation("ClientStage", fields: [stageId], references: [id], onDelete: SetNull)
   tasks     CrmTask[]
+  deals     CrmDeal[]
 
   @@index([status])
   @@index([assigneeId])
@@ -784,6 +798,7 @@ model CrmFunnelStage {
 
   funnel  CrmFunnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
   clients CrmClient[] @relation("ClientStage")
+  deals   CrmDeal[]   @relation("DealStage")
 
   @@index([funnelId, position])
   @@map("crm_funnel_stages")
@@ -855,4 +870,101 @@ model CrmActivity {
   @@index([createdAt])
   @@index([actorId, createdAt])
   @@map("crm_activity")
+}
+
+// ─── Лиды, сделки и тарифы ───────────────────────────────────────────────────
+// Лид — входящая заявка ДО того, как стала клиентом. Раньше заявки с сайта уходили
+// только в личку владельцу и нигде не сохранялись — их нельзя было ни взять в работу,
+// ни посчитать. Квалифицированный лид превращается в клиента + сделку.
+
+enum CrmLeadStatus {
+  NEW // не разобран
+  IN_WORK // взят в работу
+  QUALIFIED // стал клиентом (создана сделка)
+  REJECTED // отказ
+}
+
+enum CrmLeadSource {
+  SITE_FORM // форма на сайте
+  TELEGRAM
+  OUTREACH // холодная рассылка
+  REFERRAL
+  MANUAL // завели руками
+}
+
+enum CrmDealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model CrmLead {
+  id           String        @id @default(uuid())
+  title        String // имя / название
+  contact      String? // телефон, email или @telegram — одним полем
+  source       CrmLeadSource @default(MANUAL)
+  utm          Json? // метки, если пришёл с рекламы
+  status       CrmLeadStatus @default(NEW)
+  comment      String? // первое касание
+  rejectReason String? // почему отвалился — для аналитики
+  assigneeId   String?
+  createdById  String?
+  clientId     String? // заполняется при квалификации
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  assignee CrmUser? @relation("CrmLeadAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([assigneeId])
+  @@map("crm_leads")
+}
+
+// Сделка — деньги в воронке. Раньше воронка была, а сумм в ней не было:
+// нельзя было ответить «сколько висит в работе».
+model CrmDeal {
+  id              String        @id @default(uuid())
+  clientId        String
+  title           String
+  amount          Int           @default(0) // ₽
+  tariffId        String?
+  funnelId        String?
+  stageId         String?
+  probability     Int           @default(50) // 0..100, для прогноза
+  expectedCloseAt DateTime?
+  status          CrmDealStatus @default(OPEN)
+  lostReason      String?
+  assigneeId      String?
+  createdById     String?
+  position        Int           @default(0) // порядок внутри колонки
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  client   CrmClient       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assignee CrmUser?        @relation("CrmDealAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  stage    CrmFunnelStage? @relation("DealStage", fields: [stageId], references: [id], onDelete: SetNull)
+  tariff   Tariff?         @relation(fields: [tariffId], references: [id], onDelete: SetNull)
+
+  @@index([clientId])
+  @@index([stageId, position])
+  @@index([status, createdAt])
+  @@map("crm_deals")
+}
+
+// Справочник тарифов. Закрывает реальную дыру: сейчас прайс захардкожен в трёх местах,
+// курс баллов расходится между вебом и приложением, а сервер его не проверяет.
+model Tariff {
+  id          String    @id @default(uuid())
+  name        String // «Старт», «Продвижение», «Максимум»
+  description String?
+  points      Int       @default(0) // сколько баллов даёт
+  price       Int       @default(0) // сколько стоит, ₽
+  isActive    Boolean   @default(true)
+  position    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  deals CrmDeal[]
+
+  @@map("tariffs")
 }

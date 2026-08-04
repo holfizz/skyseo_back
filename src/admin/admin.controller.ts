@@ -559,4 +559,39 @@ export class AdminController {
 		return this.adminService.getBulkEmailStatus()
 	}
 
+	// ─── Команда: сотрудники и их роли ───
+	// Заменяет «нанять = SQL на проде + правка env + редеплой».
+
+	@Get('staff')
+	async listStaff() {
+		return this.adminService.listStaff()
+	}
+
+	@Post('staff')
+	async createStaff(
+		@CurrentUser() user: any,
+		@Body() body: { email: string; roles: string[]; telegramId?: string; password?: string },
+	) {
+		return this.adminService.createStaff(body, user?.email)
+	}
+
+	@Put('staff/:id/roles')
+	async setStaffRoles(
+		@CurrentUser() user: any,
+		@Param('id') id: string,
+		@Body() body: { roles: string[] },
+	) {
+		return this.adminService.setStaffRoles(id, body?.roles ?? [], user?.email)
+	}
+
+	// Привязать/отвязать Telegram сотруднику вручную — чтобы уведомления пошли сразу,
+	// не дожидаясь, пока человек привяжет сам.
+	@Put('staff/:id/telegram')
+	async setStaffTelegram(
+		@CurrentUser() user: any,
+		@Param('id') id: string,
+		@Body() body: { telegramId?: string | null },
+	) {
+		return this.adminService.setStaffTelegram(id, body?.telegramId ?? null, user?.email)
+	}
 }

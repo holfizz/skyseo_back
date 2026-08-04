@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { JwtModule } from '@nestjs/jwt'
+import { AdminModule } from '../admin/admin.module'
 import { ManagerModule } from '../manager/manager.module'
 import { PrismaModule } from '../prisma/prisma.module'
 import { CrmAdminGuard } from './crm-admin.guard'
@@ -12,7 +13,7 @@ import { CrmAuthController, CrmController } from './crm.controller'
 import { CrmService } from './crm.service'
 
 @Module({
-	imports: [PrismaModule, ManagerModule, JwtModule.register({})],
+	imports: [PrismaModule, ManagerModule, AdminModule, JwtModule.register({})],
 	controllers: [CrmAuthController, CrmController],
 	providers: [
 		CrmAuthService,

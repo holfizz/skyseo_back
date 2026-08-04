@@ -15,5 +15,6 @@ import { AdminService } from './admin.service'
 	imports: [UsersModule, AnalyticsModule, MetrikaModule, AppConfigModule, NotificationsModule, TasksModule, TelegramModule.forRoot(), AlertsModule, ManagerModule],
 	controllers: [AdminController],
 	providers: [AdminService],
+	exports: [AdminService],
 })
 export class AdminModule {}

@@ -5,6 +5,7 @@ import {
 	NotFoundException,
 	UnauthorizedException,
 } from '@nestjs/common'
+import { rolesOf } from '../common/roles'
 import { JwtService } from '@nestjs/jwt'
 import { UserType } from '@prisma/client'
 import * as bcrypt from 'bcrypt'
@@ -409,7 +410,9 @@ export class AuthService {
 
 	private sanitizeUser(user: any) {
 		const { password, ...result } = user
-		return result
+		// role остаётся как есть (её читает Electron), roles — для сайта.
+		// Для записей до миграции массив пуст → подставляем [role], чтобы фронт не остался без ролей.
+		return { ...result, roles: rolesOf(user) }
 	}
 
 	private getCityFromIp(ipAddress?: string): string {

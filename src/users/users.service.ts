@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { AppStatus, UserType } from '@prisma/client'
 import { lookupPromoCode } from '../auth/promo-codes'
+import { normalizeRoles, rolesOf, type RoleName } from '../common/roles'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -46,6 +47,29 @@ export class UsersService {
 		return this.prisma.user.findUnique({
 			where: { email },
 		})
+	}
+
+	/**
+	 * ЕДИНСТВЕННОЕ место, где меняются роли. Пишет оба поля разом, чтобы role и roles
+	 * никогда не разъехались: role = roles[0] («главная»), её читает Electron и старый код.
+	 * Прямые обновления user.role в обход этого метода — запрещены.
+	 */
+	async setRoles(userId: string, roles: string[], primary?: string) {
+		const normalized = normalizeRoles(roles, primary)
+		return this.prisma.user.update({
+			where: { id: userId },
+			data: { roles: normalized as RoleName[], role: normalized[0] },
+			select: { id: true, email: true, role: true, roles: true },
+		})
+	}
+
+	/** Все роли пользователя с фолбэком на одиночное поле (для записей до миграции). */
+	async getRoles(userId: string): Promise<string[]> {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { role: true, roles: true },
+		})
+		return rolesOf(user)
 	}
 
 	// Одноразовая привязка реферала из профиля — для тех, кто пропустил момент при
@@ -111,6 +135,7 @@ export class UsersService {
 				email: true,
 				balance: true,
 				role: true,
+				roles: true,
 				emailVerified: true,
 				referralSource: true,
 				referralCode: true,
@@ -128,6 +153,9 @@ export class UsersService {
 		const { telegramChatId, ...rest } = user
 		return {
 			...rest,
+			// role остаётся строкой — её читает Electron-приложение, контракт не меняем.
+			// roles — для сайта; для записей до миграции подставляем [role], чтобы массив не был пустым.
+			roles: rolesOf(user),
 			telegramLinked: !!telegramChatId, // привязан ли Telegram-бот уведомлений
 			hasPaid: paidCount > 0, // была ли хоть одна успешная оплата (снимает лимиты)
 		}

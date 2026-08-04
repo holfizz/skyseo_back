@@ -1,5 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import * as bcrypt from 'bcrypt'
+import { randomBytes } from 'crypto'
 import { dedupeKeywords } from '../common/keywords'
+import { normalizeRoles, rolesOf, type RoleName } from '../common/roles'
 
 function extractRootDomain(url: string): string {
 	try {
@@ -2491,6 +2494,145 @@ export class AdminService {
 
 	getBulkEmailStatus() {
 		return { ...this.bulkEmailJob }
+	}
+
+
+	// ─── Команда: сотрудники и роли ───────────────────────────────────────────
+	// Единственное место, где заводится сотрудник. Пароль владельцу не показываем:
+	// человек задаёт его сам через «Забыли пароль» — иначе нет неотказуемости
+	// (сотрудник может сказать «это ты зашёл под моим аккаунтом»).
+
+	async listStaff() {
+		const users = await this.prisma.user.findMany({
+			where: { OR: [{ roles: { hasSome: ['ADMIN', 'MANAGER', 'SMM'] } }, { role: { in: ['ADMIN', 'MANAGER', 'SMM'] } }] },
+			select: {
+				id: true, email: true, role: true, roles: true, isActive: true,
+				createdAt: true, lastLoginIp: true, telegramChatId: true, telegramUsername: true,
+			},
+			orderBy: { createdAt: 'asc' },
+		})
+		const crmProfiles = await this.prisma.crmUser.findMany({
+			where: { userId: { in: users.map(u => u.id) } },
+			select: { userId: true, telegramId: true, lastSeenAt: true, isActive: true },
+		})
+		const byUser = new Map(crmProfiles.map(p => [p.userId, p]))
+		return users.map(u => {
+			const crm = byUser.get(u.id)
+			return {
+				id: u.id,
+				email: u.email,
+				roles: rolesOf(u),
+				isActive: u.isActive,
+				createdAt: u.createdAt,
+				crmTelegramId: crm?.telegramId ?? null,
+				crmLastSeenAt: crm?.lastSeenAt ?? null,
+			}
+		})
+	}
+
+	async createStaff(
+		body: { email: string; roles: string[]; telegramId?: string; password?: string },
+		byEmail?: string,
+	) {
+		const email = String(body?.email || '').trim().toLowerCase()
+		if (!email.includes('@')) throw new BadRequestException('Некорректный email')
+		const roles = normalizeRoles(body?.roles)
+		if (roles.length === 1 && roles[0] === 'USER') {
+			throw new BadRequestException('Укажите хотя бы одну рабочую роль')
+		}
+
+		const existing = await this.prisma.user.findUnique({ where: { email }, select: { id: true } })
+		if (existing) {
+			// Уже есть аккаунт — просто выдаём роли, не плодим дубли.
+			return this.setStaffRoles(existing.id, roles, byEmail)
+		}
+
+		// Случайный пароль: владелец его не видит и не хранит.
+		const password = body?.password || randomBytes(12).toString('hex')
+		const user = await this.prisma.user.create({
+			data: {
+				email,
+				password: await bcrypt.hash(password, 8),
+				role: roles[0],
+				roles: roles as RoleName[],
+				emailVerified: true,
+				referralCode: randomBytes(4).toString('hex').toUpperCase(),
+			},
+			select: { id: true, email: true, role: true, roles: true },
+		})
+
+		if (body?.telegramId) {
+			await this.setStaffTelegram(user.id, body.telegramId, byEmail)
+		}
+
+		await this.telegram
+			.sendAdminNotification(
+				`👤 <b>Заведён сотрудник</b>\n\n${email}\nРоли: ${roles.join(', ')}\nКем: ${byEmail || 'admin'}`,
+			)
+			.catch(() => {})
+
+		// Пароль возвращаем ОДИН раз в ответе — чтобы передать человеку и больше нигде не хранить.
+		return { ...user, roles: rolesOf(user), tempPassword: body?.password ? undefined : password }
+	}
+
+	async setStaffRoles(userId: string, roles: string[], byEmail?: string) {
+		const normalized = normalizeRoles(roles)
+		const before = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { email: true, role: true, roles: true },
+		})
+		if (!before) throw new NotFoundException('Пользователь не найден')
+
+		const updated = await this.prisma.user.update({
+			where: { id: userId },
+			data: { roles: normalized as RoleName[], role: normalized[0] },
+			select: { id: true, email: true, role: true, roles: true },
+		})
+
+		// Профиль CRM держим в согласии с платформой: админ платформы = админ CRM.
+		await this.prisma.crmUser.updateMany({
+			where: { userId },
+			data: { role: normalized.includes('ADMIN') ? 'ADMIN' : 'EMPLOYEE' },
+		})
+
+		await this.telegram
+			.sendAdminNotification(
+				`🔑 <b>Изменены роли</b>\n\n${before.email}\nБыло: ${rolesOf(before).join(', ') || '—'}\nСтало: ${normalized.join(', ')}\nКем: ${byEmail || 'admin'}`,
+			)
+			.catch(() => {})
+
+		return { ...updated, roles: rolesOf(updated) }
+	}
+
+	async setStaffTelegram(userId: string, telegramId: string | null, byEmail?: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { id: true, email: true, role: true, roles: true },
+		})
+		if (!user) throw new NotFoundException('Пользователь не найден')
+		const tg = telegramId ? String(telegramId).trim() : null
+
+		if (tg) {
+			const busy = await this.prisma.crmUser.findUnique({ where: { telegramId: tg } })
+			if (busy && busy.userId !== userId) {
+				throw new BadRequestException('Этот Telegram уже привязан к другому сотруднику')
+			}
+		}
+
+		const role = rolesOf(user).includes('ADMIN') ? 'ADMIN' : 'EMPLOYEE'
+		await this.prisma.crmUser.upsert({
+			where: { userId },
+			create: { userId, email: user.email, telegramId: tg, role },
+			update: { telegramId: tg, email: user.email },
+		})
+
+		await this.telegram
+			.sendAdminNotification(
+				`📱 <b>Telegram сотрудника</b>\n\n${user.email}\n${tg ? 'Привязан: ' + tg : 'Отвязан'}\nКем: ${byEmail || 'admin'}`,
+			)
+			.catch(() => {})
+
+		return { ok: true, telegramId: tg }
 	}
 
 }

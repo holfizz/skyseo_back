@@ -15,8 +15,10 @@ export class CrmManageGuard implements CanActivate {
 
 	canActivate(ctx: ExecutionContext): boolean {
 		const req = ctx.switchToHttp().getRequest()
-		const isDev = this.config.get('NODE_ENV') !== 'production'
-		if (isDev || req.crmUser?.role === 'ADMIN') return true
+		// Дев-обход убран намеренно: если на сервере NODE_ENV не выставлен явно в 'production',
+		// проверка отключалась целиком и ЛЮБОЙ сотрудник получал права админа CRM.
+		// Для локальной разработки достаточно войти админским аккаунтом.
+		if (req.crmUser?.role === 'ADMIN') return true
 		throw new ForbiddenException('Управление воронками — только для админа')
 	}
 }

@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Request, UseGuards } from '@nestjs/common'
+import { AdminGuard } from '../admin/admin.guard'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { StatisticsService } from './statistics.service'
 
@@ -22,11 +23,11 @@ export class StatisticsController {
 		return this.statisticsService.getWebsiteSeoStats(websiteId, req.user.id)
 	}
 
+	// Раньше роль проверялась вручную и отдавала 500 вместо 403 — чужие попытки выглядели
+	// в логах как краш сервера. Теперь тот же гвард, что и во всей админке.
 	@Get('admin')
-	async getAdminStatistics(@Request() req) {
-		if (req.user.role !== 'ADMIN') {
-			throw new Error('Access denied')
-		}
+	@UseGuards(AdminGuard)
+	async getAdminStatistics() {
 		return this.statisticsService.getAdminStatistics()
 	}
 }

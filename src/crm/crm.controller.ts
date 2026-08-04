@@ -10,6 +10,7 @@ import {
 	UseGuards,
 } from '@nestjs/common'
 import { CrmUser } from '@prisma/client'
+import { AdminService } from '../admin/admin.service'
 import { CrmAdminGuard } from './crm-admin.guard'
 import { CrmAuthGuard } from './crm-auth.guard'
 import { CrmManageGuard } from './crm-manage.guard'
@@ -18,11 +19,19 @@ import { CrmCurrentUser } from './crm-user.decorator'
 import { CrmService } from './crm.service'
 import {
 	CreateClientDto,
+	CreateDealDto,
+	CreateLeadDto,
 	CreateFunnelDto,
 	CreateStageDto,
 	CreateTaskDto,
 	CrmLoginDto,
+	CrmPasswordLoginDto,
 	MoveClientStageDto,
+	MoveDealDto,
+	QualifyLeadDto,
+	TariffDto,
+	UpdateDealDto,
+	UpdateLeadDto,
 	MoveStageDto,
 	MoveTaskDto,
 	ReminderInputDto,
@@ -37,6 +46,13 @@ import {
 export class CrmAuthController {
 	constructor(private auth: CrmAuthService) {}
 
+	// ОСНОВНОЙ вход: email + пароль аккаунта платформы. Роль берётся из User.roles.
+	@Post('login')
+	login(@Body() dto: CrmPasswordLoginDto) {
+		return this.auth.loginWithPassword(dto.email, dto.password)
+	}
+
+	// Вход с телефона для тех, кто уже привязал Telegram в профиле.
 	@Post('telegram')
 	telegram(@Body() dto: CrmLoginDto) {
 		return this.auth.loginWithInitData(dto.initData)
@@ -59,11 +75,26 @@ export class CrmAuthController {
 @Controller('crm')
 @UseGuards(CrmAuthGuard)
 export class CrmController {
-	constructor(private crm: CrmService) {}
+	constructor(
+		private crm: CrmService,
+		private auth: CrmAuthService,
+		private admin: AdminService,
+	) {}
 
 	@Get('me')
 	me(@CrmCurrentUser() user: CrmUser) {
 		return this.crm.me(user)
+	}
+
+	// Привязка Telegram к своему профилю: уведомления + быстрый вход с телефона.
+	@Post('me/telegram')
+	linkTelegram(@CrmCurrentUser() user: CrmUser, @Body() dto: CrmLoginDto) {
+		return this.auth.linkTelegram(user.id, dto.initData)
+	}
+
+	@Delete('me/telegram')
+	unlinkTelegram(@CrmCurrentUser() user: CrmUser) {
+		return this.auth.unlinkTelegram(user.id)
 	}
 
 	@Get('dashboard')
@@ -239,6 +270,131 @@ export class CrmController {
 		return this.crm.moveClientStage(user, id, dto.stageId)
 	}
 
+	// ─── Лиды ───
+	@Get('leads')
+	listLeads(@CrmCurrentUser() user: CrmUser, @Query('status') status?: string, @Query('mine') mine?: string) {
+		return this.crm.listLeads({ status, mine: mine === '1' || mine === 'true', userId: user.id })
+	}
+
+	@Post('leads')
+	createLead(@CrmCurrentUser() user: CrmUser, @Body() dto: CreateLeadDto) {
+		return this.crm.createLead(user, dto)
+	}
+
+	@Patch('leads/:id')
+	updateLead(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() dto: UpdateLeadDto) {
+		return this.crm.updateLead(user, id, dto)
+	}
+
+	// Лид → клиент (+ сделка, если указана сумма)
+	@Post('leads/:id/qualify')
+	qualifyLead(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() dto: QualifyLeadDto) {
+		return this.crm.qualifyLead(user, id, dto)
+	}
+
+	@Delete('leads/:id')
+	deleteLead(@CrmCurrentUser() user: CrmUser, @Param('id') id: string) {
+		return this.crm.deleteLead(user, id)
+	}
+
+	// ─── Сделки ───
+	@Get('deals')
+	listDeals(
+		@CrmCurrentUser() user: CrmUser,
+		@Query('status') status?: string,
+		@Query('clientId') clientId?: string,
+		@Query('mine') mine?: string,
+	) {
+		return this.crm.listDeals({ status, clientId, mine: mine === '1' || mine === 'true', userId: user.id })
+	}
+
+	// Доска сделок: колонки-этапы с суммой в шапке
+	@Get('funnels/:id/deals')
+	dealBoard(@Param('id') id: string) {
+		return this.crm.dealBoard(id)
+	}
+
+	@Post('deals')
+	createDeal(@CrmCurrentUser() user: CrmUser, @Body() dto: CreateDealDto) {
+		return this.crm.createDeal(user, dto)
+	}
+
+	@Patch('deals/:id')
+	updateDeal(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() dto: UpdateDealDto) {
+		return this.crm.updateDeal(user, id, dto)
+	}
+
+	@Post('deals/:id/move')
+	moveDeal(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() dto: MoveDealDto) {
+		return this.crm.moveDeal(user, id, dto.stageId)
+	}
+
+	@Delete('deals/:id')
+	deleteDeal(@CrmCurrentUser() user: CrmUser, @Param('id') id: string) {
+		return this.crm.deleteDeal(user, id)
+	}
+
+	// ─── Тарифы (правит только админ) ───
+	@Get('tariffs')
+	listTariffs(@Query('active') active?: string) {
+		return this.crm.listTariffs(active === '1' || active === 'true')
+	}
+
+	@Post('tariffs')
+	@UseGuards(CrmAdminGuard)
+	createTariff(@CrmCurrentUser() user: CrmUser, @Body() dto: TariffDto) {
+		return this.crm.createTariff(user, dto)
+	}
+
+	@Patch('tariffs/:id')
+	@UseGuards(CrmAdminGuard)
+	updateTariff(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() dto: TariffDto) {
+		return this.crm.updateTariff(user, id, dto)
+	}
+
+	@Delete('tariffs/:id')
+	@UseGuards(CrmAdminGuard)
+	deleteTariff(@CrmCurrentUser() user: CrmUser, @Param('id') id: string) {
+		return this.crm.deleteTariff(user, id)
+	}
+
+	// ─── Клиенты платформы (переехало из кабинета /manager) ───
+	@Get('platform-clients')
+	platformClients() {
+		return this.crm.platformClients()
+	}
+
+	@Get('platform-clients/:id')
+	platformClient(@Param('id') id: string) {
+		return this.crm.platformClient(id)
+	}
+
+	@Get('platform-clients/:id/trend')
+	platformClientTrend(@Param('id') id: string) {
+		return this.crm.platformClientTrend(id)
+	}
+
+	@Get('platform-clients/:id/logs')
+	platformClientLogs(@Param('id') id: string, @Query('limit') limit?: string) {
+		return this.crm.platformClientLogs(id, limit ? Number(limit) : 60)
+	}
+
+	@Get('platform-clients/:id/notes')
+	platformNotes(@Param('id') id: string) {
+		return this.crm.platformNotes(id)
+	}
+
+	@Post('platform-clients/:id/notes')
+	addPlatformNote(@CrmCurrentUser() user: CrmUser, @Param('id') id: string, @Body() body: { text: string }) {
+		return this.crm.addPlatformNote(user, id, body?.text ?? '')
+	}
+
+	// «Кого дожать» — рабочая очередь
+	@Get('outreach-queue')
+	outreachQueue() {
+		return this.crm.outreachQueue()
+	}
+
 	// ─── calendar ───
 	@Get('calendar')
 	calendar(@Query('from') from: string, @Query('to') to: string) {
@@ -252,6 +408,44 @@ export class CrmController {
 	}
 
 	// ─── team / activity (только админ CRM) ───
+	// ─── сотрудники: роли и доступ (только админ CRM) ───
+	// Заменяет «нанять = SQL на проде»: роли выдаются галочками, TG-id можно вписать сразу.
+
+	@Get('team/staff')
+	@UseGuards(CrmAdminGuard)
+	listStaff() {
+		return this.admin.listStaff()
+	}
+
+	@Post('team/staff')
+	@UseGuards(CrmAdminGuard)
+	createStaff(
+		@CrmCurrentUser() user: CrmUser,
+		@Body() body: { email: string; roles: string[]; telegramId?: string },
+	) {
+		return this.admin.createStaff(body, user.email ?? undefined)
+	}
+
+	@Patch('team/staff/:id/roles')
+	@UseGuards(CrmAdminGuard)
+	setStaffRoles(
+		@CrmCurrentUser() user: CrmUser,
+		@Param('id') id: string,
+		@Body() body: { roles: string[] },
+	) {
+		return this.admin.setStaffRoles(id, body?.roles ?? [], user.email ?? undefined)
+	}
+
+	@Patch('team/staff/:id/telegram')
+	@UseGuards(CrmAdminGuard)
+	setStaffTelegram(
+		@CrmCurrentUser() user: CrmUser,
+		@Param('id') id: string,
+		@Body() body: { telegramId?: string | null },
+	) {
+		return this.admin.setStaffTelegram(id, body?.telegramId ?? null, user.email ?? undefined)
+	}
+
 	@Get('team/members')
 	@UseGuards(CrmAdminGuard)
 	members() {

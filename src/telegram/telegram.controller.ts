@@ -1,6 +1,7 @@
 import { Body, Controller, HttpException, HttpStatus, Ip, Post, UseGuards } from '@nestjs/common'
 import { IsArray, IsEmail, IsObject, IsOptional, IsString } from 'class-validator'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from './telegram.service'
 
 class SendComplaintDto {
@@ -61,7 +62,10 @@ class CaptchaAlertDto {
 export class TelegramController {
 	private readonly complaintLastSent = new Map<string, number>()
 
-	constructor(private telegramService: TelegramService) {}
+	constructor(
+		private telegramService: TelegramService,
+		private prisma: PrismaService,
+	) {}
 
 	@Post('complaint')
 	async sendComplaint(@Body() dto: SendComplaintDto, @Ip() ip: string) {
@@ -85,6 +89,19 @@ export class TelegramController {
 	@Post('contact-form')
 	async sendContactForm(@Body() dto: SendContactFormDto) {
 		await this.telegramService.sendContactFormNotification(dto)
+		// Заявка сохраняется как лид в CRM: раньше она жила только в личке владельца,
+		// её нельзя было ни взять в работу, ни посчитать. Падение записи не должно
+		// ломать отправку — уведомление в Telegram уже ушло.
+		await this.prisma.crmLead
+			.create({
+				data: {
+					title: dto.name,
+					contact: dto.email || dto.phone || null,
+					source: 'SITE_FORM',
+					comment: dto.message,
+				},
+			})
+			.catch(() => undefined)
 		return { success: true, message: 'Заявка отправлена' }
 	}
 

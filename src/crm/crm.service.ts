@@ -4,11 +4,14 @@ import {
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common'
+import { rolesOf } from '../common/roles'
 import { CrmTaskStatus, CrmUser, Prisma } from '@prisma/client'
 import { ManagerService } from '../manager/manager.service'
 import { PrismaService } from '../prisma/prisma.service'
 import {
 	CreateClientDto,
+	CreateDealDto,
+	CreateLeadDto,
 	CreateFunnelDto,
 	CreateStageDto,
 	CreateTaskDto,
@@ -16,8 +19,12 @@ import {
 	ReminderInputDto,
 	UpdateClientDto,
 	UpdateFunnelDto,
+	UpdateDealDto,
+	UpdateLeadDto,
 	UpdateStageDto,
 	UpdateTaskDto,
+	QualifyLeadDto,
+	TariffDto,
 } from './dto'
 
 // Человекочитаемая подпись смещения напоминания.
@@ -34,6 +41,17 @@ export class CrmService {
 		private manager: ManagerService,
 	) {}
 
+	/**
+	 * Удаление — необратимо, поэтому сотруднику разрешаем сносить только своё.
+	 * Админ удаляет что угодно. Записи без автора (createdById = null, старые данные)
+	 * считаем «общими» и доверяем только админу.
+	 */
+	private assertCanDelete(user: CrmUser, createdById: string | null, what: string) {
+		if (user.role === 'ADMIN') return
+		if (createdById && createdById === user.id) return
+		throw new ForbiddenException(`Можно удалять только ${what}, которого завели вы`)
+	}
+
 	// ─── activity log (для админа: кто что делает) ──────────────────────────────
 	private logActivity(
 		actorId: string,
@@ -49,8 +67,18 @@ export class CrmService {
 	}
 
 	// ─── me / dashboard ─────────────────────────────────────────────────────────
+	// Отдаём профиль CRM + роли платформы: от них зависит, какие разделы видит сотрудник.
+	// Несколько ролей = несколько разделов в одной оболочке.
 	async me(user: CrmUser) {
-		return user
+		let platformRoles: string[] = []
+		if (user.userId) {
+			const account = await this.prisma.user.findUnique({
+				where: { id: user.userId },
+				select: { role: true, roles: true },
+			})
+			platformRoles = rolesOf(account)
+		}
+		return { ...user, platformRoles }
 	}
 
 	async dashboard(user: CrmUser) {
@@ -197,6 +225,9 @@ export class CrmService {
 	async deleteClient(user: CrmUser, id: string) {
 		const existing = await this.prisma.crmClient.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Клиент не найден')
+		// Сотрудник удаляет только то, что завёл сам. Иначе обиженный при увольнении
+		// за минуту вычищает карточки коллег — журнал зафиксирует, но данные не вернуть.
+		this.assertCanDelete(user, existing.createdById, 'клиента')
 		await this.prisma.crmClient.delete({ where: { id } })
 		const suspicious = existing.createdById != null && existing.createdById !== user.id
 		this.logActivity(
@@ -395,6 +426,7 @@ export class CrmService {
 	async deleteTask(user: CrmUser, id: string) {
 		const existing = await this.prisma.crmTask.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Задача не найдена')
+		this.assertCanDelete(user, existing.createdById, 'задачу')
 		await this.prisma.crmTask.delete({ where: { id } })
 		const suspicious =
 			existing.createdById != null && existing.createdById !== user.id
@@ -681,4 +713,331 @@ export class CrmService {
 		const c = await this.prisma.crmClient.findUnique({ where: { id }, select: { id: true } })
 		if (!c) throw new BadRequestException('Клиент не найден')
 	}
+
+	// ─── Лиды ───────────────────────────────────────────────────────────────────
+	// Входящие заявки ДО превращения в клиента. Раньше заявки с сайта уходили только
+	// в личку владельцу и нигде не сохранялись.
+
+	async listLeads(query: { status?: string; mine?: boolean; userId?: string }) {
+		const where: Prisma.CrmLeadWhereInput = {}
+		if (query.status) where.status = query.status as any
+		if (query.mine && query.userId) where.assigneeId = query.userId
+		return this.prisma.crmLead.findMany({
+			where,
+			include: { assignee: { select: { id: true, firstName: true, username: true } } },
+			orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+			take: 300,
+		})
+	}
+
+	async createLead(user: CrmUser, dto: CreateLeadDto) {
+		const lead = await this.prisma.crmLead.create({
+			data: {
+				title: dto.title.trim(),
+				contact: dto.contact,
+				source: dto.source ?? 'MANUAL',
+				comment: dto.comment,
+				assigneeId: dto.assigneeId || null,
+				createdById: user.id,
+			},
+		})
+		this.logActivity(user.id, 'lead.create', 'lead', lead.id, `Создан лид «${lead.title}»`)
+		return lead
+	}
+
+	async updateLead(user: CrmUser, id: string, dto: UpdateLeadDto) {
+		const existing = await this.prisma.crmLead.findUnique({ where: { id } })
+		if (!existing) throw new NotFoundException('Лид не найден')
+		const data: Prisma.CrmLeadUpdateInput = {}
+		if (dto.title !== undefined) data.title = dto.title.trim()
+		if (dto.contact !== undefined) data.contact = dto.contact
+		if (dto.status !== undefined) data.status = dto.status
+		if (dto.comment !== undefined) data.comment = dto.comment
+		if (dto.rejectReason !== undefined) data.rejectReason = dto.rejectReason
+		if (dto.assigneeId !== undefined) {
+			data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
+		}
+		const lead = await this.prisma.crmLead.update({ where: { id }, data })
+		this.logActivity(user.id, 'lead.update', 'lead', id, `Изменён лид «${lead.title}»`)
+		return lead
+	}
+
+	/**
+	 * Квалификация: лид превращается в клиента, и — если указана сумма — сразу в сделку.
+	 * Всё в одной транзакции: иначе при сбое остался бы клиент без сделки или наоборот.
+	 */
+	async qualifyLead(user: CrmUser, id: string, dto: QualifyLeadDto) {
+		const lead = await this.prisma.crmLead.findUnique({ where: { id } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		if (lead.status === 'QUALIFIED') throw new BadRequestException('Лид уже квалифицирован')
+
+		const result = await this.prisma.$transaction(async tx => {
+			const client = await tx.crmClient.create({
+				data: {
+					title: lead.title,
+					notes: lead.comment,
+					assigneeId: lead.assigneeId ?? user.id,
+					createdById: user.id,
+					status: 'LEAD',
+					// Контакт лида — одним полем, раскладываем по типу.
+					...(lead.contact?.includes('@') && lead.contact.includes('.')
+						? { email: lead.contact }
+						: lead.contact?.startsWith('@')
+							? { telegram: lead.contact }
+							: { phone: lead.contact ?? undefined }),
+				},
+			})
+
+			let deal: any = null
+			if (dto.amount != null || dto.stageId) {
+				const stage = dto.stageId
+					? await tx.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
+					: null
+				deal = await tx.crmDeal.create({
+					data: {
+						clientId: client.id,
+						title: lead.title,
+						amount: dto.amount ?? 0,
+						tariffId: dto.tariffId || null,
+						stageId: stage?.id ?? null,
+						funnelId: stage?.funnelId ?? null,
+						assigneeId: lead.assigneeId ?? user.id,
+						createdById: user.id,
+					},
+				})
+			}
+
+			await tx.crmLead.update({
+				where: { id },
+				data: { status: 'QUALIFIED', clientId: client.id },
+			})
+			return { client, deal }
+		})
+
+		this.logActivity(user.id, 'lead.qualify', 'lead', id, `Лид «${lead.title}» стал клиентом`)
+		return result
+	}
+
+	async deleteLead(user: CrmUser, id: string) {
+		const existing = await this.prisma.crmLead.findUnique({ where: { id } })
+		if (!existing) throw new NotFoundException('Лид не найден')
+		this.assertCanDelete(user, existing.createdById, 'лид')
+		await this.prisma.crmLead.delete({ where: { id } })
+		this.logActivity(user.id, 'lead.delete', 'lead', id, `Удалён лид «${existing.title}»`, true)
+		return { ok: true }
+	}
+
+	// ─── Сделки ─────────────────────────────────────────────────────────────────
+
+	async listDeals(query: { status?: string; clientId?: string; mine?: boolean; userId?: string }) {
+		const where: Prisma.CrmDealWhereInput = {}
+		if (query.status) where.status = query.status as any
+		if (query.clientId) where.clientId = query.clientId
+		if (query.mine && query.userId) where.assigneeId = query.userId
+		return this.prisma.crmDeal.findMany({
+			where,
+			include: {
+				client: { select: { id: true, title: true } },
+				assignee: { select: { id: true, firstName: true, username: true } },
+				tariff: { select: { id: true, name: true } },
+			},
+			orderBy: [{ position: 'asc' }, { createdAt: 'desc' }],
+			take: 500,
+		})
+	}
+
+	/** Доска сделок по воронке: колонки-этапы + СУММА в шапке каждой колонки. */
+	async dealBoard(funnelId: string) {
+		const funnel = await this.prisma.crmFunnel.findUnique({
+			where: { id: funnelId },
+			include: { stages: { orderBy: { position: 'asc' } } },
+		})
+		if (!funnel) throw new NotFoundException('Воронка не найдена')
+
+		const deals = await this.prisma.crmDeal.findMany({
+			where: { funnelId, status: 'OPEN' },
+			include: {
+				client: { select: { id: true, title: true } },
+				assignee: { select: { id: true, firstName: true, username: true } },
+			},
+			orderBy: [{ position: 'asc' }, { createdAt: 'desc' }],
+		})
+
+		const stages = funnel.stages.map(stage => {
+			const own = deals.filter(d => d.stageId === stage.id)
+			return {
+				...stage,
+				deals: own,
+				total: own.reduce((sum, d) => sum + d.amount, 0),
+			}
+		})
+		return { ...funnel, stages, total: deals.reduce((s, d) => s + d.amount, 0) }
+	}
+
+	async createDeal(user: CrmUser, dto: CreateDealDto) {
+		const stage = dto.stageId
+			? await this.prisma.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
+			: null
+		const deal = await this.prisma.crmDeal.create({
+			data: {
+				clientId: dto.clientId,
+				title: dto.title.trim(),
+				amount: dto.amount ?? 0,
+				tariffId: dto.tariffId || null,
+				stageId: stage?.id ?? null,
+				funnelId: stage?.funnelId ?? null,
+				probability: dto.probability ?? 50,
+				expectedCloseAt: dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : null,
+				assigneeId: dto.assigneeId || user.id,
+				createdById: user.id,
+			},
+		})
+		this.logActivity(user.id, 'deal.create', 'deal', deal.id, `Создана сделка «${deal.title}» на ${deal.amount} ₽`)
+		return deal
+	}
+
+	async updateDeal(user: CrmUser, id: string, dto: UpdateDealDto) {
+		const existing = await this.prisma.crmDeal.findUnique({ where: { id } })
+		if (!existing) throw new NotFoundException('Сделка не найдена')
+		const data: Prisma.CrmDealUpdateInput = {}
+		if (dto.title !== undefined) data.title = dto.title.trim()
+		if (dto.amount !== undefined) data.amount = dto.amount
+		if (dto.status !== undefined) data.status = dto.status
+		if (dto.lostReason !== undefined) data.lostReason = dto.lostReason
+		if (dto.probability !== undefined) data.probability = dto.probability
+		if (dto.expectedCloseAt !== undefined) {
+			data.expectedCloseAt = dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : null
+		}
+		if (dto.tariffId !== undefined) {
+			data.tariff = dto.tariffId ? { connect: { id: dto.tariffId } } : { disconnect: true }
+		}
+		if (dto.assigneeId !== undefined) {
+			data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
+		}
+		const deal = await this.prisma.crmDeal.update({ where: { id }, data })
+		const changedMoney = dto.amount !== undefined && dto.amount !== existing.amount
+		this.logActivity(
+			user.id,
+			'deal.update',
+			'deal',
+			id,
+			changedMoney
+				? `Сумма сделки «${deal.title}»: ${existing.amount} → ${deal.amount} ₽`
+				: `Изменена сделка «${deal.title}»`,
+			existing.createdById != null && existing.createdById !== user.id,
+		)
+		return deal
+	}
+
+	async moveDeal(user: CrmUser, id: string, stageId: string) {
+		const stage = await this.prisma.crmFunnelStage.findUnique({ where: { id: stageId } })
+		if (!stage) throw new NotFoundException('Этап не найден')
+		const deal = await this.prisma.crmDeal.update({
+			where: { id },
+			data: { stageId: stage.id, funnelId: stage.funnelId },
+		})
+		this.logActivity(user.id, 'deal.move', 'deal', id, `Сделка «${deal.title}» → «${stage.title}»`)
+		return deal
+	}
+
+	async deleteDeal(user: CrmUser, id: string) {
+		const existing = await this.prisma.crmDeal.findUnique({ where: { id } })
+		if (!existing) throw new NotFoundException('Сделка не найдена')
+		this.assertCanDelete(user, existing.createdById, 'сделку')
+		await this.prisma.crmDeal.delete({ where: { id } })
+		this.logActivity(user.id, 'deal.delete', 'deal', id, `Удалена сделка «${existing.title}» на ${existing.amount} ₽`, true)
+		return { ok: true }
+	}
+
+	// ─── Тарифы ─────────────────────────────────────────────────────────────────
+
+	async listTariffs(onlyActive = false) {
+		return this.prisma.tariff.findMany({
+			where: onlyActive ? { isActive: true } : {},
+			orderBy: [{ position: 'asc' }, { price: 'asc' }],
+		})
+	}
+
+	async createTariff(user: CrmUser, dto: TariffDto) {
+		const last = await this.prisma.tariff.findFirst({ orderBy: { position: 'desc' } })
+		const tariff = await this.prisma.tariff.create({
+			data: {
+				name: (dto.name || 'Без названия').trim(),
+				description: dto.description,
+				points: dto.points ?? 0,
+				price: dto.price ?? 0,
+				position: (last?.position ?? 0) + 1,
+			},
+		})
+		this.logActivity(user.id, 'tariff.create', 'tariff', tariff.id, `Создан тариф «${tariff.name}»`)
+		return tariff
+	}
+
+	async updateTariff(user: CrmUser, id: string, dto: TariffDto) {
+		const data: Prisma.TariffUpdateInput = {}
+		if (dto.name !== undefined) data.name = dto.name.trim()
+		if (dto.description !== undefined) data.description = dto.description
+		if (dto.points !== undefined) data.points = dto.points
+		if (dto.price !== undefined) data.price = dto.price
+		if (dto.isActive !== undefined) data.isActive = !!dto.isActive
+		const tariff = await this.prisma.tariff.update({ where: { id }, data })
+		this.logActivity(user.id, 'tariff.update', 'tariff', id, `Изменён тариф «${tariff.name}»`)
+		return tariff
+	}
+
+	async deleteTariff(user: CrmUser, id: string) {
+		const existing = await this.prisma.tariff.findUnique({ where: { id } })
+		if (!existing) throw new NotFoundException('Тариф не найден')
+		// Не удаляем, если на тариф уже ссылаются сделки — иначе потеряем историю продаж.
+		const used = await this.prisma.crmDeal.count({ where: { tariffId: id } })
+		if (used > 0) {
+			await this.prisma.tariff.update({ where: { id }, data: { isActive: false } })
+			this.logActivity(user.id, 'tariff.archive', 'tariff', id, `Тариф «${existing.name}» выключен (используется в ${used} сделках)`)
+			return { ok: true, archived: true }
+		}
+		await this.prisma.tariff.delete({ where: { id } })
+		this.logActivity(user.id, 'tariff.delete', 'tariff', id, `Удалён тариф «${existing.name}»`)
+		return { ok: true, archived: false }
+	}
+
+
+	// ─── Клиенты платформы (переехало из кабинета менеджера) ────────────────────
+	// Кабинет /manager удалён — его работа живёт здесь. Опасные операции
+	// (проведение платежей, удаление сайтов и ключей) намеренно НЕ переносим:
+	// они остаются у владельца в админке, потому что необратимы и касаются денег.
+
+	/** Список клиентов платформы со «здоровьем» — кто отваливается. */
+	platformClients() {
+		return this.manager.listClients()
+	}
+
+	/** Карточка клиента платформы: сайты, ключи, позиции, динамика. */
+	platformClient(userId: string) {
+		return this.manager.getClient(userId)
+	}
+
+	platformClientTrend(userId: string) {
+		return this.manager.getClientTrend(userId)
+	}
+
+	platformClientLogs(userId: string, limit = 60) {
+		return this.manager.getClientLogs(userId, limit)
+	}
+
+	/** «Кого дожать» — рабочая очередь менеджера. */
+	outreachQueue() {
+		return this.manager.getOutreach()
+	}
+
+	// Заметки по клиенту платформы — общая история общения.
+	platformNotes(userId: string) {
+		return this.manager.listNotes(userId)
+	}
+
+	async addPlatformNote(user: CrmUser, userId: string, text: string) {
+		const note = await this.manager.addNote(userId, user.email ?? 'CRM', text)
+		this.logActivity(user.id, 'note.create', 'client', userId, `Заметка по клиенту платформы`)
+		return note
+	}
+
 }

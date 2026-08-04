@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { hasRole } from '../common/roles'
 import { ConfigService } from '@nestjs/config'
 import { Prisma } from '@prisma/client'
 import { loadExecutionTrace } from '../common/execution-trace'
@@ -812,9 +813,9 @@ export class ManagerService {
 
 	// ——— Трейс ———
 
-	async getTrace(executionId: string, user: { role?: string }) {
+	async getTrace(executionId: string, user: { role?: string; roles?: string[] }) {
 		// Менеджеру доступны трейсы только по выполнениям, привязанным к сайту клиента; админу — любые.
-		if (user?.role !== 'ADMIN') {
+		if (!hasRole(user, 'ADMIN')) {
 			const ex = await this.prisma.execution.findUnique({
 				where: { id: executionId },
 				select: { task: { select: { website: { select: { id: true } } } } },

@@ -1,4 +1,4 @@
-import { CrmClientStatus, CrmTaskStatus } from '@prisma/client'
+import { CrmClientStatus, CrmDealStatus, CrmLeadSource, CrmLeadStatus, CrmTaskStatus } from '@prisma/client'
 import { Type } from 'class-transformer'
 import {
 	ArrayMaxSize,
@@ -21,6 +21,19 @@ export class CrmLoginDto {
 	@MinLength(1)
 	@MaxLength(8000)
 	initData: string
+}
+
+// Основной вход в CRM: email + пароль аккаунта платформы.
+export class CrmPasswordLoginDto {
+	@IsString()
+	@MinLength(3)
+	@MaxLength(160)
+	email: string
+
+	@IsString()
+	@MinLength(1)
+	@MaxLength(200)
+	password: string
 }
 
 // Одно напоминание: либо смещение в минутах от дедлайна, либо абсолютное время.
@@ -153,4 +166,133 @@ export class MoveStageDto {
 
 export class MoveClientStageDto {
 	@IsOptional() @IsString() stageId?: string // пусто → убрать из воронки
+}
+
+// ─── Лиды ───
+export class CreateLeadDto {
+	@IsString() @MinLength(1) @MaxLength(160)
+	title: string
+
+	@IsOptional() @IsString() @MaxLength(200)
+	contact?: string
+
+	@IsOptional() @IsEnum(CrmLeadSource)
+	source?: CrmLeadSource
+
+	@IsOptional() @IsString() @MaxLength(2000)
+	comment?: string
+
+	@IsOptional() @IsString()
+	assigneeId?: string
+}
+
+export class UpdateLeadDto {
+	@IsOptional() @IsString() @MinLength(1) @MaxLength(160)
+	title?: string
+
+	@IsOptional() @IsString() @MaxLength(200)
+	contact?: string
+
+	@IsOptional() @IsEnum(CrmLeadStatus)
+	status?: CrmLeadStatus
+
+	@IsOptional() @IsString() @MaxLength(2000)
+	comment?: string
+
+	@IsOptional() @IsString() @MaxLength(300)
+	rejectReason?: string
+
+	@IsOptional() @IsString()
+	assigneeId?: string
+}
+
+// Квалификация: лид становится клиентом и, если указана сумма, сразу сделкой.
+export class QualifyLeadDto {
+	@IsOptional() @IsInt() @Min(0)
+	amount?: number
+
+	@IsOptional() @IsString()
+	stageId?: string
+
+	@IsOptional() @IsString()
+	tariffId?: string
+}
+
+// ─── Сделки ───
+export class CreateDealDto {
+	@IsString()
+	clientId: string
+
+	@IsString() @MinLength(1) @MaxLength(160)
+	title: string
+
+	@IsOptional() @IsInt() @Min(0)
+	amount?: number
+
+	@IsOptional() @IsString()
+	tariffId?: string
+
+	@IsOptional() @IsString()
+	stageId?: string
+
+	@IsOptional() @IsInt() @Min(0) @Max(100)
+	probability?: number
+
+	@IsOptional() @IsISO8601()
+	expectedCloseAt?: string
+
+	@IsOptional() @IsString()
+	assigneeId?: string
+}
+
+export class UpdateDealDto {
+	@IsOptional() @IsString() @MinLength(1) @MaxLength(160)
+	title?: string
+
+	@IsOptional() @IsInt() @Min(0)
+	amount?: number
+
+	@IsOptional() @IsString()
+	tariffId?: string
+
+	@IsOptional() @IsEnum(CrmDealStatus)
+	status?: CrmDealStatus
+
+	@IsOptional() @IsString() @MaxLength(300)
+	lostReason?: string
+
+	@IsOptional() @IsInt() @Min(0) @Max(100)
+	probability?: number
+
+	@IsOptional() @IsISO8601()
+	expectedCloseAt?: string
+
+	@IsOptional() @IsString()
+	assigneeId?: string
+}
+
+export class MoveDealDto {
+	@IsString()
+	stageId: string
+
+	@IsOptional() @IsInt() @Min(0)
+	position?: number
+}
+
+// ─── Тарифы ───
+export class TariffDto {
+	@IsOptional() @IsString() @MinLength(1) @MaxLength(80)
+	name?: string
+
+	@IsOptional() @IsString() @MaxLength(400)
+	description?: string
+
+	@IsOptional() @IsInt() @Min(0)
+	points?: number
+
+	@IsOptional() @IsInt() @Min(0)
+	price?: number
+
+	@IsOptional()
+	isActive?: boolean
 }
