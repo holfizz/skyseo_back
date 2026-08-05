@@ -1202,24 +1202,43 @@ export class AdminService {
 			this.prisma.website.count({ where }),
 		])
 		const siteIds = sites.map(s => s.id)
-		const [execAll, execCompleted, execFailed, firstTasks] = await Promise.all([
+		// «Переход» = исполнитель нашёл сайт в выдаче и зашёл на него (foundInTop).
+		// Просто COMPLETED этого не значит: бот мог отработать сценарий на конкуренте.
+		const startOfToday = new Date()
+		startOfToday.setHours(0, 0, 0, 0)
+		const [execAll, execCompleted, execFailed, execFound, execFoundToday, execMissToday, firstTasks] = await Promise.all([
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds } }, _count: { id: true } }),
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'COMPLETED' }, _count: { id: true } }),
 			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, status: 'FAILED' }, _count: { id: true } }),
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, foundInTop: true }, _count: { id: true } }),
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, foundInTop: true, createdAt: { gte: startOfToday } }, _count: { id: true } }),
+			this.prisma.execution.groupBy({ by: ['websiteId'], where: { websiteId: { in: siteIds }, foundInTop: { not: true }, createdAt: { gte: startOfToday } }, _count: { id: true } }),
 			this.prisma.task.findMany({ where: { websiteId: { in: siteIds } }, select: { id: true, websiteId: true }, distinct: ['websiteId'], orderBy: { createdAt: 'asc' } }),
 		])
 		const totalMap = new Map(execAll.map(e => [e.websiteId, e._count.id]))
 		const completedMap = new Map(execCompleted.map(e => [e.websiteId, e._count.id]))
 		const failedMap = new Map(execFailed.map(e => [e.websiteId, e._count.id]))
 		const firstTaskMap = new Map(firstTasks.map(t => [t.websiteId, t.id]))
+		const foundMap = new Map(execFound.map(e => [e.websiteId, e._count.id]))
+		const foundTodayMap = new Map(execFoundToday.map(e => [e.websiteId, e._count.id]))
+		const missTodayMap = new Map(execMissToday.map(e => [e.websiteId, e._count.id]))
 		return {
-			sites: sites.map(s => ({
-				...s,
-				totalExecutions: totalMap.get(s.id) ?? 0,
-				completedExecutions: completedMap.get(s.id) ?? 0,
-				failedExecutions: failedMap.get(s.id) ?? 0,
-				firstTaskId: firstTaskMap.get(s.id) ?? null,
-			})),
+			sites: sites.map(s => {
+				const total = totalMap.get(s.id) ?? 0
+				const found = foundMap.get(s.id) ?? 0
+				return {
+					...s,
+					totalExecutions: total,
+					completedExecutions: completedMap.get(s.id) ?? 0,
+					failedExecutions: failedMap.get(s.id) ?? 0,
+					firstTaskId: firstTaskMap.get(s.id) ?? null,
+					// Переходы на сайт: сколько раз нашли и зашли, сколько раз промахнулись.
+					foundExecutions: found,
+					missedExecutions: Math.max(0, total - found),
+					foundToday: foundTodayMap.get(s.id) ?? 0,
+					missedToday: missTodayMap.get(s.id) ?? 0,
+				}
+			}),
 			total,
 			offset,
 			limit,
@@ -2131,7 +2150,7 @@ export class AdminService {
 	// (yandexFoundInTop / googleFoundInTop) и позицию. failureReason — код
 	// причины (CAPTCHA / SCRIPT_ERROR / NOT_IN_SERP / LOCK_TIMEOUT).
 	async getExecutionLog(limit = 300) {
-		return this.prisma.execution.findMany({
+		const rows = await this.prisma.execution.findMany({
 			where: { status: { in: ['COMPLETED', 'FAILED'] } },
 			select: {
 				id: true,
@@ -2147,14 +2166,35 @@ export class AdminService {
 				task: { select: { keyword: true, website: { select: { url: true } } } },
 				executor: { select: { id: true, email: true, appVersion: true } },
 				events: {
-					where: { type: 'failure' },
-					select: { details: true, stage: true, createdAt: true },
+					// failure — для модалки с деталями; serp_scan_depth — чтобы показать
+					// в журнале, что бот не ушёл дальше первой страницы выдачи.
+					where: { OR: [{ type: 'failure' }, { stage: 'serp_scan_depth' }] },
+					select: { details: true, stage: true, type: true, createdAt: true },
 					orderBy: { createdAt: 'desc' },
-					take: 1,
+					take: 4,
 				},
 			},
 			orderBy: { createdAt: 'desc' },
 			take: limit,
+		})
+		return rows.map(r => {
+			// Берём самый глубокий скан по выполнению: движков может быть два.
+			const scans = r.events
+				.filter(e => e.stage === 'serp_scan_depth')
+				.map(e => e.details as Record<string, unknown> | null)
+				.filter(Boolean) as Record<string, unknown>[]
+			const best = scans.sort((a, b) => Number(b.pagesParsed ?? 0) - Number(a.pagesParsed ?? 0))[0]
+			return {
+				...r,
+				events: r.events.filter(e => e.type === 'failure'),
+				scan: best
+					? {
+						pagesParsed: Number(best.pagesParsed ?? 0),
+						maxPage: Number(best.maxPage ?? 0),
+						found: !!best.found,
+					}
+					: null,
+			}
 		})
 	}
 

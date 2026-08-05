@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CurrentUser } from '../common/decorators/user.decorator'
 import { AnalyticsService } from '../analytics/analytics.service'
 import { MetrikaService } from '../metrika/metrika.service'
+import { AppConfigService } from '../app-config/app-config.service'
 import { AdminGuard } from './admin.guard'
 import { AdminService } from './admin.service'
 
@@ -13,6 +14,7 @@ export class AdminController {
 		private adminService: AdminService,
 		private analyticsService: AnalyticsService,
 		private metrikaService: MetrikaService,
+		private appConfig: AppConfigService,
 	) {}
 
 	@Get('statistics')
@@ -148,6 +150,39 @@ export class AdminController {
 	@Put('settings/network')
 	async setNetworkConfig(@Body() body: { activePcs?: number | null }) {
 		return this.adminService.setNetworkConfig(body)
+	}
+
+	@Get('settings/serp-pages')
+	async getSerpPages() {
+		return this.appConfig.getSerpPageRamp()
+	}
+
+	@Put('settings/serp-pages')
+	async setSerpPages(@Body() body: { ramp?: string }) {
+		return this.appConfig.setSerpPageRamp(body?.ramp ?? '')
+	}
+
+	@Get('settings/load')
+	async getLoadConfig() {
+		return this.appConfig.getLoadConfig()
+	}
+
+	@Put('settings/load')
+	async setLoadConfig(@Body() body: Record<string, unknown>) {
+		return this.appConfig.setLoadConfig(body as any)
+	}
+
+	@Get('settings/serp-nav')
+	async getSerpNav() {
+		return this.appConfig.getSerpNavConfig()
+	}
+
+	@Put('settings/serp-nav')
+	async setSerpNav(@Body() body: {
+		yandexCss?: string; googleCss?: string; yandexText?: string; googleText?: string
+		parseYandexItem?: string; parseYandexTitle?: string; parseGoogleRoot?: string; parseGoogleLinks?: string
+	}) {
+		return this.appConfig.setSerpNavConfig(body)
 	}
 
 	@Put('websites/:id')

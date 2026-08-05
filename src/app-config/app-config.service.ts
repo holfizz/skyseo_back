@@ -13,7 +13,7 @@
  *     но является осознанным решением. Не «чини» его без обсуждения.
  */
 
-import { Injectable } from '@nestjs/common'
+import { BadRequestException, Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 
 export const KEY_GOOGLE_SOCS = 'google_socs'
@@ -36,6 +36,73 @@ export const DEFAULT_POINTS_NOT_FOUND_SPENT = '0'
 
 // Админ-override числа активных ПК в сети (для расчёта потолка). Пусто = авто.
 export const KEY_NETWORK_ACTIVE_PCS = 'network_active_pcs'
+
+/**
+ * Глубина перелистывания выдачи по возрасту профиля ПК.
+ * Формат — человекочитаемые диапазоны: «1-6:3, 7-13:4, 14+:5» читается как
+ * «дни 1–6 листаем 3 страницы, 7–13 — четыре, с 14-го и дальше — пять».
+ * Раньше это было зашито в код приложения (config.ts), то есть менялось только
+ * выкатом новой версии. Теперь приложение тянет значение с сервера.
+ */
+export const KEY_SERP_PAGE_RAMP = 'serp_page_ramp'
+export const DEFAULT_SERP_PAGE_RAMP = '1-6:3, 7-13:4, 14+:5'
+
+/**
+ * Как приложение находит кнопку «Дальше» в выдаче. Держим в БД, потому что
+ * поисковики меняют вёрстку, а выкат новой версии приложения — долгая история.
+ *
+ * css — CSS-селектор (можно несколько через запятую). Пробуется первым: клик по
+ *       найденному элементу выглядит естественнее всего.
+ * text — слова, с которых начинается подпись кнопки (regexp-альтернативы через |).
+ *        Запасной путь: классы меняются каждой сборкой, а слово «дальше» — нет.
+ */
+export const KEY_SERP_NEXT_CSS_YANDEX = 'serp_next_css_yandex'
+export const KEY_SERP_NEXT_CSS_GOOGLE = 'serp_next_css_google'
+export const KEY_SERP_NEXT_TEXT_YANDEX = 'serp_next_text_yandex'
+export const KEY_SERP_NEXT_TEXT_GOOGLE = 'serp_next_text_google'
+export const DEFAULT_SERP_NEXT_CSS_YANDEX =
+	'.Pager-Item_type_next a, a.Pager-Item_type_next, [aria-label="Следующая страница"]'
+export const DEFAULT_SERP_NEXT_CSS_GOOGLE =
+	'#pnnext, a#pnnext, a[aria-label="Next page"], a[aria-label="Следующая"]'
+export const DEFAULT_SERP_NEXT_TEXT_YANDEX = 'дальше|следующая'
+export const DEFAULT_SERP_NEXT_TEXT_GOOGLE = 'next|дальше|следующая'
+
+/**
+ * Селекторы разбора выдачи. Ломаются реже пагинации, но дороже: если приложение
+ * не распознало результаты, выполнение бесполезно целиком — не видно ни сайта,
+ * ни конкурентов. На проде такое уже случается (события serp_zero_dom).
+ *
+ * Приложение пробует значение отсюда, и ТОЛЬКО если оно не нашло на странице
+ * ни одного элемента — откатывается на зашитый селектор. Кривая настройка
+ * поэтому не может остановить сеть.
+ */
+/**
+ * Режим нагрузки на один ПК. Раньше жил только в config.ts приложения, то есть
+ * подбирался выкатом сборки. Хранится одним JSON, потому что параметры правятся
+ * пачкой и по отдельности смысла не имеют.
+ *
+ * Осторожно: это ручки антидетекта. Слишком частые задачи и короткие паузы —
+ * прямой путь к капче и потере трастового скора у всей сети.
+ */
+export const KEY_APP_LOAD_CONFIG = 'app_load_config'
+export const DEFAULT_APP_LOAD = {
+	dailyVisitLimit: 20,
+	dailyRampUp: '1:6, 2:12, 3:20',
+	taskGapSec: { min: 480, max: 1320 },
+	captchaCooldownMin: { min: 90, max: 240 },
+	phaseGapMs: { min: 4000, max: 9000 },
+	paginationGapMs: { min: 4500, max: 9000 },
+}
+export type AppLoadConfig = typeof DEFAULT_APP_LOAD
+
+export const KEY_SERP_PARSE_YANDEX_ITEM = 'serp_parse_yandex_item'
+export const KEY_SERP_PARSE_YANDEX_TITLE = 'serp_parse_yandex_title'
+export const KEY_SERP_PARSE_GOOGLE_ROOT = 'serp_parse_google_root'
+export const KEY_SERP_PARSE_GOOGLE_LINKS = 'serp_parse_google_links'
+export const DEFAULT_SERP_PARSE_YANDEX_ITEM = 'li[data-cid]'
+export const DEFAULT_SERP_PARSE_YANDEX_TITLE = 'a.OrganicTitle-Link'
+export const DEFAULT_SERP_PARSE_GOOGLE_ROOT = '#rso'
+export const DEFAULT_SERP_PARSE_GOOGLE_LINKS = '.yuRUbf > a, .tF2Cxc a[href^="http"], .g a[jsname][href^="http"]'
 
 @Injectable()
 export class AppConfigService {
@@ -106,6 +173,186 @@ export class AppConfigService {
 		value: { activePcsWeek: number; avgPerDay: number; maxPerDay: number }
 		expiresAt: number
 	} | null = null
+
+	/**
+	 * Разбор строки диапазонов в карту «день → страниц» + значение после последнего дня.
+	 * Любая нераспознанная часть игнорируется; если не разобралось вообще ничего —
+	 * откатываемся на дефолт, чтобы кривая строка в настройках не остановила сеть.
+	 */
+	private parseSerpRamp(raw: string, maxValue = 10): { ramp: Record<number, number>; final: number } {
+		const ramp: Record<number, number> = {}
+		let final = 0
+		for (const part of String(raw || '').split(',')) {
+			const m = part.trim().match(/^(\d+)\s*(?:-\s*(\d+)|(\+))?\s*:\s*(\d+)$/)
+			if (!m) continue
+			const from = parseInt(m[1], 10)
+			const pages = Math.max(1, Math.min(maxValue, parseInt(m[4], 10)))
+			if (m[3] === '+') {
+				final = pages
+				continue
+			}
+			const to = m[2] ? parseInt(m[2], 10) : from
+			if (to < from || to - from > 400) continue
+			for (let d = from; d <= to; d++) ramp[d] = pages
+		}
+		if (!final && Object.keys(ramp).length === 0) return this.parseSerpRamp(DEFAULT_SERP_PAGE_RAMP, maxValue)
+		return { ramp, final: final || 5 }
+	}
+
+	async getSerpPageRamp() {
+		const { value, updatedAt, isDefault } = await this.getWithMeta(KEY_SERP_PAGE_RAMP, DEFAULT_SERP_PAGE_RAMP)
+		const parsed = this.parseSerpRamp(value)
+		return { raw: value, ...parsed, updatedAt, isDefault, default: DEFAULT_SERP_PAGE_RAMP }
+	}
+
+	async setSerpPageRamp(raw: string) {
+		const value = String(raw || '').trim() || DEFAULT_SERP_PAGE_RAMP
+		// Проверяем ИСХОДНУЮ строку, а не результат разбора: parseSerpRamp на мусоре
+		// молча откатывается к дефолту, и без этой проверки мусор бы сохранился.
+		const hasValidPart = value
+			.split(',')
+			.some(part => /^\d+\s*(?:-\s*\d+|\+)?\s*:\s*\d+$/.test(part.trim()))
+		if (!hasValidPart) {
+			throw new BadRequestException('Не разобрать строку. Пример: 1-6:3, 7-13:4, 14+:5')
+		}
+		await this.set(KEY_SERP_PAGE_RAMP, value)
+		return this.getSerpPageRamp()
+	}
+
+	/** Селекторы кнопки «Дальше» для обоих поисковиков. */
+	async getSerpNavConfig() {
+		const [cssY, cssG, textY, textG] = await Promise.all([
+			this.getWithMeta(KEY_SERP_NEXT_CSS_YANDEX, DEFAULT_SERP_NEXT_CSS_YANDEX),
+			this.getWithMeta(KEY_SERP_NEXT_CSS_GOOGLE, DEFAULT_SERP_NEXT_CSS_GOOGLE),
+			this.getWithMeta(KEY_SERP_NEXT_TEXT_YANDEX, DEFAULT_SERP_NEXT_TEXT_YANDEX),
+			this.getWithMeta(KEY_SERP_NEXT_TEXT_GOOGLE, DEFAULT_SERP_NEXT_TEXT_GOOGLE),
+		])
+		const [pyItem, pyTitle, pgRoot, pgLinks] = await Promise.all([
+			this.getWithMeta(KEY_SERP_PARSE_YANDEX_ITEM, DEFAULT_SERP_PARSE_YANDEX_ITEM),
+			this.getWithMeta(KEY_SERP_PARSE_YANDEX_TITLE, DEFAULT_SERP_PARSE_YANDEX_TITLE),
+			this.getWithMeta(KEY_SERP_PARSE_GOOGLE_ROOT, DEFAULT_SERP_PARSE_GOOGLE_ROOT),
+			this.getWithMeta(KEY_SERP_PARSE_GOOGLE_LINKS, DEFAULT_SERP_PARSE_GOOGLE_LINKS),
+		])
+		return {
+			yandex: { css: cssY, text: textY },
+			google: { css: cssG, text: textG },
+			parse: {
+				yandexItem: pyItem,
+				yandexTitle: pyTitle,
+				googleRoot: pgRoot,
+				googleLinks: pgLinks,
+			},
+			defaults: {
+				yandex: { css: DEFAULT_SERP_NEXT_CSS_YANDEX, text: DEFAULT_SERP_NEXT_TEXT_YANDEX },
+				google: { css: DEFAULT_SERP_NEXT_CSS_GOOGLE, text: DEFAULT_SERP_NEXT_TEXT_GOOGLE },
+				parse: {
+					yandexItem: DEFAULT_SERP_PARSE_YANDEX_ITEM,
+					yandexTitle: DEFAULT_SERP_PARSE_YANDEX_TITLE,
+					googleRoot: DEFAULT_SERP_PARSE_GOOGLE_ROOT,
+					googleLinks: DEFAULT_SERP_PARSE_GOOGLE_LINKS,
+				},
+			},
+		}
+	}
+
+	async setSerpNavConfig(body: {
+		yandexCss?: string
+		googleCss?: string
+		yandexText?: string
+		googleText?: string
+		parseYandexItem?: string
+		parseYandexTitle?: string
+		parseGoogleRoot?: string
+		parseGoogleLinks?: string
+	}) {
+		// Селектор уедет в document.querySelector внутри приложения. Кавычки в нём
+		// законны ([aria-label="..."]), а вот перенос строки и угловые скобки — признак
+		// того, что вставили не то; и пустая строка убила бы первый уровень поиска.
+		const clean = (v: string | undefined, field: string): string | null => {
+			if (v == null) return null
+			const t = String(v).trim()
+			if (!t) throw new BadRequestException(`${field}: пустое значение`)
+			if (t.length > 500) throw new BadRequestException(`${field}: слишком длинно`)
+			if (/[<>\n\r]/.test(t)) throw new BadRequestException(`${field}: недопустимые символы`)
+			return t
+		}
+		const textOk = (v: string | null, field: string) => {
+			if (v == null) return null
+			try {
+				new RegExp(v)
+			} catch {
+				throw new BadRequestException(`${field}: не читается как шаблон. Пример: дальше|следующая`)
+			}
+			return v
+		}
+		const pairs: [string, string | null][] = [
+			[KEY_SERP_NEXT_CSS_YANDEX, clean(body.yandexCss, 'Яндекс, селектор')],
+			[KEY_SERP_NEXT_CSS_GOOGLE, clean(body.googleCss, 'Google, селектор')],
+			[KEY_SERP_NEXT_TEXT_YANDEX, textOk(clean(body.yandexText, 'Яндекс, текст'), 'Яндекс, текст')],
+			[KEY_SERP_NEXT_TEXT_GOOGLE, textOk(clean(body.googleText, 'Google, текст'), 'Google, текст')],
+			[KEY_SERP_PARSE_YANDEX_ITEM, clean(body.parseYandexItem, 'Яндекс, блок результата')],
+			[KEY_SERP_PARSE_YANDEX_TITLE, clean(body.parseYandexTitle, 'Яндекс, ссылка-заголовок')],
+			[KEY_SERP_PARSE_GOOGLE_ROOT, clean(body.parseGoogleRoot, 'Google, контейнер выдачи')],
+			[KEY_SERP_PARSE_GOOGLE_LINKS, clean(body.parseGoogleLinks, 'Google, ссылки результатов')],
+		]
+		for (const [key, value] of pairs) if (value != null) await this.set(key, value)
+		return this.getSerpNavConfig()
+	}
+
+	/** Настройки нагрузки: сохранённые поверх дефолтов + сами дефолты для UI. */
+	async getLoadConfig() {
+		const { value, updatedAt, isDefault } = await this.getWithMeta(KEY_APP_LOAD_CONFIG, '')
+		let stored: Partial<AppLoadConfig> = {}
+		if (value) {
+			try {
+				stored = JSON.parse(value)
+			} catch {
+				stored = {} // мусор в БД не должен ронять выдачу конфига
+			}
+		}
+		const current: AppLoadConfig = { ...DEFAULT_APP_LOAD, ...stored }
+		return {
+			current,
+			dailyRamp: this.parseSerpRamp(current.dailyRampUp, 500).ramp,
+			defaults: DEFAULT_APP_LOAD,
+			updatedAt,
+			isDefault,
+		}
+	}
+
+	async setLoadConfig(body: Partial<AppLoadConfig>) {
+		const num = (v: unknown, field: string, lo: number, hi: number): number => {
+			const n = Number(v)
+			if (!Number.isFinite(n) || n < lo || n > hi) {
+				throw new BadRequestException(`${field}: допустимо ${lo}–${hi}`)
+			}
+			return Math.round(n)
+		}
+		const range = (v: any, field: string, lo: number, hi: number) => {
+			const min = num(v?.min, `${field}, мин`, lo, hi)
+			const max = num(v?.max, `${field}, макс`, lo, hi)
+			if (max < min) throw new BadRequestException(`${field}: максимум меньше минимума`)
+			return { min, max }
+		}
+
+		const cur = (await this.getLoadConfig()).current
+		const next: AppLoadConfig = { ...cur }
+
+		if (body.dailyVisitLimit != null) next.dailyVisitLimit = num(body.dailyVisitLimit, 'Лимит в день', 1, 500)
+		if (body.dailyRampUp != null) {
+			const raw = String(body.dailyRampUp).trim()
+			const ok = raw.split(',').some(part => /^\d+\s*(?:-\s*\d+|\+)?\s*:\s*\d+$/.test(part.trim()))
+			if (!ok) throw new BadRequestException('Разгон по дням: не разобрать. Пример: 1:6, 2:12, 3:20')
+			next.dailyRampUp = raw
+		}
+		if (body.taskGapSec != null) next.taskGapSec = range(body.taskGapSec, 'Пауза между задачами', 30, 14400)
+		if (body.captchaCooldownMin != null) next.captchaCooldownMin = range(body.captchaCooldownMin, 'Кулдаун после капчи', 1, 1440)
+		if (body.phaseGapMs != null) next.phaseGapMs = range(body.phaseGapMs, 'Пауза между фазами', 200, 60000)
+		if (body.paginationGapMs != null) next.paginationGapMs = range(body.paginationGapMs, 'Пауза после перелистывания', 200, 60000)
+
+		await this.set(KEY_APP_LOAD_CONFIG, JSON.stringify(next))
+		return this.getLoadConfig()
+	}
 
 	async getNetworkCapacityInfo() {
 		const now = Date.now()

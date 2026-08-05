@@ -17,6 +17,7 @@
 		"prisma:seed": "ts-node --transpile-only prisma/seed.ts",
 		"seed": "ts-node --transpile-only prisma/seed.ts",
 		"seed:crm": "ts-node --transpile-only prisma/seed-crm.ts",
+		"seed:exec-errors": "ts-node --transpile-only prisma/seed-exec-errors.ts",
 		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts"
 	},
 	"dependencies": {

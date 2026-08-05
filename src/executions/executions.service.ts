@@ -492,7 +492,23 @@ export class ExecutionsService {
 			? `Поиск "${execution.task.keyword}" на ${execution.task.website.url}`
 			: `Переход по ссылке ${execution.task.externalUrl}`
 		const label = isYandex ? 'Яндекс' : 'Google'
-		const resultText = dto.foundInTop ? 'найдено в поиске' : 'не найдено в поиске'
+		let resultText = dto.foundInTop ? 'найдено в поиске' : 'не найдено в поиске'
+
+		// Если не нашли — дописываем, докуда бот реально долистал выдачу. Иначе в истории
+		// баланса «не найдено» и «не найдено, но дальше 1-й страницы не ушли» выглядят
+		// одинаково, хотя это разные вещи: во втором случае сайт мог быть на 2-5 странице.
+		if (!dto.foundInTop) {
+			const scan = await this.prisma.executionEvent.findFirst({
+				where: { executionId, stage: 'serp_scan_depth', engine: dto.engine },
+				orderBy: { createdAt: 'desc' },
+				select: { details: true },
+			})
+			const d = scan?.details as Record<string, unknown> | null
+			const parsed = Number(d?.pagesParsed ?? 0)
+			const maxPage = Number(d?.maxPage ?? 0)
+			if (parsed === 1 && maxPage > 1) resultText += ', дальше 1-й страницы не ушли'
+			else if (parsed > 1) resultText += `, просмотрено ${parsed} стр.`
+		}
 
 		const result = await this.prisma.$transaction(async tx => {
 			// Атомарно ставим creditedAt — если кто-то параллельно уже начислил,
