@@ -46,6 +46,7 @@ export class ExecutionsService {
 		executorId: string,
 		ipAddress?: string,
 		userAgent?: string,
+		algorithmVersion: number | null = null,
 	) {
 		return this.prisma.$transaction(async tx => {
 			const task = await tx.task.findUnique({
@@ -83,6 +84,7 @@ export class ExecutionsService {
 					ipAddress,
 					userAgent,
 					weekStart: this.getWeekStart(),
+					algorithmVersion,
 				},
 			})
 		})

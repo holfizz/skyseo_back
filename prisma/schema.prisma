@@ -64,6 +64,7 @@ model User {
   clientNotes         ClientNote[]         @relation("ClientNotes")
   captchaEvents       CaptchaEvent[]
   dailyRewards        DailyReward[]
+  algorithmAssignment AlgorithmAssignment?
 
   @@index([registrationIp, createdAt])
   @@index([marketingCode])
@@ -180,6 +181,9 @@ model Execution {
   ipAddress     String?
   userAgent     String?
   weekStart     DateTime?
+  // Версия алгоритма, применённая при СОЗДАНИИ выполнения (не при завершении — иначе плохая
+  // версия в отчётах выглядит чище хорошей). null = зашитый в сборку алгоритм.
+  algorithmVersion Int?
   createdAt     DateTime        @default(now())
   completedAt   DateTime?
 
@@ -192,6 +196,7 @@ model Execution {
   @@index([websiteId, status, completedAt])
   @@index([taskId, executorId, status])
   @@index([websiteId, foundInTop, completedAt])
+  @@index([algorithmVersion, createdAt])
   @@map("executions")
 }
 
@@ -967,4 +972,49 @@ model Tariff {
   deals CrmDeal[]
 
   @@map("tariffs")
+}
+
+// ─── Доставка алгоритма с сервера ───────────────────────────────────────────
+// См. ALGO_DELIVERY_TZ.md и skyseo_app/src/main/algo/. Подписанный бандл хранится
+// целиком (готовый к отдаче), сервер его не собирает и не подписывает — только раздаёт.
+
+enum AlgoBundleStatus {
+  DRAFT        // загружен, ещё не выкачен
+  CANARY       // на канареечных ПК
+  LIVE         // на всей сети
+  ROLLED_BACK  // откачен
+}
+
+model AlgorithmBundle {
+  version       Int              @id // монотонный номер из подписанного манифеста
+  label         String           // «05.08 фикс пагинации Яндекса»
+  notes         String?
+  status        AlgoBundleStatus @default(DRAFT)
+  floor         Int              // из манифеста — для отображения
+  minAppVersion String
+  bundle        Json             // готовый SignedBundle целиком (manifest+sig+payload)
+  sha256        String
+  size          Int
+  createdByEmail String?
+  rollbackReason String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([status, version])
+  @@map("algorithm_bundles")
+}
+
+// Что реально применилось на каждом ПК — телеметрия из отчётов приложения.
+model AlgorithmAssignment {
+  userId        String   @id
+  appliedVersion Int?    // версия, которую ПК применил (0/null = зашитый)
+  pinnedVersion Int?     // канарейка / «проверить на своём ПК»: закреплённая версия
+  appVersion    String?
+  lastError     String?  // текст ошибки применения — самый быстрый сигнал «не доехало»
+  reportedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([appliedVersion])
+  @@map("algorithm_assignments")
 }

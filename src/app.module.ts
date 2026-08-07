@@ -8,6 +8,7 @@ import { InboxModule } from './inbox/inbox.module'
 import { AiModule } from './ai/ai.module'
 import { AnalyticsModule } from './analytics/analytics.module'
 import { AppConfigModule } from './app-config/app-config.module'
+import { AlgorithmModule } from './algorithm/algorithm.module'
 import { AppVersionModule } from './app-version/app-version.module'
 import { AuthModule } from './auth/auth.module'
 import { CrmModule } from './crm/crm.module'
@@ -60,6 +61,7 @@ import { WebsitesModule } from './websites/websites.module'
 		UpdatesModule,
 		AppVersionModule,
 		AppConfigModule,
+		AlgorithmModule,
 		AiModule,
 		CrmModule,
 	],
