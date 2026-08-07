@@ -102,7 +102,7 @@ export const KEY_SERP_PARSE_GOOGLE_LINKS = 'serp_parse_google_links'
 export const DEFAULT_SERP_PARSE_YANDEX_ITEM = 'li[data-cid]'
 export const DEFAULT_SERP_PARSE_YANDEX_TITLE = 'a.OrganicTitle-Link'
 export const DEFAULT_SERP_PARSE_GOOGLE_ROOT = '#rso'
-export const DEFAULT_SERP_PARSE_GOOGLE_LINKS = '.yuRUbf > a, .tF2Cxc a[href^="http"], .g a[jsname][href^="http"]'
+export const DEFAULT_SERP_PARSE_GOOGLE_LINKS = '.yuRUbf > a, .tF2Cxc a[href], .g a[jsname][href], div[data-hveid] a[href*="/url?q="]'
 
 @Injectable()
 export class AppConfigService {
