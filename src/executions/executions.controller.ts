@@ -54,7 +54,6 @@ export class ExecutionsController {
 			req.user.id,
 			ip,
 			userAgent,
-			dto.algorithmVersion ?? null,
 		)
 	}
 

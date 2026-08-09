@@ -16,6 +16,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { EngineHealthService } from '../telegram/engine-health.service'
 import { TelegramService } from '../telegram/telegram.service'
 
 @Injectable()
@@ -24,6 +25,7 @@ export class TaskSchedulerService implements OnModuleInit {
 		private prisma: PrismaService,
 		private notifications: NotificationsService,
 		private telegram: TelegramService,
+		private engineHealth: EngineHealthService,
 	) {}
 
 	onModuleInit() {
@@ -39,6 +41,11 @@ export class TaskSchedulerService implements OnModuleInit {
 
 		// Дневной TG-отчёт — каждый день в 23:00 МСК (20:00 UTC)
 		this.scheduleDailyTelegramReport()
+
+		// Здоровье движка: ловим «приложение перестало разбирать выдачу» отдельно от
+		// «сайта нет в топе». Первый прогон через 2 минуты после старта, дальше раз в 30 мин.
+		setTimeout(() => this.engineHealth.check(), 2 * 60 * 1000)
+		setInterval(() => this.engineHealth.check(), 30 * 60 * 1000)
 	}
 
 		private async resetStuckTasks() {

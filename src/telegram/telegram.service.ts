@@ -381,28 +381,36 @@ export class TelegramService implements OnModuleDestroy {
 		this.bot?.stop()
 	}
 
-	async sendAdminNotification(message: string, threadId?: number) {
+	/**
+	 * @param replyTo id сообщения, ответом на которое отправляем — так «починилось»
+	 *                приходит прямо под исходной тревогой, а не отдельной строкой в ленте.
+	 * @returns message_id отправленного сообщения (нужен, чтобы потом на него ответить)
+	 */
+	async sendAdminNotification(message: string, threadId?: number, replyTo?: number): Promise<number | null> {
 		if (!this.isEnabled || !this.bot) {
 			console.log('[Telegram disabled]:', message)
-			return
+			return null
 		}
 
 		const targetId = threadId ? this.GROUP_CHAT_ID : this.adminId
 		if (!targetId) {
 			console.log('[Telegram] No target ID configured, skipping:', message)
-			return
+			return null
 		}
 
 		try {
 			const extra: any = { parse_mode: 'HTML' }
 			if (threadId) extra.message_thread_id = threadId
+			if (replyTo) extra.reply_to_message_id = replyTo
 			const sendPromise = this.bot.telegram.sendMessage(targetId, message, extra)
 			const timeoutPromise = new Promise((_, reject) =>
 				setTimeout(() => reject(new Error('send timeout')), 5000),
 			)
-			await Promise.race([sendPromise, timeoutPromise])
+			const res: any = await Promise.race([sendPromise, timeoutPromise])
+			return res?.message_id ?? null
 		} catch (error) {
 			console.error('[TelegramService] Failed to send notification:', error.message)
+			return null
 		}
 	}
 
