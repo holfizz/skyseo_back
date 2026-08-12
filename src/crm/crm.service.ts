@@ -81,6 +81,56 @@ export class CrmService {
 		return { ...user, platformRoles }
 	}
 
+	/**
+	 * Воронка дожима триалов: карточка → написали → ответ. Отдаёт и сводку,
+	 * и последние касания, чтобы видеть, кто завис без исхода.
+	 */
+	async trialStats() {
+		const [byStatus, recent] = await Promise.all([
+			this.prisma.trialOutreach.groupBy({
+				by: ['status'],
+				_count: { _all: true },
+			}),
+			this.prisma.trialOutreach.findMany({
+				orderBy: { createdAt: 'desc' },
+				take: 50,
+				select: {
+					id: true,
+					email: true,
+					telegram: true,
+					websiteUrl: true,
+					visits: true,
+					keywords: true,
+					status: true,
+					trialEndsAt: true,
+					handledAt: true,
+					createdAt: true,
+				},
+			}),
+		])
+		const count = (s: string) =>
+			byStatus.find(r => r.status === s)?._count._all ?? 0
+
+		const sentToManager = count('SENT_TO_MANAGER')
+		const messageSent = count('MESSAGE_SENT')
+		const failed = count('FAILED')
+		const total = count('QUEUED') + sentToManager + messageSent + failed
+
+		return {
+			totals: {
+				total,
+				pending: sentToManager, // карточка у менеджера, исход не отмечен
+				messageSent,
+				failed,
+				// Доля дошедших до человека среди тех, по кому исход уже известен.
+				reachRate: messageSent + failed > 0
+					? Math.round((messageSent / (messageSent + failed)) * 100)
+					: 0,
+			},
+			recent,
+		}
+	}
+
 	async dashboard(user: CrmUser) {
 		const now = new Date()
 		const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())

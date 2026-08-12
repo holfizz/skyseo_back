@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config'
 import { Telegraf } from 'telegraf'
 import { AlertsService } from '../alerts/alerts.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { maybeStartTrial } from '../common/trial'
 
 @Injectable()
 export class TelegramService implements OnModuleDestroy {
@@ -319,8 +320,10 @@ export class TelegramService implements OnModuleDestroy {
 				try {
 					const site = await this.prisma.website.update({
 						where: { id: websiteId },
-						data: { isApproved: true },
+						data: { isApproved: true, approvedAt: new Date() },
 					})
+					// Одобрение — второе из двух событий старта бесплатной недели.
+					await maybeStartTrial(this.prisma, site.userId)
 					this.alerts.siteApproved(site.userId, site.name).catch(() => {})
 					await ctx.answerCbQuery('✅ Одобрено')
 					await ctx.editMessageReplyMarkup({ inline_keyboard: [[

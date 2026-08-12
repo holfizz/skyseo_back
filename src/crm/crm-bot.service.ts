@@ -1,6 +1,10 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Telegraf } from 'telegraf'
+import { PrismaService } from '../prisma/prisma.service'
+
+const escapeHtml = (s: string) =>
+	String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 /**
  * Отдельный Telegram-бот CRM (TELEGRAM_CRM_BOT_TOKEN). Открывает Mini App и шлёт
@@ -16,7 +20,10 @@ export class CrmBotService implements OnModuleDestroy {
 	private isEnabled = false
 	private botUsername = 'skyseo_crm_bot'
 
-	constructor(private config: ConfigService) {
+	constructor(
+		private config: ConfigService,
+		private prisma: PrismaService,
+	) {
 		if (this.config.get('CRM_ENABLED') === 'false') {
 			console.log('⛔ CRM выключена (CRM_ENABLED=false) — бот не запускается')
 			return
@@ -42,6 +49,81 @@ export class CrmBotService implements OnModuleDestroy {
 					},
 				})
 			})
+
+			// /trial — кто уже отвалился с триала и кому можно написать в личку.
+			this.bot.command('trial', async ctx => {
+				if (!(await this.resolveActor(ctx))) {
+					await ctx.reply('Нет доступа')
+					return
+				}
+				const users = await this.prisma.user.findMany({
+					where: {
+						trialStartedAt: { not: null },
+						telegramUsername: { not: null },
+						paidUntil: { lt: new Date() },
+					},
+					select: { email: true, telegramUsername: true, paidUntil: true },
+					orderBy: { paidUntil: 'desc' },
+					take: 30,
+				})
+				if (users.length === 0) {
+					await ctx.reply('Никого с законченным триалом и привязанным Telegram нет.')
+					return
+				}
+				const lines = users.map(u => {
+					const ended = u.paidUntil
+						? new Date(u.paidUntil).toLocaleDateString('ru-RU')
+						: '—'
+					return `@${escapeHtml(u.telegramUsername ?? '')} · ${escapeHtml(u.email)} · до ${ended}`
+				})
+				await ctx.reply(
+					`<b>Триал закончился — ${users.length}</b>\n\n${lines.join('\n')}`,
+					{ parse_mode: 'HTML' },
+				)
+			})
+
+			// Кнопки под карточкой дожима. Эталон — админский бот (telegram.service.ts):
+			// answerCbQuery + editMessageReplyMarkup, чтобы кнопка перерисовалась и
+			// повторное нажатие ничего не делало. Сознательно НЕ повторяем тамошний
+			// антипаттерн с callback_data:'noop' — у него нет обработчика и спиннер висит.
+			this.bot.on('callback_query', async ctx => {
+				const actor = await this.resolveActor(ctx)
+				if (!actor) {
+					await ctx.answerCbQuery('Нет доступа')
+					return
+				}
+				const data = (ctx.callbackQuery as any)?.data as string | undefined
+				if (!data?.startsWith('trial_')) return
+
+				const sent = data.startsWith('trial_sent_')
+				const id = data.replace(sent ? 'trial_sent_' : 'trial_failed_', '')
+				try {
+					// Атомарно: исход проставляется только из состояния SENT_TO_MANAGER,
+					// поэтому второе нажатие (в том числе с другого устройства) не пройдёт.
+					const claim = await this.prisma.trialOutreach.updateMany({
+						where: { id, status: 'SENT_TO_MANAGER' },
+						data: {
+							status: sent ? 'MESSAGE_SENT' : 'FAILED',
+							handledBy: actor.id,
+							handledAt: new Date(),
+						},
+					})
+					if (claim.count !== 1) {
+						await ctx.answerCbQuery('Уже отмечено')
+						return
+					}
+					await ctx.answerCbQuery(sent ? '✅ Записал' : '⚠️ Записал как неудачу')
+					await ctx.editMessageReplyMarkup({
+						inline_keyboard: [[{ text: sent ? '✅ Отправлено' : '⚠️ Не получилось', callback_data: 'trial_done' }]],
+					} as any)
+					if (!sent) await this.notifyAdminsAboutFailure(id)
+				} catch (e: any) {
+					await ctx.answerCbQuery('Ошибка: ' + String(e?.message).slice(0, 60))
+				}
+			})
+
+			// Заглушка для уже отмеченной карточки — чтобы спиннер не висел до таймаута.
+			this.bot.action('trial_done', ctx => ctx.answerCbQuery('Уже отмечено'))
 
 			const timeout = new Promise((_, reject) =>
 				setTimeout(() => reject(new Error('Connection timeout')), 10000),
@@ -100,6 +182,65 @@ export class CrmBotService implements OnModuleDestroy {
 			console.log('[CrmBot] sendToUser failed:', e?.message)
 			return false
 		}
+	}
+
+	/**
+	 * Отправка с произвольной inline-клавиатурой (кнопки с callback_data).
+	 * Отдельный метод, а не расширение sendToUser: тот отдаёт web_app-кнопку
+	 * и используется напоминаниями — менять его сигнатуру рискованно.
+	 */
+	async sendWithButtons(
+		telegramId: string | null | undefined,
+		text: string,
+		keyboard: Array<Array<{ text: string; callback_data: string }>>,
+	): Promise<boolean> {
+		if (!this.isEnabled || !this.bot || !telegramId) return false
+		try {
+			await this.bot.telegram.sendMessage(telegramId, text, {
+				parse_mode: 'HTML',
+				link_preview_options: { is_disabled: true },
+				reply_markup: { inline_keyboard: keyboard },
+			} as any)
+			return true
+		} catch (e: any) {
+			console.log('[CrmBot] sendWithButtons failed:', e?.message)
+			return false
+		}
+	}
+
+	/**
+	 * Кто нажал. NestJS-гварды (CrmAuthGuard/CrmAdminGuard) на хендлеры Telegraf
+	 * не действуют — это механика HTTP-пайплайна. Права проверяем руками по
+	 * crm_users.telegramId, а не по TELEGRAM_ADMIN_ID: там другой бот и другой человек.
+	 */
+	private async resolveActor(ctx: any) {
+		const tgId = String(ctx.from?.id ?? '')
+		if (!tgId) return null
+		const actor = await this.prisma.crmUser.findUnique({
+			where: { telegramId: tgId },
+			select: { id: true, isActive: true },
+		})
+		return actor?.isActive ? actor : null
+	}
+
+	/** «Написать не смогли» — зовём админов разбираться. */
+	private async notifyAdminsAboutFailure(outreachId: string) {
+		const row = await this.prisma.trialOutreach.findUnique({
+			where: { id: outreachId },
+			select: { email: true, telegram: true, websiteUrl: true },
+		})
+		if (!row) return
+		const admins = await this.prisma.crmUser.findMany({
+			where: { role: 'ADMIN', isActive: true, telegramId: { not: null } },
+			select: { telegramId: true },
+		})
+		const text =
+			`⚠️ <b>Не смогли написать по триалу</b>\n\n` +
+			`Контакт: ${row.telegram ? '@' + escapeHtml(row.telegram) : '—'}\n` +
+			`Почта: ${escapeHtml(row.email)}\n` +
+			(row.websiteUrl ? `Сайт: ${escapeHtml(row.websiteUrl)}\n` : '') +
+			`\nПроверь контакт руками.`
+		for (const a of admins) await this.sendToUser(a.telegramId, text)
 	}
 
 	onModuleDestroy() {

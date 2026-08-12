@@ -27,6 +27,7 @@ import { TelegramModule } from './telegram/telegram.module'
 import { UpdatesModule } from './updates/updates.module'
 import { UsersModule } from './users/users.module'
 import { WebsitesModule } from './websites/websites.module'
+import { TrialModule } from './trial/trial.module'
 
 @Module({
 	imports: [
@@ -62,6 +63,7 @@ import { WebsitesModule } from './websites/websites.module'
 		AppConfigModule,
 		AiModule,
 		CrmModule,
+		TrialModule,
 	],
 	providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

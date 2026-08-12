@@ -9,6 +9,7 @@ import { CrmManageGuard } from './crm-manage.guard'
 import { CrmAuthService } from './crm-auth.service'
 import { CrmBotService } from './crm-bot.service'
 import { CrmReminderScheduler } from './crm-reminder.scheduler'
+import { CrmTrialScheduler } from './crm-trial.scheduler'
 import { CrmAuthController, CrmController } from './crm.controller'
 import { CrmService } from './crm.service'
 
@@ -20,6 +21,7 @@ import { CrmService } from './crm.service'
 		CrmService,
 		CrmBotService,
 		CrmReminderScheduler,
+		CrmTrialScheduler,
 		CrmAuthGuard,
 		CrmAdminGuard,
 		CrmManageGuard,

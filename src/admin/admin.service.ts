@@ -28,6 +28,7 @@ import { AlertsService } from '../alerts/alerts.service'
 import { loadExecutionTrace } from '../common/execution-trace'
 import { ManagerService } from '../manager/manager.service'
 import { NotificationsService } from '../notifications/notifications.service'
+import { maybeStartTrial } from '../common/trial'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { TasksService } from '../tasks/tasks.service'
@@ -961,8 +962,16 @@ export class AdminService {
 
 		return Promise.all(pending.map(async (site) => {
 			const rootDomain = extractRootDomain(site.url)
+			// Дубликаты показываем только с ЧУЖИХ аккаунтов: если человек завёл тот же
+			// домен второй раз у себя — это не повод для подозрений, а обычная ситуация
+			// (пересоздал сайт, добавил зеркало). Сигнал даёт только совпадение
+			// домена у разных пользователей.
 			const similarSites = await this.prisma.website.findMany({
-				where: { id: { not: site.id }, url: { contains: rootDomain } },
+				where: {
+					id: { not: site.id },
+					url: { contains: rootDomain },
+					userId: { not: site.user.id },
+				},
 				select: { url: true, user: { select: { email: true } } },
 				take: 10,
 			})
@@ -973,8 +982,10 @@ export class AdminService {
 	async approveWebsite(websiteId: string) {
 		const website = await this.prisma.website.update({
 			where: { id: websiteId },
-			data: { isApproved: true },
+			data: { isApproved: true, approvedAt: new Date() },
 		})
+		// Случай «ключи уже были, сайт одобрили» — второе из двух событий, триал стартует.
+		await maybeStartTrial(this.prisma, website.userId)
 		this.alerts.siteApproved(website.userId, website.name).catch(() => {})
 		return website
 	}
@@ -1072,7 +1083,29 @@ export class AdminService {
 			? Math.ceil(capacity.avgPerDay * spread / capacity.maxPerDay)
 			: capacity.avgPerDay * spread
 
+		// Воронка монетизации: активировал триал → сформировал чек → оплатил.
+		// «Чек сформирован» = заявка на оплату создана (Payment любого статуса):
+		// это момент, когда человек дошёл до кассы, независимо от того, заплатил ли.
+		const [trialActivated, checkoutStarted, paidUsers] = await Promise.all([
+			this.prisma.user.count({ where: { trialStartedAt: { not: null } } }),
+			this.prisma.payment
+				.findMany({ distinct: ['userId'], select: { userId: true } })
+				.then(r => r.length),
+			this.prisma.payment
+				.findMany({ where: { status: 'SUCCEEDED' }, distinct: ['userId'], select: { userId: true } })
+				.then(r => r.length),
+		])
+
 		return {
+			trialFunnel: {
+				trialActivated,
+				checkoutStarted,
+				paid: paidUsers,
+				// Конверсии считаем от предыдущего шага, а не от вершины — так видно,
+				// на каком именно переходе теряем.
+				toCheckoutPct: trialActivated > 0 ? Math.round((checkoutStarted / trialActivated) * 100) : 0,
+				toPaidPct: checkoutStarted > 0 ? Math.round((paidUsers / checkoutStarted) * 100) : 0,
+			},
 			network: {
 				activePcsWeek: capacity.activePcsWeek,
 				avgPerDay: capacity.avgPerDay,

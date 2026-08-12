@@ -102,6 +102,13 @@ export class CrmController {
 		return this.crm.dashboard(user)
 	}
 
+	// Статистика по дожимам заканчивающихся триалов: сколько карточек ушло
+	// менеджерам, по скольким написали, где не смогли.
+	@Get('trials')
+	trials() {
+		return this.crm.trialStats()
+	}
+
 	// ─── clients ───
 	@Get('clients')
 	listClients(

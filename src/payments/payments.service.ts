@@ -8,6 +8,11 @@ import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
 import { CreatePaymentDto } from './dto'
+import { extendPaidUntil } from '../common/trial'
+
+// Курс покупки баллов. 1 балл = 1 ₽ — тот же курс зашит в пакеты на фронте
+// (cabinet/page.tsx: у всех тарифов points === price).
+const POINTS_PER_RUBLE = 1
 
 @Injectable()
 export class PaymentsService implements OnModuleInit {
@@ -40,9 +45,15 @@ export class PaymentsService implements OnModuleInit {
 	}
 
 	async createPayment(userId: string, dto: CreatePaymentDto) {
+		// Баллы считает СЕРВЕР, а не клиент. Курс 1 балл = 1 ₽ — он же зашит в пакеты
+		// на фронте (calcPrice в cabinet/page.tsx: points === price у всех тарифов).
+		// До этого количество баллов приходило от клиента и ни с чем не сверялось —
+		// можно было заплатить 100 ₽ и начислить себе любое число баллов.
+		const points = Math.round(dto.amount * POINTS_PER_RUBLE)
+
 		console.log('[Payments] Creating payment', {
 			userId: userId.substring(0, 8) + '...',
-			points: dto.points,
+			points,
 			amount: dto.amount,
 		})
 
@@ -60,7 +71,7 @@ export class PaymentsService implements OnModuleInit {
 			data: {
 				userId,
 				amount: dto.amount,
-				points: dto.points,
+				points,
 				status: 'PENDING',
 			},
 		})
@@ -164,13 +175,21 @@ export class PaymentsService implements OnModuleInit {
 
 			console.log('[Payments] Payment status updated to SUCCEEDED')
 
-			// Начисляем баллы
-			await this.usersService.updateBalance(
-				payment.userId,
-				payment.points,
-				'PAYMENT',
-				`Пополнение баланса на ${payment.amount} ₽`,
-			)
+			// Продлеваем продвижение на месяц. Баллы владельцу сайта больше не начисляются:
+			// веб-версия работает на днях подписки, а баллы остались валютой участника сети
+			// (заработок в приложении, выводится рублями).
+			//
+			// Длительность от суммы НЕ зависит: 9 000 ₽ и 18 000 ₽ — это одинаковый месяц,
+			// разница в дневной норме успешных визитов, которую админ ставит сайту вручную
+			// (Website.dailyVisitsTarget).
+			const owner = await this.prisma.user.findUnique({
+				where: { id: payment.userId },
+				select: { paidUntil: true },
+			})
+			await this.prisma.user.update({
+				where: { id: payment.userId },
+				data: { paidUntil: extendPaidUntil(owner?.paidUntil) },
+			})
 
 			// Реферальный бонус — +10% пригласившему
 			await this.grantReferralBonus(payment.user.referredBy, payment.points)
