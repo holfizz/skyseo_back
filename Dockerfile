@@ -17,7 +17,21 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Fix Alpine mirrors and install openssl
-RUN apk update && apk add --no-cache openssl
+# chromium — для генерации PDF-отчётов (src/report). Ставим системный:
+# puppeteer-core своего браузера не несёт, а полный puppeteer тянул бы
+# ещё ~200 МБ и всё равно не запустился бы на musl.
+# nss/freetype/harfbuzz/ttf-freefont — минимум, без которого chromium
+# падает при старте; сам текст отчёта рисуется встроенным шрифтом Helio.
+RUN apk update && apk add --no-cache \
+	openssl \
+	chromium \
+	nss \
+	freetype \
+	harfbuzz \
+	ca-certificates \
+	ttf-freefont
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
