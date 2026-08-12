@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { NotificationsService } from '../notifications/notifications.service'
-import { OutreachStatus } from '@prisma/client'
+import { OutreachLead, OutreachStatus, Prisma } from '@prisma/client'
+import { newReportToken, reportUrl } from './outreach-import.service'
+import { buildOutreachMessage, MessageCompetitor, MessageKeyword } from './outreach-message'
 
 @Injectable()
 export class OutreachService {
@@ -48,19 +50,135 @@ export class OutreachService {
 		return { ...lead, systemUser: user ?? null }
 	}
 
-	async getLeads(status?: OutreachStatus, search?: string) {
-		const where: any = {}
-		if (status) where.status = status
-		if (search) {
+	async getLeads(params: {
+		status?: OutreachStatus
+		search?: string
+		importId?: string
+		hasTelegram?: boolean
+		hasInn?: boolean
+		sort?: 'score' | 'createdAt'
+		page?: number
+		limit?: number
+	} = {}) {
+		const where: Prisma.OutreachLeadWhereInput = {}
+		if (params.status) where.status = params.status
+		if (params.importId) where.importId = params.importId
+		if (params.search) {
 			where.OR = [
-				{ domain: { contains: search, mode: 'insensitive' } },
-				{ contact: { contains: search, mode: 'insensitive' } },
+				{ domain: { contains: params.search, mode: 'insensitive' } },
+				{ contact: { contains: params.search, mode: 'insensitive' } },
 			]
 		}
-		return this.prisma.outreachLead.findMany({
-			where,
-			orderBy: { createdAt: 'desc' },
+		// В базе есть лиды из старых xlsx-импортов с пустой строкой вместо null
+		const and: Prisma.OutreachLeadWhereInput[] = []
+		if (params.hasTelegram) and.push({ telegram: { not: null } }, { NOT: { telegram: '' } })
+		if (params.hasInn) and.push({ inn: { not: null } }, { NOT: { inn: '' } })
+		if (and.length > 0) where.AND = and
+
+		const page = Math.max(Number(params.page) || 1, 1)
+		const limit = Math.min(Math.max(Number(params.limit) || 100, 1), 500)
+		const orderBy: Prisma.OutreachLeadOrderByWithRelationInput[] =
+			params.sort === 'score' ? [{ score: 'desc' }, { createdAt: 'desc' }] : [{ createdAt: 'desc' }]
+
+		const [items, total] = await Promise.all([
+			this.prisma.outreachLead.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
+			this.prisma.outreachLead.count({ where }),
+		])
+		return { items, total, page, limit }
+	}
+
+	// Правка лида руками из админки: ФИО, контакты, статус, заметки.
+	// ФИО автоматом никто не заполняет — только здесь, поэтому после его правки
+	// пересобираем сохранённый текст сообщения (обращение меняется).
+	async updateLead(
+		id: string,
+		body: {
+			firstName?: string | null
+			lastName?: string | null
+			middleName?: string | null
+			companyName?: string | null
+			city?: string | null
+			phone?: string | null
+			whatsapp?: string | null
+			telegram?: string | null
+			email?: string | null
+			contact?: string | null
+			inn?: string | null
+			status?: OutreachStatus
+			notes?: string | null
+		},
+	) {
+		const fields = [
+			'firstName', 'lastName', 'middleName', 'companyName', 'city',
+			'phone', 'whatsapp', 'telegram', 'email', 'contact', 'inn', 'notes',
+		] as const
+		const data: Prisma.OutreachLeadUncheckedUpdateInput = {}
+		for (const key of fields) {
+			if (body[key] !== undefined) (data as any)[key] = body[key]?.toString().trim() || null
+		}
+		if (body.status !== undefined) {
+			data.status = body.status
+			if (body.status === 'CONTACTED') data.contactedAt = new Date()
+		}
+
+		const lead = await this.prisma.outreachLead.update({ where: { id }, data })
+		if (body.firstName === undefined && body.middleName === undefined) return lead
+		return this.prisma.outreachLead.update({
+			where: { id },
+			data: { message: await this.buildMessage(lead) },
 		})
+	}
+
+	// Текст холодного сообщения по шаблону (см. outreach-message.ts).
+	async getMessage(id: string) {
+		const lead = await this.prisma.outreachLead.findUniqueOrThrow({ where: { id } })
+		return { message: await this.buildMessage(lead) }
+	}
+
+	private async buildMessage(lead: OutreachLead): Promise<string> {
+		// Ключи и позиции берём из выдачи того прогона, из которого пришёл лид.
+		let keywords: MessageKeyword[] = []
+		if (lead.importId) {
+			const rows = await this.prisma.serpRow.findMany({
+				where: { importId: lead.importId, domain: lead.domain },
+				orderBy: { position: 'asc' },
+				select: { keyword: true, position: true },
+			})
+			const best = new Map<string, MessageKeyword>()
+			for (const r of rows) if (!best.has(r.keyword)) best.set(r.keyword, r)
+			keywords = Array.from(best.values())
+		}
+		const competitors = (Array.isArray(lead.competitors) ? lead.competitors : []) as MessageCompetitor[]
+
+		// Токен у старых лидов мог не проставиться при заведении — выдаём при первом обращении.
+		let token = lead.reportToken
+		if (!token) {
+			token = newReportToken()
+			await this.prisma.outreachLead.update({ where: { id: lead.id }, data: { reportToken: token } })
+		}
+
+		return buildOutreachMessage({
+			domain: lead.domain,
+			firstName: lead.firstName,
+			middleName: lead.middleName,
+			keywords,
+			competitors,
+			reportUrl: reportUrl(token),
+		})
+	}
+
+	// Публичная ссылка на отчёт: первое открытие фиксируем датой, дальше просто считаем.
+	async registerReportOpen(token: string) {
+		const lead = await this.prisma.outreachLead.findUnique({ where: { reportToken: token } })
+		if (!lead) throw new NotFoundException('Отчёт не найден')
+		await this.prisma.outreachLead.update({
+			where: { id: lead.id },
+			data: {
+				reportOpens: { increment: 1 },
+				reportOpenedAt: lead.reportOpenedAt ?? new Date(),
+			},
+		})
+		return lead
 	}
 
 	async setStatus(id: string, status: OutreachStatus, notes?: string) {

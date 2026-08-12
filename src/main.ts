@@ -1,10 +1,17 @@
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import { json, urlencoded } from 'express'
 import helmet from 'helmet'
 import { AppModule } from './app.module'
 
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule)
+
+	// Дефолт express — 100 KB. import.json одного прогона парсера выдачи
+	// весит 1-2 MB (весь топ-50 по каждому ключу + контакты), с дефолтом
+	// загрузка падала бы с 413 ещё до контроллера.
+	app.use(json({ limit: '20mb' }))
+	app.use(urlencoded({ extended: true, limit: '20mb' }))
 
 	// Trust proxy для получения реального IP через заголовки
 	// Доверяем всем прокси в Docker сети (172.x.x.x) и локальным адресам

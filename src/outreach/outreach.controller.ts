@@ -34,9 +34,28 @@ export class OutreachController {
 		return this.svc.importLeads(rows)
 	}
 
+	// Ответ пагинированный: { items, total, page, limit }.
 	@Get()
-	getLeads(@Query('status') status?: OutreachStatus, @Query('search') search?: string) {
-		return this.svc.getLeads(status, search)
+	getLeads(
+		@Query('status') status?: OutreachStatus,
+		@Query('search') search?: string,
+		@Query('importId') importId?: string,
+		@Query('hasTelegram') hasTelegram?: string,
+		@Query('hasInn') hasInn?: string,
+		@Query('sort') sort?: 'score' | 'createdAt',
+		@Query('page') page?: string,
+		@Query('limit') limit?: string,
+	) {
+		return this.svc.getLeads({
+			status,
+			search,
+			importId,
+			hasTelegram: hasTelegram === 'true' || hasTelegram === '1',
+			hasInn: hasInn === 'true' || hasInn === '1',
+			sort,
+			page: page ? Number(page) : undefined,
+			limit: limit ? Number(limit) : undefined,
+		})
 	}
 
 	@Get('stats')

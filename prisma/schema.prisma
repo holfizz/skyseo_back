@@ -670,9 +670,65 @@ enum OutreachStatus {
   DRAFT      // нет ответа 7 дней
 }
 
+// Один прогон парсера: «купить голден гус» по региону N. Выдача НЕ дублируется
+// в каждом лиде — лид ссылается на прогон, а строки лежат здесь.
+model SerpImport {
+  id        String   @id @default(uuid())
+  query     String // поисковый запрос
+  region    String // регион выдачи (название или код)
+  rowsCount Int      @default(0) // сколько строк выдачи сохранено
+  leadsCount Int     @default(0) // сколько лидов породил прогон
+  createdBy String? // email админа, запустившего прогон
+  createdAt DateTime @default(now())
+
+  rows  SerpRow[]
+  leads OutreachLead[]
+
+  @@index([createdAt])
+  @@map("serp_imports")
+}
+
+// Строка выдачи. Храним ВЕСЬ топ-50, а не только срез 15-50: без верхних позиций
+// не сказать, кто стоит на 9 и 10 месте, а это основа предложения.
+model SerpRow {
+  id       String @id @default(uuid())
+  importId String
+  keyword  String
+  position Int
+  domain   String
+  url      String
+  title    String?
+
+  import SerpImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([importId, keyword, position])
+  @@index([domain])
+  @@map("serp_rows")
+}
+
 model OutreachLead {
   id             String         @id @default(uuid())
   domain         String
+  importId       String? // из какого прогона парсера пришёл
+  // Реквизиты с сайта (см. yandex-leads/src/contacts.py — там контрольные суммы)
+  inn            String?
+  ogrn           String?
+  ogrnip         String?
+  companyName    String?
+  city           String?
+  // ФИО заполняется руками: обращение по имени+отчеству, если отчество есть
+  firstName      String?
+  lastName       String?
+  middleName     String?
+  // Скоринг: чем по большему числу ключей найден и чем выше позиции — тем ценнее
+  keywordsCount  Int            @default(0)
+  bestPosition   Int?
+  score          Int            @default(0)
+  // Конкуренты с 9 и 10 мест по ключам этого лида — основа текста предложения
+  competitors    Json?
+  reportToken    String?        @unique // токен ссылки на PDF-отчёт
+  reportOpenedAt DateTime? // когда отчёт открыли впервые
+  reportOpens    Int            @default(0)
   contact        String?        // главный контакт (телефон / tg / email)
   channel        String?        // WhatsApp / Telegram / Email / —
   phone          String?
@@ -690,7 +746,11 @@ model OutreachLead {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
+  import SerpImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
+
   @@index([status])
+  @@index([score])
+  @@index([importId])
   @@map("outreach_leads")
 }
 

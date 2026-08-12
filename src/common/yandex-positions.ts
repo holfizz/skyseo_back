@@ -229,11 +229,16 @@ async function fetchWordstatOne(
 	user: string,
 	key: string,
 	keyword: string,
+	lr?: number,
 ): Promise<{ value: number | null; error?: string }> {
 	const u = new URL(XMLRIVER_WORDSTAT)
 	u.searchParams.set('user', user)
 	u.searchParams.set('key', key)
 	u.searchParams.set('query', keyword)
+	// Регион обязателен там, где объём показывается рядом с позициями: позиции мы
+	// снимаем по конкретному городу, и всероссийская частотность рядом с ними
+	// вводит в заблуждение — для регионального бизнеса расхождение в разы.
+	if (lr != null) u.searchParams.set('lr', String(lr))
 	for (let attempt = 0; attempt < 4; attempt++) {
 		try {
 			const res = await fetch(u.toString())
@@ -249,10 +254,15 @@ async function fetchWordstatOne(
 				if (isBusy(String(errMsg)) && attempt < 3) { await sleep(1200 * (attempt + 1)); continue }
 				return { value: null, error: String(errMsg).slice(0, 80) }
 			}
-			// popular[] — фразы, содержащие запрос; частота самого запроса = точное совпадение, иначе верхняя.
+			// popular[] — фразы, содержащие запрос. Берём ТОЛЬКО точное совпадение текста.
+			// Раньше при отсутствии совпадения бралась pop[0] — самая популярная фраза
+			// из списка. Это число про ДРУГОЙ запрос, и подмена происходила молча.
+			// Лучше не показать ничего, чем показать чужую цифру: клиент проверит
+			// в Вордстате сам, и расхождение обесценит весь отчёт.
 			const pop: any[] = Array.isArray(j?.popular) ? j.popular : []
 			const exact = pop.find(p => (p?.text || '').trim().toLowerCase() === keyword.trim().toLowerCase())
-			const v = exact ? Number(exact.value) : pop[0] ? Number(pop[0].value) : 0
+			if (!exact) return { value: null, error: 'точной фразы нет в ответе' }
+			const v = Number(exact.value)
 			return { value: Number.isFinite(v) ? v : null }
 		} catch {
 			if (attempt < 3) { await sleep(1000 * (attempt + 1)); continue }
@@ -266,12 +276,13 @@ export async function getWordstatVolumes(opts: {
 	user: string
 	key: string
 	keywords: string[]
+	lr?: number
 	concurrency?: number
 }): Promise<Map<string, { value: number | null; error?: string }>> {
 	const concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : 3
 	const map = new Map<string, { value: number | null; error?: string }>()
 	await mapPool(opts.keywords, concurrency, async kw => {
-		map.set(kw, await fetchWordstatOne(opts.user, opts.key, kw))
+		map.set(kw, await fetchWordstatOne(opts.user, opts.key, kw, opts.lr))
 	})
 	return map
 }
@@ -295,7 +306,7 @@ export async function checkKeywords(opts: {
 	concurrency?: number
 }): Promise<{ depth: number; results: KeywordRow[] }> {
 	// Двумя фазами (сначала объёмы, потом позиции), чтобы не удваивать нагрузку на каналы XMLRiver.
-	const volumes = await getWordstatVolumes({ user: opts.user, key: opts.key, keywords: opts.keywords })
+	const volumes = await getWordstatVolumes({ user: opts.user, key: opts.key, keywords: opts.keywords, lr: opts.lr })
 	const { results: pos, depth } = await checkYandexPositions({
 		user: opts.user,
 		key: opts.key,
