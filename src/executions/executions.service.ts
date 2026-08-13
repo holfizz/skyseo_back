@@ -20,7 +20,6 @@ import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { UsersService } from '../users/users.service'
 import { CompleteExecutionDto, CreditEngineDto, FailExecutionDto, LogExecutionEventDto } from './dto'
-import { isPromotionPaid } from '../common/trial'
 
 @Injectable()
 export class ExecutionsService {
@@ -256,16 +255,13 @@ export class ExecutionsService {
 		const completion = await this.prisma.$transaction(async tx => {
 			const owner = await tx.user.findUnique({
 				where: { id: execution.task.website.userId },
-				select: { paidUntil: true },
+				select: { balance: true },
 			})
-			// Продвижение оплачивается днями подписки, а не баллами: с владельца
-			// не списывается ничего. Исполнитель свои баллы получает как раньше —
-			// это его заработок в сети, который он потом выводит рублями.
-			const promotionPaid = isPromotionPaid(owner?.paidUntil)
+			const ownerBalance = owner?.balance ?? 0
 
-			if (!promotionPaid) {
+			if (ownerBalance < pointsSpent) {
 				console.log(
-					`[ExecutionsService] Продвижение владельца не оплачено (paidUntil истёк). Задача деактивируется.`,
+					`[ExecutionsService] Недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Задача деактивируется.`,
 				)
 				const claimed = await tx.execution.updateMany({
 					where: { id: executionId, status: 'IN_PROGRESS' },
@@ -362,9 +358,21 @@ export class ExecutionsService {
 				})
 			}
 
-			// Владельца не списываем: продвижение оплачено днями подписки, а не баллами.
-			// spentHistoryItems остаются посчитанными — они попадают в строку execution
-			// как статистика стоимости визита, но в баланс владельца больше не идут.
+			await tx.user.update({
+				where: { id: execution.task.website.userId },
+				data: { balance: { increment: -pointsSpent } },
+			})
+			for (const item of spentHistoryItems) {
+				await tx.balanceHistory.create({
+					data: {
+						userId: execution.task.website.userId,
+						amount: item.amount,
+						type: 'TASK_SPENT',
+						description: item.description,
+						taskId: execution.taskId,
+					},
+				})
+			}
 
 			await tx.task.update({
 				where: { id: execution.taskId },
@@ -410,14 +418,16 @@ export class ExecutionsService {
 				}
 			}
 
-			// Порога «низкий баланс» больше нет: продвижение оплачено днями, а не баллами.
-			// О скором конце подписки предупреждает отдельный дожим за день до окончания.
+			// Пересечение порога 300 баллов вниз (для письма «низкий баланс»)
+			const lowBalanceCrossed =
+				pointsSpent > 0 && ownerBalance >= 300 && ownerBalance - pointsSpent < 300
+
 			return {
 				execution: await tx.execution.findUnique({ where: { id: executionId } }),
 				ownerBalanceFailed: false,
 				riseInfo,
-				lowBalanceCrossed: false,
-				ownerBalanceAfter: 0,
+				lowBalanceCrossed,
+				ownerBalanceAfter: ownerBalance - pointsSpent,
 				ownerId: execution.task.website.userId,
 			}
 		})
@@ -525,16 +535,13 @@ export class ExecutionsService {
 
 			const owner = await tx.user.findUnique({
 				where: { id: execution.task.website.userId },
-				select: { paidUntil: true },
+				select: { balance: true },
 			})
-			// Продвижение оплачивается днями подписки, а не баллами: с владельца
-			// не списывается ничего. Исполнитель свои баллы получает как раньше —
-			// это его заработок в сети, который он потом выводит рублями.
-			const promotionPaid = isPromotionPaid(owner?.paidUntil)
+			const ownerBalance = owner?.balance ?? 0
 
-			if (!promotionPaid) {
+			if (ownerBalance < pointsSpent) {
 				console.log(
-					`[ExecutionsService] creditEngine: продвижение владельца не оплачено. Откатываем флаг кредита.`,
+					`[ExecutionsService] creditEngine: недостаточно баллов у владельца (${ownerBalance} < ${pointsSpent}). Откатываем флаг кредита.`,
 				)
 				// Откатываем флаг чтобы не считаться «начисленным»
 				await tx.execution.update({
@@ -571,14 +578,29 @@ export class ExecutionsService {
 				},
 			})
 
-			// Владельца не списываем — оплата днями подписки. Предупреждение о низком
-			// балансе тоже снято: у владельца сайта баланса продвижения больше нет.
-			const lowBalanceCrossed = false
+			// Списание с владельца сайта — только если есть что списывать
+			let lowBalanceCrossed = false
+			if (pointsSpent > 0) {
+				await tx.user.update({
+					where: { id: execution.task.website.userId },
+					data: { balance: { increment: -pointsSpent } },
+				})
+				await tx.balanceHistory.create({
+					data: {
+						userId: execution.task.website.userId,
+						amount: -pointsSpent,
+						type: 'TASK_SPENT',
+						description: `Задача выполнена: ${taskDescription} — ${label} (${resultText})`,
+						taskId: execution.taskId,
+					},
+				})
+				lowBalanceCrossed = ownerBalance >= 300 && ownerBalance - pointsSpent < 300
+			}
 
 			return {
 				credited: true as const,
 				lowBalanceCrossed,
-				ownerBalanceAfter: 0,
+				ownerBalanceAfter: ownerBalance - pointsSpent,
 				ownerId: execution.task.website.userId,
 			}
 		})

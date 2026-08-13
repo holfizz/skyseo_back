@@ -211,6 +211,55 @@ export class UsersService {
 		})
 	}
 
+	/**
+	 * Сколько дней продвижения осталось — для веб-кабинета.
+	 *
+	 * Продвижение оплачивается баллами (так же, как в приложении), поэтому «дни»
+	 * считаются не по календарю, а по расходу: сколько ещё продержится текущий
+	 * баланс при среднем списании за последнюю неделю. Это честный ответ на вопрос
+	 * «сколько мне осталось», в отличие от фиксированных 30 дней.
+	 *
+	 * Если списаний ещё не было (сайт только завели, визиты не пошли), скорость
+	 * расхода неизвестна — возвращаем daysLeft: null, и кабинет показывает баллы
+	 * вместо выдуманного срока.
+	 *
+	 * paidUntil отдаём как есть: если подписка когда-то была проставлена и ещё не
+	 * истекла, кабинет показывает больший из двух сроков.
+	 */
+	async getPromotionStatus(userId: string) {
+		const WINDOW_DAYS = 7
+		const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000)
+
+		const [user, spent] = await Promise.all([
+			this.prisma.user.findUnique({
+				where: { id: userId },
+				select: { balance: true, paidUntil: true, trialStartedAt: true },
+			}),
+			this.prisma.balanceHistory.aggregate({
+				where: { userId, type: 'TASK_SPENT', createdAt: { gte: since } },
+				_sum: { amount: true },
+			}),
+		])
+		if (!user) throw new NotFoundException('Пользователь не найден')
+
+		// TASK_SPENT хранится отрицательным.
+		const spentPerDay = Math.abs(spent._sum.amount ?? 0) / WINDOW_DAYS
+		const bySubscription = daysLeft(user.paidUntil)
+		// Пустой баланс — это ноль дней, а не «неизвестно»: продвижение уже стоит,
+		// и кабинет должен показать это, даже если списаний за неделю не было.
+		const byPoints =
+			user.balance <= 0 ? 0 : spentPerDay > 0 ? Math.floor(user.balance / spentPerDay) : null
+
+		return {
+			balance: user.balance,
+			spentPerDay: Math.round(spentPerDay),
+			paidUntil: user.paidUntil,
+			trialStartedAt: user.trialStartedAt,
+			// Больший из двух сроков: подписка не должна укорачивать запас баллов.
+			daysLeft: byPoints === null ? (bySubscription || null) : Math.max(byPoints, bySubscription),
+		}
+	}
+
 	async countRecentRegistrationsByIp(ip: string): Promise<number> {
 		const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
 		return this.prisma.user.count({

@@ -4,7 +4,7 @@ import { ReportService } from '../report/report.service'
 import { OutreachService } from './outreach.service'
 
 // Публичная ссылка из письма/сообщения — без авторизации.
-// Из-за глобального префикса реальный путь: /v1/api/r/:token (см. reportUrl()).
+// Из-за глобального префикса реальный путь: /v1/api/r/:token.
 // Токен и счётчик открытий держит OutreachService, вёрстку PDF — ReportService.
 @Controller('r')
 export class ReportController {

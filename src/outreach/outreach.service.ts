@@ -2,8 +2,9 @@ import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { OutreachLead, OutreachStatus, Prisma } from '@prisma/client'
-import { newReportToken, reportUrl } from './outreach-import.service'
-import { buildOutreachMessage, MessageCompetitor, MessageKeyword } from './outreach-message'
+import { newReportToken } from './outreach-import.service'
+import { fetchVolumes } from './outreach-wordstat'
+import { buildOutreachMessage, MessageCompetitor, MessageKeyword , sumShownVolume } from './outreach-message'
 
 @Injectable()
 export class OutreachService {
@@ -157,13 +158,21 @@ export class OutreachService {
 			await this.prisma.outreachLead.update({ where: { id: lead.id }, data: { reportToken: token } })
 		}
 
+		const imp = lead.importId
+			? await this.prisma.serpImport.findUnique({ where: { id: lead.importId }, select: { region: true } })
+			: null
+		const volumes = await fetchVolumes(
+			keywords.map(k => k.keyword),
+			imp?.region ?? null,
+		)
+
 		return buildOutreachMessage({
 			domain: lead.domain,
 			firstName: lead.firstName,
 			middleName: lead.middleName,
 			keywords,
 			competitors,
-			reportUrl: reportUrl(token),
+			volume: sumShownVolume(keywords, volumes),
 		})
 	}
 

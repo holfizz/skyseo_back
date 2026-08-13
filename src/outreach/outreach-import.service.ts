@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
 import { randomBytes } from 'crypto'
 import { PrismaService } from '../prisma/prisma.service'
-import { buildOutreachMessage, MessageCompetitor } from './outreach-message'
+import { buildOutreachMessage, MessageCompetitor , sumShownVolume } from './outreach-message'
+import { fetchVolumes } from './outreach-wordstat'
 
 // Импорт прогона парсера (yandex-leads → import.json).
 // Ожидаемый вид тела запроса:
@@ -124,6 +125,10 @@ export class OutreachImportService {
 		})
 		const existingByDomain = new Map(existing.map(l => [normalizeDomain(l.domain), l]))
 
+		// Частотность тянем один раз на весь прогон: запросы у лидов общие,
+		// и на 25 лидов это один вызов вместо двадцати пяти.
+		const volumes = await fetchVolumes([...new Set(rows.map(r => r.keyword))], region)
+
 		const toCreate: any[] = []
 		let updated = 0
 
@@ -182,15 +187,15 @@ export class OutreachImportService {
 				middleName: prev?.middleName,
 				keywords: leadKeywords.map(k => ({ keyword: k.keyword, position: k.position })),
 				competitors,
-				reportUrl: reportUrl(reportToken),
+				volume: sumShownVolume(leadKeywords, volumes),
 			})
 
 			const data = {
 				// у лида из старого импорта домен мог лежать как «www.site.ru» —
 				// приводим к нормальному виду, иначе он не сойдётся с serp_rows
 				domain,
-				// токен пишем и существующему лиду: он уже вставлен в текст сообщения,
-				// а у старых лидов его могло не быть вовсе — иначе ссылка ведёт в никуда
+				// токен пишем и существующему лиду: по нему менеджер скачивает PDF из админки,
+				// а у старых лидов его могло не быть вовсе
 				reportToken,
 				importId: imp.id,
 				...contacts,
@@ -269,14 +274,6 @@ export function scoreLead(input: {
 	return Math.round(clamp(breadth + closeness + contacts + requisites, 0, 100))
 }
 
-export function reportUrl(token: string | null | undefined): string | null {
-	if (!token) return null
-	// Короткий /r/:token заработает, когда в nginx появится отдельный location;
-	// пока публичная ссылка живёт под общим префиксом бэкенда.
-	const base =
-		process.env.OUTREACH_REPORT_BASE_URL || `${process.env.FRONTEND_URL || 'https://skyseo.site'}/v1/api/r`
-	return `${base.replace(/\/+$/, '')}/${token}`
-}
 
 export function newReportToken(): string {
 	return randomBytes(8).toString('base64url')

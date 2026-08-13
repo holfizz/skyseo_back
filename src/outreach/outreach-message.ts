@@ -1,5 +1,9 @@
 // Текст холодного сообщения. Структура утверждена заказчиком — менять нельзя.
 // Отдельно оговорено: НЕ обещаем сроки и НЕ считаем трафик в переходах.
+//
+// В самом тексте не должно быть длинных тире и буквы «ё»: заказчик считает,
+// что они выдают машинный набор. Отчёт лид получает файлом от менеджера,
+// поэтому ссылки в сообщении нет.
 
 export type MessageKeyword = { keyword: string; position: number }
 export type MessageCompetitor = { domain: string; position: number }
@@ -12,10 +16,14 @@ export type MessageInput = {
 	keywords: MessageKeyword[]
 	// домены с 9 и 10 мест по ключам лида
 	competitors: MessageCompetitor[]
-	reportUrl?: string | null
+	// суммарная частотность показанных запросов по Вордстату
+	volume?: number | null
 }
 
 const MAX_KEYWORDS_SHOWN = 3
+
+// Ниже этого порога цифра спроса скорее ослабляет письмо, чем усиливает.
+const MIN_VOLUME_SHOWN = 100
 
 // Обращение: «Имя Отчество» если отчество есть, иначе «Имя», иначе без обращения.
 // ФИО заполняется руками в админке, автоматом его никто не подставляет.
@@ -27,14 +35,23 @@ function greeting(firstName?: string | null, middleName?: string | null): string
 	return 'Здравствуйте!'
 }
 
-// «и ещё 1 запрос, по которому…» / «и ещё 2 запроса, по которым…»
-function restLine(n: number): string {
+/**
+ * Спрос считаем ровно по тем запросам, что попали в текст: если сложить все
+ * ключи лида, цифра разойдётся со списком у него перед глазами.
+ */
+export function sumShownVolume(keywords: MessageKeyword[], volumes: Map<string, number>): number {
+	return keywords
+		.slice(0, MAX_KEYWORDS_SHOWN)
+		.reduce((sum, k) => sum + (volumes.get(k.keyword) ?? 0), 0)
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
 	const mod100 = n % 100
 	const mod10 = n % 10
-	const teen = mod100 >= 11 && mod100 <= 14
-	if (!teen && mod10 === 1) return `и ещё ${n} запрос, по которому можно подняться.`
-	const word = !teen && mod10 >= 2 && mod10 <= 4 ? 'запроса' : 'запросов'
-	return `и ещё ${n} ${word}, по которым можно подняться.`
+	if (mod100 >= 11 && mod100 <= 14) return many
+	if (mod10 === 1) return one
+	if (mod10 >= 2 && mod10 <= 4) return few
+	return many
 }
 
 export function buildOutreachMessage(input: MessageInput): string {
@@ -42,14 +59,13 @@ export function buildOutreachMessage(input: MessageInput): string {
 
 	const shown = input.keywords.slice(0, MAX_KEYWORDS_SHOWN)
 	if (shown.length > 0) {
-		blocks.push(`Смотрел выдачу Яндекса по вашему сайту ${input.domain}:`)
-		blocks.push(shown.map(k => `«${k.keyword}» — ${k.position} место`).join('\n'))
-		// Если ключей ≤ 3 — строку «и ещё N» не выводим вовсе.
-		const rest = input.keywords.length - shown.length
-		if (rest > 0) blocks.push(restLine(rest))
+		blocks.push(
+			`Ваш сайт ${input.domain} есть в выдаче Яндекса:\n` +
+				shown.map(k => `«${k.keyword}» на ${k.position} месте`).join('\n'),
+		)
 	} else {
 		// Ключей нет (лид заведён руками, без прогона парсера) — двоеточие в никуда не ставим.
-		blocks.push(`Смотрел выдачу Яндекса по вашему сайту ${input.domain}.`)
+		blocks.push(`Мы посмотрели, где ваш сайт ${input.domain} стоит в выдаче Яндекса.`)
 	}
 
 	// Позиции берём из данных, а не хардкодим «9 и 10»: если по ключам лида нашлась
@@ -57,15 +73,32 @@ export function buildOutreachMessage(input: MessageInput): string {
 	const rivals = input.competitors.slice(0, 2)
 	if (rivals.length >= 2) {
 		blocks.push(
-			`На ${rivals[0].position} и ${rivals[1].position} месте сейчас ${rivals[0].domain} и ${rivals[1].domain} —\nвас можно поднять на их место.`,
+			`Выше вас, на ${rivals[0].position} и ${rivals[1].position} местах, стоят ${rivals[0].domain} и ${rivals[1].domain}.`,
 		)
 	} else if (rivals.length === 1) {
-		blocks.push(`На ${rivals[0].position} месте сейчас ${rivals[0].domain} —\nвас можно поднять на его место.`)
+		blocks.push(`Выше вас, на ${rivals[0].position} месте, стоит ${rivals[0].domain}.`)
 	}
 
-	if (input.reportUrl) {
-		blocks.push(`Собрал разбор с конкурентами и планом: ${input.reportUrl}. Бесплатно.`)
-	}
+	const volume = input.volume ?? 0
+	const demand =
+		volume >= MIN_VOLUME_SHOWN
+			? ` По этим запросам в Яндексе ищут ${volume.toLocaleString('ru-RU')} ${plural(volume, 'раз', 'раза', 'раз')} в месяц, и сейчас эти люди попадают на сайты выше вашего.`
+			: ''
+	blocks.push(
+		'Мы занимаемся продвижением сайтов в поиске. Это не массовая рассылка: ' +
+			'запросы мы собрали именно по вашему сайту, сняли позиции и посмотрели частотность в Вордстате.' +
+			demand,
+	)
+
+	blocks.push(
+		'Если разрешите, пришлем отчет: где вы сейчас, кто стоит выше и сколько людей ищет ваши услуги. ' +
+			'Бесплатно, оплачивать ничего не нужно.',
+	)
+
+	blocks.push(
+		'Если будет интересно, начнем поднимать сайт в топ-10. Если нет, у вас просто останется ' +
+			'отчет по вашему сайту.',
+	)
 
 	return blocks.join('\n\n')
 }

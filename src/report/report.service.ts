@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { OutreachLead } from '@prisma/client'
+import { domainToUnicode } from 'node:url'
 import { PrismaService } from '../prisma/prisma.service'
 import { renderPdf } from './report.pdf'
 import { renderReportHtml } from './report.template'
@@ -7,6 +8,7 @@ import { ReportCompetitor, ReportData, ReportKeyword } from './report.types'
 import { getWordstatVolumes, resolveRegion } from '../common/yandex-positions'
 
 
+// Всегда ASCII: по этому виду домены лежат в serp_rows и по нему же сверяются.
 function normalizeDomain(raw: string): string {
 	return raw
 		.trim()
@@ -14,6 +16,20 @@ function normalizeDomain(raw: string): string {
 		.replace(/^https?:\/\//, '')
 		.replace(/^www\./, '')
 		.replace(/\/.*$/, '')
+}
+
+// Только для показа: «xn----ctbrxdbmo4cd0b.xn--p1ai» в отчёте выглядит мусором.
+// Сравнения и дедуп остаются на ASCII-виде, иначе кириллический домен не найдётся в базе.
+function displayDomain(host: string): string {
+	return host.includes('xn--') ? domainToUnicode(host) || host : host
+}
+
+// Сервисы самого Яндекса и его карты стоят в выдаче по своим правилам: подниматься
+// «выше Яндекса в Яндексе» нельзя, и в списке конкурентов они только путают.
+const OWN_SERVICES = /(^|\.)(yandex\.(ru|by|kz|com)|ya\.ru)$/
+
+function isRealCompetitor(domain: string): boolean {
+	return !OWN_SERVICES.test(domain)
 }
 
 function safeUrl(url: unknown): string | null {
@@ -59,7 +75,7 @@ function parseCompetitorsJson(raw: unknown): Map<string, ReportCompetitor[]> {
 function toCompetitor(value: unknown): ReportCompetitor | null {
 	if (typeof value === 'string') {
 		const domain = normalizeDomain(value)
-		return domain ? { position: 0, domain, url: `https://${domain}` } : null
+		return domain ? { position: 0, domain: displayDomain(domain), url: `https://${domain}` } : null
 	}
 	if (!value || typeof value !== 'object') return null
 	const node = value as Record<string, unknown>
@@ -69,7 +85,7 @@ function toCompetitor(value: unknown): ReportCompetitor | null {
 	const position = Number(node.position)
 	return {
 		position: Number.isFinite(position) ? position : 0,
-		domain,
+		domain: displayDomain(domain),
 		url: safeUrl(node.url) ?? `https://${domain}`,
 	}
 }
@@ -118,7 +134,7 @@ export class ReportService {
 				})
 			: null
 		return {
-			domain: normalizeDomain(lead.domain),
+			domain: displayDomain(normalizeDomain(lead.domain)),
 			companyName: lead.companyName ?? null,
 			addressee: buildAddressee(lead),
 			keywords: await this.withVolumes(keywords, imp?.region ?? null),
@@ -192,7 +208,7 @@ export class ReportService {
 			const ownPos = best.get(row.keyword)
 			if (ownPos === undefined || row.position >= ownPos) continue // ниже нас — не конкурент
 			const rivalDomain = normalizeDomain(row.domain)
-			if (rivalDomain === target) continue
+			if (rivalDomain === target || !isRealCompetitor(rivalDomain)) continue
 			const dedupe = seen.get(row.keyword) ?? new Set<string>()
 			if (dedupe.has(rivalDomain)) continue // один домен на нескольких url
 			dedupe.add(rivalDomain)
@@ -200,7 +216,7 @@ export class ReportService {
 			const list = rivalsByKeyword.get(row.keyword) ?? []
 			list.push({
 				position: row.position,
-				domain: rivalDomain,
+				domain: displayDomain(rivalDomain),
 				url: safeUrl(row.url) ?? `https://${rivalDomain}`,
 			})
 			rivalsByKeyword.set(row.keyword, list)

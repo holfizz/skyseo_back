@@ -21,7 +21,7 @@ import {
 	NotFoundException,
 } from '@nestjs/common'
 import { AppConfigService } from '../app-config/app-config.service'
-import { isPromotionPaid, maybeStartTrial } from '../common/trial'
+import { maybeStartTrial } from '../common/trial'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -607,7 +607,11 @@ export class TasksService {
 		const candidates = []
 		for (const task of allTasks) {
 			if (task.website.userId === executorId) continue // защита: не свои
-			if (!isPromotionPaid(task.website.user.paidUntil)) continue // подписка кончилась
+			// Продвижение снова оплачивается баллами владельца, как в приложении.
+			// Гейт по подписке (paidUntil) убран: у всех живых аккаунтов дата пуста,
+			// и очередь становилась пустой для всей сети. Дни подписки остаются
+			// отдельным полем для веб-кабинета и ничего здесь не решают.
+			if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) continue
 			const info = siteInfo.get(task.websiteId)
 			if (!info) continue
 			candidates.push({ task, fillRatio: info.fillRatio, foundCount: info.foundCount, boost: info.boost, daysSinceLastVisit: info.daysSinceLastVisit })
@@ -743,7 +747,7 @@ export class TasksService {
 						website: {
 							include: {
 								user: {
-									select: { paidUntil: true },
+									select: { balance: true },
 								},
 							},
 						},
@@ -875,16 +879,20 @@ export class TasksService {
 				}
 				}
 
-				// Гейт оплаты. Стоит СНАРУЖИ `if (!forced)` — как и прежняя проверка баланса,
-				// то есть force-пин его не обходит. Это единственная защита прямого
-				// POST /tasks/:id/assign: выше по коду не проверяются ни isActive,
-				// ни keywordStatus, ни website.isApproved — только status === 'PENDING'.
-				//
-				// Ключи здесь НЕ гасим (раньше ставился isActive:false). Причина: реактивации
-				// после оплаты в коде нет, и на седьмой день у каждого триального юзера ключи
-				// молча выключились бы — он бы оплатил и не получил ничего. Из очереди такого
-				// владельца и так убирает ownerCanPromote в computeAvailability.
-				if (!isPromotionPaid(task.website.user.paidUntil)) {
+				// Гейт баланса. Стоит СНАРУЖИ `if (!forced)`, то есть force-пин его не
+				// обходит. Это единственная защита прямого POST /tasks/:id/assign: выше
+				// по коду не проверяются ни isActive, ни keywordStatus, ни isApproved —
+				// только status === 'PENDING'.
+				if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) {
+					await prisma.task.update({
+						where: { id: taskId },
+						data: {
+							isActive: false,
+							status: 'PENDING',
+							assignedAt: null,
+							assignedExecutorId: null,
+						},
+					})
 					return {
 						task: null,
 						insufficientBalance: true,

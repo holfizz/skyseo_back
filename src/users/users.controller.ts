@@ -26,6 +26,13 @@ export class UsersController {
 		return this.usersService.getBalanceHistory(req.user.id)
 	}
 
+	// Новая ручка для веб-кабинета. Отдельная, а не поле в /users/profile:
+	// профиль читает Electron-приложение, его контракт трогать нельзя.
+	@Get('promotion-status')
+	async getPromotionStatus(@Request() req) {
+		return this.usersService.getPromotionStatus(req.user.id)
+	}
+
 	// Одноразовая привязка реферала из профиля (нельзя изменить после установки)
 	@Post('claim-referral')
 	async claimReferral(@Request() req, @Body('code') code: string) {
