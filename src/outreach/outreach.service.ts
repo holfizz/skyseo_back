@@ -283,18 +283,6 @@ export class OutreachService {
 		}
 	}
 
-	async moveStaleToDraft() {
-		const threshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-		const { count } = await this.prisma.outreachLead.updateMany({
-			where: {
-				status: 'CONTACTED',
-				contactedAt: { lte: threshold },
-			},
-			data: { status: 'DRAFT' },
-		})
-		return count
-	}
-
 	async deleteLead(id: string) {
 		return this.prisma.outreachLead.delete({ where: { id } })
 	}

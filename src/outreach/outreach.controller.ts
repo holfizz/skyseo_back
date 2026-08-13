@@ -68,11 +68,6 @@ export class OutreachController {
 		return this.svc.getConversions()
 	}
 
-	@Post('move-stale')
-	moveStale() {
-		return this.svc.moveStaleToDraft()
-	}
-
 	@Post('bulk-delete')
 	bulkDelete(@Body('ids') ids: string[]) {
 		if (!Array.isArray(ids) || ids.length === 0) return { count: 0 }

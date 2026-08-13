@@ -4,6 +4,7 @@ import { Telegraf } from 'telegraf'
 import { AlertsService } from '../alerts/alerts.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { maybeStartTrial } from '../common/trial'
+import { parseContacts } from '../outreach/contact-parse'
 
 @Injectable()
 export class TelegramService implements OnModuleDestroy {
@@ -171,8 +172,210 @@ export class TelegramService implements OnModuleDestroy {
 		return String(ctx.from?.id) === String(this.adminId)
 	}
 
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// Работа с лидами прямо из бота
+	//
+	// Сценарий: /contact выдаёт один новый лид и показывает готовую команду
+	// «/inn <инн>» — её админ копирует в бот-пробива, чтобы найти телеграм.
+	// Найденное он присылает сюда обратной вставкой: бот разбирает произвольный
+	// текст, дописывает контакты в лида и переводит его в «Отправил».
+	//
+	// ВАЖНО: эти обработчики регистрируются ПЕРВЫМИ и пробрасывают next(), когда
+	// сообщение не про них. Обработчик текста у /spam ниже по файлу обрывает
+	// цепочку без next(), поэтому зарегистрированное после него уже не сработает.
+	// ──────────────────────────────────────────────────────────────────────────
+
+	/** chatId → id лида, для которого ждём вставку контактов. */
+	private contactAwaitingPaste = new Map<number, string>()
+
+	private static readonly LIST_PAGE_SIZE = 8
+
+	private leadCard(lead: any): string {
+		const fio = [lead.lastName, lead.firstName, lead.middleName].filter(Boolean).join(' ')
+		const lines = [
+			`🏢 <b>${lead.companyName || lead.domain}</b>`,
+			`🌐 ${lead.domain}${lead.city ? ` · ${lead.city}` : ''}`,
+		]
+		if (fio) lines.push(`👤 ${fio}`)
+		// <code> в Telegram копируется одним касанием — на это и расчёт.
+		if (lead.inn) lines.push(`\n<code>/inn ${lead.inn}</code>`)
+		const has: string[] = []
+		if (lead.telegram) has.push(lead.telegram)
+		if (lead.phone) has.push(lead.phone)
+		if (has.length) lines.push(`\n📇 уже есть: ${has.join(' · ')}`)
+		return lines.join('\n')
+	}
+
+	private async sendNextContact(ctx: any) {
+		const lead = await this.prisma.outreachLead.findFirst({
+			where: { status: 'NEW' },
+			orderBy: [{ score: 'desc' }, { createdAt: 'asc' }],
+		})
+		if (!lead) {
+			await ctx.reply('🎉 Новых контактов не осталось.')
+			return
+		}
+		await ctx.reply(this.leadCard(lead), {
+			parse_mode: 'HTML',
+			reply_markup: {
+				inline_keyboard: [[
+					{ text: '📥 Вставить', callback_data: `ctpaste_${lead.id}` },
+					{ text: '⏭ Пропустить', callback_data: 'ctnext' },
+				]],
+			},
+		})
+	}
+
+	/** Клавиатура /list: фильтры кружками сверху, листание снизу. */
+	private listKeyboard(filter: string, page: number, hasMore: boolean) {
+		const chip = (id: string, label: string) =>
+			({ text: `${filter === id ? '🔵' : '⚪️'} ${label}`, callback_data: `lst_${id}_0` })
+		const nav: any[] = []
+		if (page > 0) nav.push({ text: '←', callback_data: `lst_${filter}_${page - 1}` })
+		if (hasMore) nav.push({ text: '→', callback_data: `lst_${filter}_${page + 1}` })
+		return {
+			inline_keyboard: nav.length
+				? [[chip('new', 'Новые'), chip('sent', 'Отправил'), chip('all', 'Все')], nav]
+				: [[chip('new', 'Новые'), chip('sent', 'Отправил'), chip('all', 'Все')]],
+		}
+	}
+
+	private async renderList(filter: string, page: number) {
+		const where =
+			filter === 'new' ? { status: 'NEW' as const }
+			: filter === 'sent' ? { status: 'CONTACTED' as const }
+			: {}
+		const size = TelegramService.LIST_PAGE_SIZE
+		const [rows, total] = await Promise.all([
+			this.prisma.outreachLead.findMany({
+				where,
+				orderBy: [{ score: 'desc' }, { createdAt: 'asc' }],
+				skip: page * size,
+				take: size,
+			}),
+			this.prisma.outreachLead.count({ where }),
+		])
+		const title = filter === 'new' ? 'Новые' : filter === 'sent' ? 'Отправил' : 'Все'
+		const pages = Math.max(1, Math.ceil(total / size))
+		const body = rows.length
+			? rows
+					.map(l => {
+						const contact = l.telegram || l.phone?.split(',')[0] || '—'
+						return `• <b>${l.companyName || l.domain}</b>\n  ${l.domain} · ${contact}`
+					})
+					.join('\n')
+			: 'Пусто.'
+		return {
+			text: `📋 <b>${title}</b> — ${total} шт · стр. ${page + 1} из ${pages}\n\n${body}`,
+			keyboard: this.listKeyboard(filter, page, (page + 1) * size < total),
+		}
+	}
+
+	private setupOutreachCommands() {
+		if (!this.bot) return
+
+		// Вставка контактов: ловим текст до обработчика /spam, иначе он оборвёт цепочку.
+		this.bot.on('text', async (ctx, next) => {
+			const chatId = ctx.from?.id
+			const leadId = chatId ? this.contactAwaitingPaste.get(chatId) : undefined
+			if (!leadId || !this.isAdmin(ctx)) return next()
+			this.contactAwaitingPaste.delete(chatId!)
+
+			const { telegram, phones } = parseContacts(ctx.message.text)
+			if (!telegram && phones.length === 0) {
+				await ctx.reply('❌ Ни телеграма, ни телефона в тексте не нашлось. Нажми «Вставить» ещё раз.')
+				return
+			}
+
+			const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId } })
+			if (!lead) {
+				await ctx.reply('❌ Лид не найден, видимо его удалили.')
+				return
+			}
+
+			// Телефоны копим: у лида уже могли быть номера с сайта.
+			const existing = (lead.phone ?? '').split(',').map(p => p.trim()).filter(Boolean)
+			const merged = [...existing]
+			for (const p of phones) if (!merged.includes(p)) merged.push(p)
+
+			await this.prisma.outreachLead.update({
+				where: { id: leadId },
+				data: {
+					telegram: telegram ?? lead.telegram,
+					phone: merged.length ? merged.join(', ') : lead.phone,
+					// Контакт добыт и отправлен — переводим в «Отправил», чтобы он ушёл из новых.
+					status: 'CONTACTED',
+					contactedAt: new Date(),
+				},
+			})
+
+			const saved = [telegram && `тг ${telegram}`, phones.length && `тел ${phones.join(', ')}`]
+				.filter(Boolean)
+				.join(', ')
+			await ctx.reply(
+				`✅ <b>${lead.companyName || lead.domain}</b>\nСохранил: ${saved}\nСтатус → Отправил`,
+				{
+					parse_mode: 'HTML',
+					reply_markup: { inline_keyboard: [[{ text: '➡️ Следующий контакт', callback_data: 'ctnext' }]] },
+				},
+			)
+		})
+
+		// Кнопки /contact и /list — тоже до общего обработчика callback_query.
+		this.bot.on('callback_query', async (ctx, next) => {
+			const data = (ctx.callbackQuery as any).data as string | undefined
+			if (!data || !(data.startsWith('ctpaste_') || data === 'ctnext' || data.startsWith('lst_'))) {
+				return next()
+			}
+			if (!this.isAdmin(ctx)) {
+				await ctx.answerCbQuery('Нет доступа')
+				return
+			}
+
+			if (data.startsWith('ctpaste_')) {
+				const leadId = data.replace('ctpaste_', '')
+				if (ctx.from?.id) this.contactAwaitingPaste.set(ctx.from.id, leadId)
+				await ctx.answerCbQuery()
+				await ctx.reply('📥 Пришли текст с телеграмом и телефоном — разберу сам.')
+				return
+			}
+
+			if (data === 'ctnext') {
+				await ctx.answerCbQuery()
+				await this.sendNextContact(ctx)
+				return
+			}
+
+			// lst_<filter>_<page>
+			const [, filter, pageRaw] = data.split('_')
+			const page = Math.max(0, parseInt(pageRaw, 10) || 0)
+			const { text, keyboard } = await this.renderList(filter, page)
+			await ctx.answerCbQuery()
+			try {
+				await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard })
+			} catch {
+				// Telegram ругается, если текст не изменился — это не ошибка.
+			}
+		})
+
+		this.bot.command('contact', async ctx => {
+			if (!this.isAdmin(ctx)) return
+			await this.sendNextContact(ctx)
+		})
+
+		this.bot.command('list', async ctx => {
+			if (!this.isAdmin(ctx)) return
+			const { text, keyboard } = await this.renderList('new', 0)
+			await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard })
+		})
+	}
+
 	private setupCommands() {
 		if (!this.bot) return
+
+		// Лиды из бота — регистрируем первыми, см. комментарий у setupOutreachCommands.
+		this.setupOutreachCommands()
 
 		// Команда /start
 		this.bot.command('start', async ctx => {
@@ -181,7 +384,9 @@ export class TelegramService implements OnModuleDestroy {
 				'👋 Привет! Я бот SkySEO.\n\n' +
 					'Доступные команды:\n' +
 					'/stats - Общая статистика платформы\n' +
-					'/daily - Статистика за сегодня' + extra,
+					'/daily - Статистика за сегодня\n' +
+					'/contact - Выдать новый контакт\n' +
+					'/list - Список контактов' + extra,
 			)
 		})
 
