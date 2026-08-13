@@ -128,6 +128,11 @@ export class UsersService {
 		throw new BadRequestException('Код не найден')
 	}
 
+	/**
+	 * ВНИМАНИЕ: форма ответа зафиксирована — её читает Electron-приложение (v1.1.0,
+	 * сборка от 09.08.2026). Новые поля добавлять сюда нельзя: для веба есть
+	 * отдельная ручка getPromotionStatus ниже.
+	 */
 	async getProfile(userId: string) {
 		const user = await this.prisma.user.findUnique({
 			where: { id: userId },
@@ -135,8 +140,6 @@ export class UsersService {
 				id: true,
 				email: true,
 				balance: true,
-				paidUntil: true, // до какой даты оплачено продвижение
-				trialStartedAt: true, // старт бесплатной недели; null = ещё не начиналась
 				role: true,
 				roles: true,
 				emailVerified: true,
@@ -159,7 +162,6 @@ export class UsersService {
 			// role остаётся строкой — её читает Electron-приложение, контракт не меняем.
 			// roles — для сайта; для записей до миграции подставляем [role], чтобы массив не был пустым.
 			roles: rolesOf(user),
-			daysLeft: daysLeft(user.paidUntil), // сколько дней продвижения осталось
 			telegramLinked: !!telegramChatId, // привязан ли Telegram-бот уведомлений
 			hasPaid: paidCount > 0, // была ли хоть одна успешная оплата (снимает лимиты)
 		}
@@ -179,8 +181,6 @@ export class UsersService {
 		description: string,
 		taskId?: string,
 	) {
-		// Баллы — валюта участника сети, один кошелёк. Продвижение ими не оплачивается:
-		// веб-версия работает на днях подписки (users.paidUntil).
 		const user = await this.prisma.user.update({
 			where: { id: userId },
 			data: { balance: { increment: amount } },
