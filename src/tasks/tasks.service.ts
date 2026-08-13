@@ -884,15 +884,11 @@ export class TasksService {
 				// по коду не проверяются ни isActive, ни keywordStatus, ни isApproved —
 				// только status === 'PENDING'.
 				if (task.website.user.balance < this.getTaskOwnerMaxCost(task, pts)) {
-					await prisma.task.update({
-						where: { id: taskId },
-						data: {
-							isActive: false,
-							status: 'PENDING',
-							assignedAt: null,
-							assignedExecutorId: null,
-						},
-					})
+					// Ключ НЕ гасим (раньше ставился isActive:false). Гашение необратимо:
+					// пути обратной активации в коде нет, поэтому владелец, ушедший в ноль,
+					// терял ключи навсегда — оплата их уже не воскрешала. Из очереди его
+					// и так убирает фильтр по балансу в computeAvailability, а как только
+					// баланс пополнен, ключ снова начинает выдаваться сам.
 					return {
 						task: null,
 						insufficientBalance: true,

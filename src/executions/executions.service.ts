@@ -278,10 +278,11 @@ export class ExecutionsService {
 						pointsSpent: 0,
 					},
 				})
+				// Ключ НЕ гасим, только снимаем бронь: гашение необратимо, а из очереди
+				// владельца без баллов убирает фильтр в computeAvailability.
 				await tx.task.update({
 					where: { id: execution.taskId },
 					data: {
-						isActive: false,
 						status: 'PENDING',
 						assignedAt: null,
 						assignedExecutorId: null,
