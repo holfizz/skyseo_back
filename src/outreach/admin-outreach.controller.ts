@@ -27,6 +27,13 @@ export class AdminOutreachController {
 		return this.imports.listImports()
 	}
 
+	// Пересобрать тексты у всех лидов по текущему шаблону. Нужно после правки
+	// формулировок: на импорте текст записывается один раз и сам не обновляется.
+	@Post('rebuild-messages')
+	rebuildMessages() {
+		return this.outreach.rebuildMessages()
+	}
+
 	@Get(':id/message')
 	getMessage(@Param('id') id: string) {
 		return this.outreach.getMessage(id)

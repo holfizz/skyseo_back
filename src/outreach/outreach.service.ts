@@ -131,9 +131,36 @@ export class OutreachService {
 	}
 
 	// Текст холодного сообщения по шаблону (см. outreach-message.ts).
+	//
+	// Пересобранный текст сразу кладём в лида. Иначе в карточке виден свежий вариант,
+	// а в списке, выгрузке и письме — тот, что записался на импорте: после правки
+	// шаблона они расходятся, и менеджер отправляет устаревшую формулировку.
 	async getMessage(id: string) {
 		const lead = await this.prisma.outreachLead.findUniqueOrThrow({ where: { id } })
-		return { message: await this.buildMessage(lead) }
+		const message = await this.buildMessage(lead)
+		if (message !== lead.message) {
+			await this.prisma.outreachLead.update({ where: { id }, data: { message } })
+		}
+		return { message }
+	}
+
+	/**
+	 * Пересобрать тексты у всех лидов по текущему шаблону.
+	 *
+	 * Идём последовательно, а не через Promise.all: buildMessage дёргает Вордстат,
+	 * и параллельный залп по всей базе упрётся в лимиты XMLRiver. Лидов десятки,
+	 * так что скорость здесь не важна.
+	 */
+	async rebuildMessages() {
+		const leads = await this.prisma.outreachLead.findMany({ orderBy: { createdAt: 'asc' } })
+		let updated = 0
+		for (const lead of leads) {
+			const message = await this.buildMessage(lead)
+			if (message === lead.message) continue
+			await this.prisma.outreachLead.update({ where: { id: lead.id }, data: { message } })
+			updated++
+		}
+		return { total: leads.length, updated }
 	}
 
 	private async buildMessage(lead: OutreachLead): Promise<string> {
