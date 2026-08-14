@@ -22,7 +22,11 @@ async function bootstrap() {
 		'172.16.0.0/12', // Docker networks
 		'10.0.0.0/8', // Private networks
 		'192.168.0.0/16', // Private networks
-		'193.242.106.50', // зеркало i.skyseo.site — доверяем X-Forwarded-For от него
+		// Зеркало i.skyseo.site: доверяем его X-Forwarded-For, иначе все запросы
+		// через него придут с одного адреса и упрутся в лимит регистраций по IP
+		// (countRecentRegistrationsByIp), а registrationIp будет адресом зеркала.
+		'109.107.173.48',
+		'193.242.106.50', // прежнее зеркало, сервер больше не отвечает
 	])
 
 	app.use(helmet({

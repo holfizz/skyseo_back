@@ -4,7 +4,6 @@ import { lookupPromoCode } from '../auth/promo-codes'
 import { normalizeRoles, rolesOf, type RoleName } from '../common/roles'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
-import { daysLeft } from '../common/trial'
 
 @Injectable()
 export class UsersService {
@@ -129,9 +128,18 @@ export class UsersService {
 	}
 
 	/**
-	 * ВНИМАНИЕ: форма ответа зафиксирована — её читает Electron-приложение (v1.1.0,
-	 * сборка от 09.08.2026). Новые поля добавлять сюда нельзя: для веба есть
-	 * отдельная ручка getPromotionStatus ниже.
+	 * Профиль пользователя. Читают ДВА клиента с разными требованиями:
+	 *
+	 *  1. Electron-приложение (v1.1.0, сборка 09.08.2026) — берёт отсюда balance.
+	 *     Его пересобрать нельзя, поэтому набор полей менять запрещено: убирать
+	 *     существующие нельзя, а новые оно просто игнорирует.
+	 *  2. Веб-кабинет — читает daysLeft. Поле ниже помечено как совместимость:
+	 *     новый код кабинета берёт остаток из getPromotionStatus, но пока старая
+	 *     сборка фронта живёт на проде, убирать daysLeft отсюда НЕЛЬЗЯ — кабинет
+	 *     получит undefined, покажет «0 дней» и пейволл. Это ровно то, что уже
+	 *     один раз сломало сайт после выката бэка без фронта.
+	 *
+	 * Правило: бэк должен деплоиться в любом порядке с фронтом.
 	 */
 	async getProfile(userId: string) {
 		const user = await this.prisma.user.findUnique({
@@ -156,12 +164,23 @@ export class UsersService {
 		const paidCount = await this.prisma.payment.count({
 			where: { userId, status: 'SUCCEEDED' },
 		})
+		// Дни для сайта считаем по расходу баллов (см. promotionDaysLeft).
+		// null приводим к 0: старый кабинет ждёт число.
+		const { days } = await this.promotionDaysLeft(userId, user.balance)
+		const promoDays = days ?? 0
+
 		const { telegramChatId, ...rest } = user
 		return {
 			...rest,
 			// role остаётся строкой — её читает Electron-приложение, контракт не меняем.
 			// roles — для сайта; для записей до миграции подставляем [role], чтобы массив не был пустым.
 			roles: rolesOf(user),
+			// СОВМЕСТИМОСТЬ для старой сборки веб-кабинета: она читает дни отсюда.
+			// Считаем тем же способом, что и promotion-status — по расходу баллов,
+			// без календаря. Иначе сайт показывал бы 29–30 дней всем подряд, потому
+			// что paidUntil у всех выставлен на месяц вперёд.
+			// Приложение это поле игнорирует, ему нужен только balance.
+			daysLeft: promoDays,
 			telegramLinked: !!telegramChatId, // привязан ли Telegram-бот уведомлений
 			hasPaid: paidCount > 0, // была ли хоть одна успешная оплата (снимает лимиты)
 		}
@@ -212,51 +231,50 @@ export class UsersService {
 	}
 
 	/**
-	 * Сколько дней продвижения осталось — для веб-кабинета.
+	 * Сколько дней продвижения осталось. Считается ТОЛЬКО по расходу баллов:
+	 * продвижение оплачивается ими и в приложении, и на сайте, поэтому календарь
+	 * (users.paidUntil) в расчёт не входит вообще. Раньше он входил через
+	 * Math.max и всегда перебивал реальный запас — у всех была дата «месяц вперёд»,
+	 * и кабинет показывал 29–30 дней независимо от баланса.
 	 *
-	 * Продвижение оплачивается баллами (так же, как в приложении), поэтому «дни»
-	 * считаются не по календарю, а по расходу: сколько ещё продержится текущий
-	 * баланс при среднем списании за последнюю неделю. Это честный ответ на вопрос
-	 * «сколько мне осталось», в отличие от фиксированных 30 дней.
-	 *
-	 * Если списаний ещё не было (сайт только завели, визиты не пошли), скорость
-	 * расхода неизвестна — возвращаем daysLeft: null, и кабинет показывает баллы
-	 * вместо выдуманного срока.
-	 *
-	 * paidUntil отдаём как есть: если подписка когда-то была проставлена и ещё не
-	 * истекла, кабинет показывает больший из двух сроков.
+	 * null = списаний ещё не было, скорость расхода неизвестна, срок посчитать
+	 * не из чего. Кабинет в этом случае показывает сам баланс, а не выдуманный срок.
+	 * Пустой баланс — это ноль дней, а не «неизвестно»: продвижение уже стоит.
 	 */
-	async getPromotionStatus(userId: string) {
+	private async promotionDaysLeft(userId: string, balance: number): Promise<{ days: number | null; spentPerDay: number }> {
 		const WINDOW_DAYS = 7
 		const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000)
-
-		const [user, spent] = await Promise.all([
-			this.prisma.user.findUnique({
-				where: { id: userId },
-				select: { balance: true, paidUntil: true, trialStartedAt: true },
-			}),
-			this.prisma.balanceHistory.aggregate({
-				where: { userId, type: 'TASK_SPENT', createdAt: { gte: since } },
-				_sum: { amount: true },
-			}),
-		])
-		if (!user) throw new NotFoundException('Пользователь не найден')
-
+		const spent = await this.prisma.balanceHistory.aggregate({
+			where: { userId, type: 'TASK_SPENT', createdAt: { gte: since } },
+			_sum: { amount: true },
+		})
 		// TASK_SPENT хранится отрицательным.
 		const spentPerDay = Math.abs(spent._sum.amount ?? 0) / WINDOW_DAYS
-		const bySubscription = daysLeft(user.paidUntil)
-		// Пустой баланс — это ноль дней, а не «неизвестно»: продвижение уже стоит,
-		// и кабинет должен показать это, даже если списаний за неделю не было.
-		const byPoints =
-			user.balance <= 0 ? 0 : spentPerDay > 0 ? Math.floor(user.balance / spentPerDay) : null
+		if (balance <= 0) return { days: 0, spentPerDay }
+		if (spentPerDay <= 0) return { days: null, spentPerDay }
+		return { days: Math.floor(balance / spentPerDay), spentPerDay }
+	}
 
+	/**
+	 * Остаток продвижения для веб-кабинета. Приложение эту ручку не знает и не зовёт:
+	 * в нём остаются баллы (users/profile.balance), а дни — только на сайте.
+	 */
+	async getPromotionStatus(userId: string) {
+		const user = await this.prisma.user.findUnique({
+			where: { id: userId },
+			select: { balance: true, paidUntil: true, trialStartedAt: true },
+		})
+		if (!user) throw new NotFoundException('Пользователь не найден')
+
+		const { days, spentPerDay } = await this.promotionDaysLeft(userId, user.balance)
 		return {
 			balance: user.balance,
 			spentPerDay: Math.round(spentPerDay),
+			// Даты отдаём для баннеров про бесплатную неделю. На число дней они
+			// НЕ влияют — иначе вернётся календарь, который мы отсюда и убрали.
 			paidUntil: user.paidUntil,
 			trialStartedAt: user.trialStartedAt,
-			// Больший из двух сроков: подписка не должна укорачивать запас баллов.
-			daysLeft: byPoints === null ? (bySubscription || null) : Math.max(byPoints, bySubscription),
+			daysLeft: days,
 		}
 	}
 
