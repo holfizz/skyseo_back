@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { AppStatus, UserType } from '@prisma/client'
 import { lookupPromoCode } from '../auth/promo-codes'
 import { normalizeRoles, rolesOf, type RoleName } from '../common/roles'
+import { daysLeft as calendarDaysLeft } from '../common/trial'
 import { NotificationsService } from '../notifications/notifications.service'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -151,6 +152,7 @@ export class UsersService {
 				role: true,
 				roles: true,
 				emailVerified: true,
+				paidUntil: true,
 				referralSource: true,
 				referralCode: true,
 				referredBy: true,
@@ -166,8 +168,7 @@ export class UsersService {
 		})
 		// Дни для сайта считаем по расходу баллов (см. promotionDaysLeft).
 		// null приводим к 0: старый кабинет ждёт число.
-		const { days } = await this.promotionDaysLeft(userId, user.balance)
-		const promoDays = days ?? 0
+		const { days: promoDays } = await this.promotionDaysLeft(userId, user.paidUntil)
 
 		const { telegramChatId, ...rest } = user
 		return {
@@ -231,17 +232,27 @@ export class UsersService {
 	}
 
 	/**
-	 * Сколько дней продвижения осталось. Считается ТОЛЬКО по расходу баллов:
-	 * продвижение оплачивается ими и в приложении, и на сайте, поэтому календарь
-	 * (users.paidUntil) в расчёт не входит вообще. Раньше он входил через
-	 * Math.max и всегда перебивал реальный запас — у всех была дата «месяц вперёд»,
-	 * и кабинет показывал 29–30 дней независимо от баланса.
+	 * Сколько дней продвижения осталось. Считается ТОЛЬКО по календарю подписки
+	 * (users.paidUntil): клиент покупает период, а не баллы, и в кабинете должен
+	 * видеть свой срок.
 	 *
-	 * null = списаний ещё не было, скорость расхода неизвестна, срок посчитать
-	 * не из чего. Кабинет в этом случае показывает сам баланс, а не выдуманный срок.
-	 * Пустой баланс — это ноль дней, а не «неизвестно»: продвижение уже стоит.
+	 * Раньше здесь было деление баланса на скорость расхода баллов. Цифра врала тем
+	 * сильнее, чем медленнее крутился сайт: при 17 баллах в сутки кабинет показывал
+	 * 557 дней вместо трёх недель оплаченного срока.
+	 *
+	 * ВНИМАНИЕ при возврате назад: у расчёта по баллам была своя причина — paidUntil
+	 * был выставлен «месяц вперёд» одинаково всем, и календарь показывал 29–30 дней
+	 * независимо от реальности. Календарь честен ровно настолько, насколько честны
+	 * даты в базе.
+	 *
+	 * 0 дней = не оплачено (null или прошедшая дата) — кабинет показывает пейволл.
+	 * spentPerDay остаётся в ответе /users/promotion-status как справочная цифра
+	 * и на число дней больше не влияет.
 	 */
-	private async promotionDaysLeft(userId: string, balance: number): Promise<{ days: number | null; spentPerDay: number }> {
+	private async promotionDaysLeft(
+		userId: string,
+		paidUntil: Date | null,
+	): Promise<{ days: number; spentPerDay: number }> {
 		const WINDOW_DAYS = 7
 		const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000)
 		const spent = await this.prisma.balanceHistory.aggregate({
@@ -250,9 +261,7 @@ export class UsersService {
 		})
 		// TASK_SPENT хранится отрицательным.
 		const spentPerDay = Math.abs(spent._sum.amount ?? 0) / WINDOW_DAYS
-		if (balance <= 0) return { days: 0, spentPerDay }
-		if (spentPerDay <= 0) return { days: null, spentPerDay }
-		return { days: Math.floor(balance / spentPerDay), spentPerDay }
+		return { days: calendarDaysLeft(paidUntil), spentPerDay }
 	}
 
 	/**
@@ -266,7 +275,7 @@ export class UsersService {
 		})
 		if (!user) throw new NotFoundException('Пользователь не найден')
 
-		const { days, spentPerDay } = await this.promotionDaysLeft(userId, user.balance)
+		const { days, spentPerDay } = await this.promotionDaysLeft(userId, user.paidUntil)
 		return {
 			balance: user.balance,
 			spentPerDay: Math.round(spentPerDay),
