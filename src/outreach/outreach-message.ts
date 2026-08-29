@@ -102,3 +102,25 @@ export function buildOutreachMessage(input: MessageInput): string {
 
 	return blocks.join('\n\n')
 }
+
+/**
+ * Открывающее сообщение — первое касание в Telegram.
+ *
+ * Текст утверждён заказчиком дословно, менять формулировки нельзя. Смысл: не
+ * продавать с порога, а спросить разрешения на разговор. Позиции и конкуренты
+ * идут вторым сообщением, после согласия.
+ *
+ * Обращение здесь своё: «Имя Отчество, здравствуйте!» — имя первым, иначе
+ * читается как шаблон. Поэтому greeting() не переиспользуется.
+ *
+ * Последняя строка «Я по работе» обязательна: без неё сообщение от незнакомого
+ * аккаунта читается как личное и его закрывают, не дочитав.
+ */
+export function buildOpeningMessage(input: MessageInput): string {
+	const first = input.firstName?.trim()
+	const middle = input.middleName?.trim()
+	const name = [first, middle].filter(Boolean).join(' ')
+	const hello = name ? `${name}, здравствуйте!` : 'Здравствуйте!'
+
+	return `${hello}\n\nМогу с вами пообщаться по поводу вашего сайта - ${input.domain}\nЯ по работе`
+}

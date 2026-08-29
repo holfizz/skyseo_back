@@ -10,55 +10,55 @@ datasource db {
 }
 
 model User {
-  id                     String    @id @default(uuid())
-  email                  String    @unique
-  password               String
+  id                        String    @id @default(uuid())
+  email                     String    @unique
+  password                  String
   // Баллы — валюта УЧАСТНИКА СЕТИ: копятся за прокрутку чужих сайтов в приложении
   // и выводятся рублями. Продвижение своего сайта за них НЕ оплачивается —
   // веб-версия работает на днях подписки (paidUntil). Имя поля не менять:
   // его читает Electron-приложение, которое обновляется тяжело.
-  balance                Int       @default(1000) // Приветственный бонус 1000 баллов
+  balance                   Int       @default(1000) // Приветственный бонус 1000 баллов
   // До какой даты оплачено продвижение. Единственный источник правды для гейта:
   // триал ставит +7 дней, оплата продлевает на месяц. null = продвижение не оплачено.
-  paidUntil              DateTime?
+  paidUntil                 DateTime?
   // Старт бесплатной недели. Ставится ОДИН раз, по позднему из двух событий:
   // создан первый ключ И сайт одобрен админом. Нужен для баннера первых 3 дней
   // и для дожима за день до конца. Никогда не сбрасывается.
-  trialStartedAt         DateTime?
+  trialStartedAt            DateTime?
   // Письмо «неделя прошла» — шлётся ОДИН раз за всё время, как winbackEmailSentAt.
-  trialEndEmailSentAt    DateTime?
+  trialEndEmailSentAt       DateTime?
   // ВАЖНО: role и roles живут вместе и всегда синхронны.
   //   role  — «главная» роль, ВСЕГДА равна roles[0]. Её читает старый код и Electron-приложение.
   //           Никогда не удалять: приложение обновляется тяжело, ломать контракт нельзя.
   //   roles — источник правды для сайта. Несколько ролей = несколько разделов в CRM.
   // Менять роли только через UsersService.setRoles() — он пишет оба поля разом.
-  role                   Role      @default(USER)
-  roles                  Role[]    @default([])
-  userType               UserType? // Кто вы: маркетолог, SEO, предприниматель, стартапер
-  referralSource         String? // Откуда узнал
-  referralCode           String?   @unique // Реферальный код пользователя
-  referredBy             String? // ID пользователя, который пригласил
-  marketingCode          String? // Код SMM-поста (utm_campaign) из трекинг-ссылки; ставится напрямую при регистрации (фоллбэк — по IP)
-  promoCode              String? // Промокод, введённый при регистрации (для трекинга источников/партнёров)
-  city                   String? // Город пользователя
-  isActive               Boolean   @default(true)
-  isSuspicious           Boolean   @default(false) // Флаг подозрительной активности
-  emailVerified          Boolean   @default(false) // Подтверждение email
-  emailVerificationToken String?   @unique // Токен для подтверждения email
-  lastLoginIp            String? // Последний IP входа
-  lastSeenAt             DateTime? // Обновляется ТОЛЬКО heartbeat'ом приложения (app-only), не при веб-логине. На этом строится инференс appStatus
-  registrationIp         String? // IP регистрации
-  failedLoginAttempts    Int       @default(0) // Неудачные попытки входа
-  lastFailedLogin        DateTime? // Последняя неудачная попытка
-  appVersion             String? // Версия приложения пользователя
-  appStatus              AppStatus @default(NEVER)
-  appLastLoginAt         DateTime? // Последний логин с приложения (не с веб)
-  uninstallToken         String?   @unique // Стабильный токен для beacon-пинга от деинсталлятора Windows
-  winbackEmailSentAt     DateTime? // win-back: письмо «вернись +500» отправлено (один раз за всё время)
-  winbackBonusGrantedAt  DateTime? // win-back: бонус +500 за возвращение начислен (один раз за всё время)
-  weeklyReportEnabled    Boolean   @default(true) // Получать еженедельный отчёт
-  aiAnalysesCount        Int       @default(0) // Количество выполненных AI-анализов
-  priorityBoost          Int       @default(1) // Множитель приоритета в очереди задач (1 = норма, выше = чаще)
+  role                      Role      @default(USER)
+  roles                     Role[]    @default([])
+  userType                  UserType? // Кто вы: маркетолог, SEO, предприниматель, стартапер
+  referralSource            String? // Откуда узнал
+  referralCode              String?   @unique // Реферальный код пользователя
+  referredBy                String? // ID пользователя, который пригласил
+  marketingCode             String? // Код SMM-поста (utm_campaign) из трекинг-ссылки; ставится напрямую при регистрации (фоллбэк — по IP)
+  promoCode                 String? // Промокод, введённый при регистрации (для трекинга источников/партнёров)
+  city                      String? // Город пользователя
+  isActive                  Boolean   @default(true)
+  isSuspicious              Boolean   @default(false) // Флаг подозрительной активности
+  emailVerified             Boolean   @default(false) // Подтверждение email
+  emailVerificationToken    String?   @unique // Токен для подтверждения email
+  lastLoginIp               String? // Последний IP входа
+  lastSeenAt                DateTime? // Обновляется ТОЛЬКО heartbeat'ом приложения (app-only), не при веб-логине. На этом строится инференс appStatus
+  registrationIp            String? // IP регистрации
+  failedLoginAttempts       Int       @default(0) // Неудачные попытки входа
+  lastFailedLogin           DateTime? // Последняя неудачная попытка
+  appVersion                String? // Версия приложения пользователя
+  appStatus                 AppStatus @default(NEVER)
+  appLastLoginAt            DateTime? // Последний логин с приложения (не с веб)
+  uninstallToken            String?   @unique // Стабильный токен для beacon-пинга от деинсталлятора Windows
+  winbackEmailSentAt        DateTime? // win-back: письмо «вернись +500» отправлено (один раз за всё время)
+  winbackBonusGrantedAt     DateTime? // win-back: бонус +500 за возвращение начислен (один раз за всё время)
+  weeklyReportEnabled       Boolean   @default(true) // Получать еженедельный отчёт
+  aiAnalysesCount           Int       @default(0) // Количество выполненных AI-анализов
+  priorityBoost             Int       @default(1) // Множитель приоритета в очереди задач (1 = норма, выше = чаще)
   // Привязка Telegram-бота уведомлений (@skyseo_notification_bot)
   telegramChatId            String?   @unique // chat_id пользователя в боте уведомлений; null = не привязан
   telegramUsername          String? // @username на момент привязки (для отображения в админке)
@@ -66,8 +66,8 @@ model User {
   telegramLinkCodeExpiresAt DateTime? // Срок годности кода привязки
   telegramLinkedAt          DateTime? // Когда привязал бота
   telegramContact           String? // Telegram-контакт, указанный при регистрации (необязательное поле)
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   websites            Website[]
   executions          Execution[]
@@ -77,6 +77,7 @@ model User {
   clientNotes         ClientNote[]         @relation("ClientNotes")
   captchaEvents       CaptchaEvent[]
   dailyRewards        DailyReward[]
+  outreachTouches     OutreachTouch[]
 
   @@index([registrationIp, createdAt])
   @@index([marketingCode])
@@ -84,20 +85,20 @@ model User {
 }
 
 model Website {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   userId            String
   name              String
   url               String
   city              String?
-  isActive          Boolean  @default(true)
-  isApproved        Boolean  @default(false) // true после одобрения админом; пока false — не попадает в выдачу задач
+  isActive          Boolean   @default(true)
+  isApproved        Boolean   @default(false) // true после одобрения админом; пока false — не попадает в выдачу задач
   approvedAt        DateTime? // Когда одобрен. Нужен для старта бесплатной недели: она тикает от одобрения, а не от добавления сайта
-  isRestricted      Boolean  @default(false) // true если отклонён — показывает баннер "вы ограничены" у юзера
+  isRestricted      Boolean   @default(false) // true если отклонён — показывает баннер "вы ограничены" у юзера
   dailyVisitsTarget Int? // Опциональный явный потолок визитов на сайт в сутки. Null = сумма target'ов всех активных ключей.
-  autoMaxVisits     Boolean  @default(false) // Крутить всегда по максимуму сети (ceil(среднее ПК/день / 14)), динамически растёт с сетью
-  adPolicy          String   @default("EXCLUDE") // Что открывать в выдаче Яндекса: EXCLUDE — не заходить на промо (реклама), ONLY — только промо, ALL — и то и другое
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  autoMaxVisits     Boolean   @default(false) // Крутить всегда по максимуму сети (ceil(среднее ПК/день / 14)), динамически растёт с сетью
+  adPolicy          String    @default("EXCLUDE") // Что открывать в выдаче Яндекса: EXCLUDE — не заходить на промо (реклама), ONLY — только промо, ALL — и то и другое
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   tasks      Task[]
@@ -108,32 +109,32 @@ model Website {
 }
 
 model Task {
-  id               String     @id @default(uuid())
-  websiteId        String
-  type             TaskType
-  keyword          String? // Для поиска
-  targetUrl        String? // Точный URL страницы для поиска (если задан — матчим по нему, иначе по домену)
-  externalUrl      String? // Для внешних ссылок
-  geo              String     @default("Москва") // Город для выполнения
-  status           TaskStatus @default(PENDING)
-  pointsCost       Int        @default(10) // Стоимость задачи
-  priority         Int        @default(0)
-  maxYandexVisits  Int        @default(3) // Максимум посещений из Яндекса в сутки
-  maxGoogleVisits  Int        @default(3) // Максимум посещений из Google в сутки
-  useYandex        Boolean    @default(true) // Использовать Яндекс
-  useGoogle        Boolean    @default(true) // Использовать Google
-  pagesDepthFrom   Int        @default(3) // Минимальная глубина просмотра страниц
-  pagesDepthTo     Int        @default(5) // Максимальная глубина просмотра страниц
-  pageDurationFrom Int        @default(60) // Минимальная длительность просмотра страницы (сек)
-  pageDurationTo   Int        @default(180) // Максимальная длительность просмотра страницы (сек)
-  isActive         Boolean    @default(true)
-  keywordStatus    KeywordRestrictionStatus @default(ACTIVE)
+  id                   String                   @id @default(uuid())
+  websiteId            String
+  type                 TaskType
+  keyword              String? // Для поиска
+  targetUrl            String? // Точный URL страницы для поиска (если задан — матчим по нему, иначе по домену)
+  externalUrl          String? // Для внешних ссылок
+  geo                  String                   @default("Москва") // Город для выполнения
+  status               TaskStatus               @default(PENDING)
+  pointsCost           Int                      @default(10) // Стоимость задачи
+  priority             Int                      @default(0)
+  maxYandexVisits      Int                      @default(3) // Максимум посещений из Яндекса в сутки
+  maxGoogleVisits      Int                      @default(3) // Максимум посещений из Google в сутки
+  useYandex            Boolean                  @default(true) // Использовать Яндекс
+  useGoogle            Boolean                  @default(true) // Использовать Google
+  pagesDepthFrom       Int                      @default(3) // Минимальная глубина просмотра страниц
+  pagesDepthTo         Int                      @default(5) // Максимальная глубина просмотра страниц
+  pageDurationFrom     Int                      @default(60) // Минимальная длительность просмотра страницы (сек)
+  pageDurationTo       Int                      @default(180) // Максимальная длительность просмотра страницы (сек)
+  isActive             Boolean                  @default(true)
+  keywordStatus        KeywordRestrictionStatus @default(ACTIVE)
   notifiedBestPosition Int? // Лучшая позиция в Яндексе, о которой уже уведомляли (для писем о росте только на новый рекорд). Стартовое значение = первая замеренная позиция (baseline, без письма)
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-  assignedAt         DateTime?
-  assignedExecutorId String?
-  completedAt        DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  assignedAt           DateTime?
+  assignedExecutorId   String?
+  completedAt          DateTime?
 
   website         Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   executions      Execution[]
@@ -170,35 +171,35 @@ model PinnedTask {
 }
 
 model Execution {
-  id            String          @id @default(uuid())
-  taskId        String
-  executorId    String
-  websiteId     String?
-  status        ExecutionStatus @default(IN_PROGRESS)
-  pointsEarned  Int             @default(0)
-  pointsSpent   Int             @default(0)
-  foundInTop    Boolean?
-  position      Int?
-  yandexFoundInTop Boolean?
-  googleFoundInTop Boolean?
-  yandexPosition   Int?
-  googlePosition   Int?
-  yandexCreditedAt DateTime?
-  googleCreditedAt DateTime?
-  failureReason    FailureReason?
-  targetVisited     Boolean         @default(false)
-  directNavigationUsed Boolean      @default(false)
-  completionKind    ExecutionCompletionKind?
-  pagesVisited  Int             @default(0)
-  duration      Int             @default(0)
-  ipAddress     String?
-  userAgent     String?
-  weekStart     DateTime?
-  createdAt     DateTime        @default(now())
-  completedAt   DateTime?
+  id                   String                   @id @default(uuid())
+  taskId               String
+  executorId           String
+  websiteId            String?
+  status               ExecutionStatus          @default(IN_PROGRESS)
+  pointsEarned         Int                      @default(0)
+  pointsSpent          Int                      @default(0)
+  foundInTop           Boolean?
+  position             Int?
+  yandexFoundInTop     Boolean?
+  googleFoundInTop     Boolean?
+  yandexPosition       Int?
+  googlePosition       Int?
+  yandexCreditedAt     DateTime?
+  googleCreditedAt     DateTime?
+  failureReason        FailureReason?
+  targetVisited        Boolean                  @default(false)
+  directNavigationUsed Boolean                  @default(false)
+  completionKind       ExecutionCompletionKind?
+  pagesVisited         Int                      @default(0)
+  duration             Int                      @default(0)
+  ipAddress            String?
+  userAgent            String?
+  weekStart            DateTime?
+  createdAt            DateTime                 @default(now())
+  completedAt          DateTime?
 
-  task     Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  executor User @relation(fields: [executorId], references: [id], onDelete: Cascade)
+  task     Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  executor User             @relation(fields: [executorId], references: [id], onDelete: Cascade)
   events   ExecutionEvent[]
 
   @@index([executorId, websiteId, weekStart])
@@ -231,7 +232,7 @@ model ExecutionEvent {
 model CaptchaEvent {
   id        String   @id @default(uuid())
   userId    String
-  engine    String   // "yandex" | "google"
+  engine    String // "yandex" | "google"
   resolved  Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -284,17 +285,17 @@ model PositionHistory {
 // Отдельный time-series от PositionHistory (которая пишется визитами приложения) —
 // накладывается на те же графики третьей линией. Сохраняется КАЖДАЯ проверка.
 model KeywordCheck {
-  id            String   @id @default(uuid())
-  websiteId     String
-  taskId        String? // связь с ключом-задачей (если ключ совпал)
-  keyword       String
-  position      Int? // позиция в Яндексе по XMLRiver (null = вне глубины проверки)
-  url           String? // страница, которая ранжируется
-  volume        Int? // частотность Wordstat на момент проверки
-  lr            Int // код региона Яндекса
-  city          String
+  id             String   @id @default(uuid())
+  websiteId      String
+  taskId         String? // связь с ключом-задачей (если ключ совпал)
+  keyword        String
+  position       Int? // позиция в Яндексе по XMLRiver (null = вне глубины проверки)
+  url            String? // страница, которая ранжируется
+  volume         Int? // частотность Wordstat на момент проверки
+  lr             Int // код региона Яндекса
+  city           String
   createdByEmail String?
-  checkedAt     DateTime @default(now())
+  checkedAt      DateTime @default(now())
 
   @@index([websiteId, checkedAt])
   @@index([taskId, checkedAt])
@@ -378,7 +379,7 @@ model Payment {
   externalId      String?       @unique // ID платежа в YooKassa
   confirmationUrl String?
   offerSentAt     DateTime? // Когда отправили письмо/TG со скидкой на брошенный (PENDING) платёж
-  discountToken   String?   @unique // Токен для ссылки «оплатить со скидкой 10%» (одноразовый)
+  discountToken   String?       @unique // Токен для ссылки «оплатить со скидкой 10%» (одноразовый)
   issuedBy        String? // email менеджера/админа, вручную проведшего платёж (provider=manual). null = обычная онлайн-оплата
   createdAt       DateTime      @default(now())
   paidAt          DateTime?
@@ -423,17 +424,17 @@ model AppVersion {
 
 model PageEvent {
   id          String   @id @default(uuid())
-  type        String   // "visit" | "download" | "register"
-  page        String?  // "/" | "/promo" | etc.
+  type        String // "visit" | "download" | "register"
+  page        String? // "/" | "/promo" | etc.
   utmSource   String?
   utmMedium   String?
   utmCampaign String?
   utmTerm     String?
   utmContent  String?
   referrer    String?
-  platform    String?  // "mac-arm64" | "mac-x64" | "windows"
+  platform    String? // "mac-arm64" | "mac-x64" | "windows"
   ip          String?
-  ref         String?  // referralCode пригласившего (из ?ref= в реф-ссылке) — для IP-атрибуции
+  ref         String? // referralCode пригласившего (из ?ref= в реф-ссылке) — для IP-атрибуции
   createdAt   DateTime @default(now())
 
   @@index([type, createdAt])
@@ -527,8 +528,8 @@ enum PaymentStatus {
 }
 
 enum AppStatus {
-  NEVER       // Никогда не запускал приложение
-  ACTIVE      // Приложение установлено и активно
+  NEVER // Никогда не запускал приложение
+  ACTIVE // Приложение установлено и активно
   UNINSTALLED // Приложение удалено
   REINSTALLED // Приложение переустановлено после удаления
 }
@@ -540,7 +541,7 @@ model PromoCode {
   description  String? // источник трафика — для напоминания себе
   isActive     Boolean  @default(true)
   budgetAmount Decimal? @db.Decimal(10, 2) // общий бюджет кампании ИЛИ ₽ за инстал — в зависимости от budgetMode
-  budgetMode   String   @default("total")  // "total" | "per_install"
+  budgetMode   String   @default("total") // "total" | "per_install"
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -600,18 +601,18 @@ model TelegramAdChannel {
   id          String    @id @default(uuid())
   link        String
   name        String?
-  postText    String?   // текст рекламного поста
-  promoCode   String?   // промокод для отслеживания конверсий
+  postText    String? // текст рекламного поста
+  promoCode   String? // промокод для отслеживания конверсий
   postedAt    DateTime? // дата выкладки поста
   isActive    Boolean   @default(false) // флаг «начали работать»
-  adReturn    Int?      // рекламная отдача ₽
+  adReturn    Int? // рекламная отдача ₽
   subscribers Int?
-  reach24     Int?      // охваты за 24ч
-  err24       Int?      // ERR (сырое значение из скрапера)
-  postCost    Int?      // стоимость поста ₽
+  reach24     Int? // охваты за 24ч
+  err24       Int? // ERR (сырое значение из скрапера)
+  postCost    Int? // стоимость поста ₽
   isAuthor    Boolean   @default(false)
   shouldBuy   Boolean   @default(false)
-  about       String?   // описание канала (из TGStat)
+  about       String? // описание канала (из TGStat)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -661,23 +662,23 @@ enum Platform {
 
 // Аутрич-лиды из Яндекс-парсера
 enum OutreachStatus {
-  NEW          // импортирован, ещё не писали
-  CONTACTED    // отправил
-  INTERESTED   // заинтересовался
-  REJECTED     // отказался
-  PAID         // оплатил
+  NEW // импортирован, ещё не писали
+  CONTACTED // отправил
+  INTERESTED // заинтересовался
+  REJECTED // отказался
+  PAID // оплатил
 }
 
 // Один прогон парсера: «купить голден гус» по региону N. Выдача НЕ дублируется
 // в каждом лиде — лид ссылается на прогон, а строки лежат здесь.
 model SerpImport {
-  id        String   @id @default(uuid())
-  query     String // поисковый запрос
-  region    String // регион выдачи (название или код)
-  rowsCount Int      @default(0) // сколько строк выдачи сохранено
-  leadsCount Int     @default(0) // сколько лидов породил прогон
-  createdBy String? // email админа, запустившего прогон
-  createdAt DateTime @default(now())
+  id         String   @id @default(uuid())
+  query      String // поисковый запрос
+  region     String // регион выдачи (название или код)
+  rowsCount  Int      @default(0) // сколько строк выдачи сохранено
+  leadsCount Int      @default(0) // сколько лидов породил прогон
+  createdBy  String? // email админа, запустившего прогон
+  createdAt  DateTime @default(now())
 
   rows  SerpRow[]
   leads OutreachLead[]
@@ -689,7 +690,7 @@ model SerpImport {
 // Строка выдачи. Храним ВЕСЬ топ-50, а не только срез 15-50: без верхних позиций
 // не сказать, кто стоит на 9 и 10 месте, а это основа предложения.
 model SerpRow {
-  id       String @id @default(uuid())
+  id       String  @id @default(uuid())
   importId String
   keyword  String
   position Int
@@ -727,17 +728,17 @@ model OutreachLead {
   reportToken    String?        @unique // токен ссылки на PDF-отчёт
   reportOpenedAt DateTime? // когда отчёт открыли впервые
   reportOpens    Int            @default(0)
-  contact        String?        // главный контакт (телефон / tg / email)
-  channel        String?        // WhatsApp / Telegram / Email / —
+  contact        String? // главный контакт (телефон / tg / email)
+  channel        String? // WhatsApp / Telegram / Email / —
   phone          String?
   whatsapp       String?
   telegram       String?
   email          String?
-  keywords       String?        // список запросов и позиций
+  keywords       String? // список запросов и позиций
   message        String         @db.Text
   status         OutreachStatus @default(NEW)
-  contactedAt    DateTime?      // когда отправили
-  contactedVia   String?        // email / tg
+  contactedAt    DateTime? // когда отправили
+  contactedVia   String? // email / tg
   emailsSent     Int            @default(0)
   tgLinkClicked  Int            @default(0)
   notes          String?
@@ -745,6 +746,8 @@ model OutreachLead {
   updatedAt      DateTime       @updatedAt
 
   import SerpImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
+
+  touches OutreachTouch[]
 
   @@index([status])
   @@index([score])
@@ -759,23 +762,23 @@ model OutreachLead {
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum CrmRole {
-  ADMIN    // видит всё: всех сотрудников, кто что делает, подозрительные действия
+  ADMIN // видит всё: всех сотрудников, кто что делает, подозрительные действия
   EMPLOYEE // сотрудник: видит свои задачи/клиентов и общий пул
 }
 
 enum CrmClientStatus {
-  LEAD        // лид
+  LEAD // лид
   NEGOTIATION // переговоры
-  ACTIVE      // в работе
-  PAUSED      // на паузе
-  CHURNED     // ушёл
+  ACTIVE // в работе
+  PAUSED // на паузе
+  CHURNED // ушёл
 }
 
 enum CrmTaskStatus {
-  DRAFT       // черновик
-  TODO        // к выполнению
+  DRAFT // черновик
+  TODO // к выполнению
   IN_PROGRESS // в работе
-  DONE        // готово
+  DONE // готово
 }
 
 // Участник CRM. Заводится автоматически при первом входе через Telegram Mini App,
@@ -812,22 +815,22 @@ model CrmUser {
 // Карточка клиента в CRM. Можно связать с аккаунтом платформы (userId → users.id),
 // тогда подтягиваются его сайты/ключи/позиции/визиты.
 model CrmClient {
-  id         String          @id @default(uuid())
-  title      String // название/имя клиента
-  company    String?
-  phone      String?
-  email      String?
-  telegram   String?
-  website    String?
-  status     CrmClientStatus @default(LEAD)
-  notes      String? // краткое описание/контекст
-  userId     String? // связь с аккаунтом платформы (users.id). Не FK: платформенный User живёт своей жизнью
-  assigneeId String? // ответственный сотрудник CRM
+  id          String          @id @default(uuid())
+  title       String // название/имя клиента
+  company     String?
+  phone       String?
+  email       String?
+  telegram    String?
+  website     String?
+  status      CrmClientStatus @default(LEAD)
+  notes       String? // краткое описание/контекст
+  userId      String? // связь с аккаунтом платформы (users.id). Не FK: платформенный User живёт своей жизнью
+  assigneeId  String? // ответственный сотрудник CRM
   createdById String?
-  funnelId   String? // воронка, в которой находится клиент
-  stageId    String? // этап воронки (колонка канбана)
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  funnelId    String? // воронка, в которой находится клиент
+  stageId     String? // этап воронки (колонка канбана)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   assignee  CrmUser?        @relation("CrmClientAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   createdBy CrmUser?        @relation("CrmClientCreator", fields: [createdById], references: [id], onDelete: SetNull)
@@ -1030,19 +1033,19 @@ model CrmDeal {
 // CrmActivity — нужна дедупликация «одному юзеру одна карточка» через @unique
 // и понятный набор полей для статистики конверсии триала.
 model TrialOutreach {
-  id        String              @id @default(uuid())
-  userId    String              @unique // платформенный users.id — гарантия «одна карточка на юзера»
-  email     String // денормализовано: чтобы список не джойнить
-  telegram  String? // @username на момент отправки карточки
-  websiteUrl String? // сайт, о котором шла речь
-  visits    Int                 @default(0) // успешных визитов за триал — попало в текст сообщения
-  keywords  Int                 @default(0) // сколько ключей было у сайта
+  id          String              @id @default(uuid())
+  userId      String              @unique // платформенный users.id — гарантия «одна карточка на юзера»
+  email       String // денормализовано: чтобы список не джойнить
+  telegram    String? // @username на момент отправки карточки
+  websiteUrl  String? // сайт, о котором шла речь
+  visits      Int                 @default(0) // успешных визитов за триал — попало в текст сообщения
+  keywords    Int                 @default(0) // сколько ключей было у сайта
   trialEndsAt DateTime // когда заканчивалась бесплатная неделя
-  status    TrialOutreachStatus @default(QUEUED)
-  handledBy String? // crm_users.id того, кто нажал кнопку
-  handledAt DateTime?
-  note      String? // причина неудачи, если ассистентка отметила «не получилось»
-  createdAt DateTime            @default(now())
+  status      TrialOutreachStatus @default(QUEUED)
+  handledBy   String? // crm_users.id того, кто нажал кнопку
+  handledAt   DateTime?
+  note        String? // причина неудачи, если ассистентка отметила «не получилось»
+  createdAt   DateTime            @default(now())
 
   @@index([status, createdAt])
   @@map("trial_outreach")
@@ -1056,17 +1059,72 @@ enum TrialOutreachStatus {
 }
 
 model Tariff {
-  id          String    @id @default(uuid())
+  id          String   @id @default(uuid())
   name        String // «Старт», «Продвижение», «Максимум»
   description String?
-  points      Int       @default(0) // сколько баллов даёт
-  price       Int       @default(0) // сколько стоит, ₽
-  isActive    Boolean   @default(true)
-  position    Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  points      Int      @default(0) // сколько баллов даёт
+  price       Int      @default(0) // сколько стоит, ₽
+  isActive    Boolean  @default(true)
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   deals CrmDeal[]
 
   @@map("tariffs")
+}
+
+// ── План до зимы: 17 недельных спринтов ────────────────────────────────────
+// Цифры редактируются в админке, поэтому лежат в базе, а не в коде.
+// Дневная норма хранится отдельно от недельной: неделя — то, что спрашивается
+// по итогу, день — ориентир для менеджера внутри недели.
+model Sprint {
+  id            String   @id @default(uuid())
+  number        Int      @unique // 1..17
+  startsOn      DateTime @db.Date
+  endsOn        DateTime @db.Date
+  focus         String // фокус недели
+  messagesWeek  Int // план первых сообщений за неделю
+  messagesDay   Int // ориентир на день
+  networkTarget Int // сколько ПК в сети к концу недели
+  updatedAt     DateTime @updatedAt
+
+  review SprintReview?
+
+  @@index([startsOn])
+  @@map("sprints")
+}
+
+// Факт отправки. Отдельная таблица, а не поле у лида: нужна дата каждой
+// отправки для дневной аналитики, и нужно различать первое сообщение (охват
+// новой аудитории — по нему считается план) и второе (ответ на интерес).
+model OutreachTouch {
+  id        String   @id @default(uuid())
+  leadId    String
+  userId    String // кто отправил
+  step      Int // 1 = первое сообщение, 2 = второе
+  createdAt DateTime @default(now())
+
+  lead OutreachLead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Одно и то же сообщение одному лиду дважды не засчитывается.
+  @@unique([leadId, step])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@map("outreach_touches")
+}
+
+// Разбор недели. Пишется каждое воскресенье, уходит в Telegram админу.
+model SprintReview {
+  id        String    @id @default(uuid())
+  sprintId  String    @unique
+  comment   String // почему не сделано / что сработало
+  authorId  String
+  sentAt    DateTime? // когда ушло в бот
+  createdAt DateTime  @default(now())
+
+  sprint Sprint @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+
+  @@map("sprint_reviews")
 }

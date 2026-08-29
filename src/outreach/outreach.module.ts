@@ -12,5 +12,6 @@ import { ReportController } from './report.controller'
 	imports: [MulterModule.register({ limits: { fileSize: 20 * 1024 * 1024 } }), NotificationsModule, ReportModule],
 	controllers: [OutreachController, AdminOutreachController, ReportController],
 	providers: [OutreachService, OutreachImportService],
+	exports: [OutreachService], // нужен кабинету менеджера для текстов сообщений
 })
 export class OutreachModule {}

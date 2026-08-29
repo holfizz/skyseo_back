@@ -4,7 +4,7 @@ import { NotificationsService } from '../notifications/notifications.service'
 import { OutreachLead, OutreachStatus, Prisma } from '@prisma/client'
 import { newReportToken } from './outreach-import.service'
 import { fetchVolumes } from './outreach-wordstat'
-import { buildOutreachMessage, MessageCompetitor, MessageKeyword , sumShownVolume } from './outreach-message'
+import { buildOpeningMessage, buildOutreachMessage, MessageCompetitor, MessageKeyword, sumShownVolume } from './outreach-message'
 
 @Injectable()
 export class OutreachService {
@@ -145,6 +145,24 @@ export class OutreachService {
 	}
 
 	/**
+	 * Открывающее сообщение — первое касание. В лиде не храним: оно короткое,
+	 * собирается из тех же данных и нужно ровно один раз, перед отправкой.
+	 */
+	async getOpeningMessage(id: string) {
+		const lead = await this.prisma.outreachLead.findUniqueOrThrow({ where: { id } })
+		const keywords = await this.leadKeywords(lead)
+		return {
+			message: buildOpeningMessage({
+				domain: lead.domain,
+				firstName: lead.firstName,
+				middleName: lead.middleName,
+				keywords,
+				competitors: [],
+			}),
+		}
+	}
+
+	/**
 	 * Пересобрать тексты у всех лидов по текущему шаблону.
 	 *
 	 * Идём последовательно, а не через Promise.all: buildMessage дёргает Вордстат,
@@ -163,19 +181,21 @@ export class OutreachService {
 		return { total: leads.length, updated }
 	}
 
+	/** Ключи лида с лучшими позициями — из выдачи того прогона, откуда он пришёл. */
+	private async leadKeywords(lead: OutreachLead): Promise<MessageKeyword[]> {
+		if (!lead.importId) return []
+		const rows = await this.prisma.serpRow.findMany({
+			where: { importId: lead.importId, domain: lead.domain },
+			orderBy: { position: 'asc' },
+			select: { keyword: true, position: true },
+		})
+		const best = new Map<string, MessageKeyword>()
+		for (const r of rows) if (!best.has(r.keyword)) best.set(r.keyword, r)
+		return Array.from(best.values())
+	}
+
 	private async buildMessage(lead: OutreachLead): Promise<string> {
-		// Ключи и позиции берём из выдачи того прогона, из которого пришёл лид.
-		let keywords: MessageKeyword[] = []
-		if (lead.importId) {
-			const rows = await this.prisma.serpRow.findMany({
-				where: { importId: lead.importId, domain: lead.domain },
-				orderBy: { position: 'asc' },
-				select: { keyword: true, position: true },
-			})
-			const best = new Map<string, MessageKeyword>()
-			for (const r of rows) if (!best.has(r.keyword)) best.set(r.keyword, r)
-			keywords = Array.from(best.values())
-		}
+		const keywords = await this.leadKeywords(lead)
 		const competitors = (Array.isArray(lead.competitors) ? lead.competitors : []) as MessageCompetitor[]
 
 		// Токен у старых лидов мог не проставиться при заведении — выдаём при первом обращении.

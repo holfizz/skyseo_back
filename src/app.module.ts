@@ -4,6 +4,8 @@ import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler'
 import { AdminModule } from './admin/admin.module'
 import { OutreachModule } from './outreach/outreach.module'
+import { ManagerModule } from './manager/manager.module'
+import { SprintModule } from './sprint/sprint.module'
 import { InboxModule } from './inbox/inbox.module'
 import { AiModule } from './ai/ai.module'
 import { AnalyticsModule } from './analytics/analytics.module'
@@ -13,7 +15,6 @@ import { AuthModule } from './auth/auth.module'
 import { CrmModule } from './crm/crm.module'
 import { ExecutionsModule } from './executions/executions.module'
 import { HealthModule } from './health/health.module'
-import { ManagerModule } from './manager/manager.module'
 import { AlertsModule } from './alerts/alerts.module'
 import { NotifyBotModule } from './notify-bot/notify-bot.module'
 import { NotificationsModule } from './notifications/notifications.module'
@@ -56,6 +57,7 @@ import { TrialModule } from './trial/trial.module'
 		SmmModule,
 		ManagerModule,
 		OutreachModule,
+		SprintModule,
 		InboxModule,
 		AnalyticsModule,
 		UpdatesModule,

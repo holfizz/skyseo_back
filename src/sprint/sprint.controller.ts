@@ -1,0 +1,64 @@
+import { Body, Controller, Get, Param, Post, Put, Query, Request, UseGuards } from '@nestjs/common'
+import { JwtAuthGuard } from '../auth/jwt-auth.guard'
+import { AdminGuard } from '../admin/admin.guard'
+import { SprintGuard } from './sprint.guard'
+import { SprintService } from './sprint.service'
+
+/**
+ * Кабинет менеджера: план на день, очередь контактов, разбор недели.
+ *
+ * Префикс /manager свободен: прежний кабинет менеджера удалён, его работа
+ * переехала в CRM (см. комментарий в manager.module.ts). ManagerService оттуда
+ * — про карточки клиентов и к этому кабинету отношения не имеет.
+ */
+@Controller('manager')
+@UseGuards(JwtAuthGuard, SprintGuard)
+export class SprintController {
+	constructor(private svc: SprintService) {}
+
+	@Get('dashboard')
+	dashboard() {
+		return this.svc.getDashboard()
+	}
+
+	@Get('queue')
+	queue(@Query('limit') limit?: string) {
+		return this.svc.getQueue(limit ? Number(limit) : undefined)
+	}
+
+	@Post('sent')
+	markSent(@Request() req, @Body() body: { leadId: string; step: number }) {
+		return this.svc.markSent(req.user.id, body.leadId, Number(body.step))
+	}
+
+	@Post('review')
+	review(@Request() req, @Body() body: { sprintId: string; comment: string }) {
+		return this.svc.submitReview(req.user.id, body.sprintId, body.comment)
+	}
+}
+
+// Админская часть: KPI и правка целей. Отдельный контроллер — другой доступ.
+@Controller('admin')
+@UseGuards(JwtAuthGuard, AdminGuard)
+export class SprintAdminController {
+	constructor(private svc: SprintService) {}
+
+	@Get('kpi')
+	kpi() {
+		return this.svc.getKpi()
+	}
+
+	@Get('sprints')
+	sprints() {
+		return this.svc.listSprints()
+	}
+
+	/** Правка целей: и недельной, и дневной, и по сети. */
+	@Put('sprints/:id')
+	updateSprint(
+		@Param('id') id: string,
+		@Body() body: { messagesWeek?: number; messagesDay?: number; networkTarget?: number; focus?: string },
+	) {
+		return this.svc.updateSprint(id, body)
+	}
+}

@@ -102,7 +102,18 @@ export const KEY_SERP_PARSE_GOOGLE_LINKS = 'serp_parse_google_links'
 export const DEFAULT_SERP_PARSE_YANDEX_ITEM = 'li[data-cid]'
 export const DEFAULT_SERP_PARSE_YANDEX_TITLE = 'a.OrganicTitle-Link'
 export const DEFAULT_SERP_PARSE_GOOGLE_ROOT = '#rso'
-export const DEFAULT_SERP_PARSE_GOOGLE_LINKS = '.yuRUbf > a, .tF2Cxc a[href], .g a[jsname][href], div[data-hveid] a[href*="/url?q="]'
+// 14.08.2026 Google ослепил разбор на 86% ПК: между .yuRUbf и ссылкой появились
+// две новые обёртки, и прежний '.yuRUbf > a' (ПРЯМОЙ ребёнок) перестал совпадать.
+// Проверено на живой выдаче:
+//   h3.LC20lb → a.zReHs[href] → span.V9tjod → div.b8lM7 → div.yuRUbf
+// Берём потомка на любой глубине — вложенность больше не важна. Вторая ветка
+// 'a:has(h3)' независима от классов вообще: у органики заголовок всегда в h3
+// внутри ссылки. Обе дают ровно по 10 результатов и один и тот же набор.
+//
+// '.tF2Cxc a[href]' НЕ возвращать: на живой странице он даёт 19 ссылок вместо 10
+// и сдвигает позиции. Широкие ветки ('.g a[jsname]', 'div[data-hveid] a[href*=…]')
+// убраны по той же причине.
+export const DEFAULT_SERP_PARSE_GOOGLE_LINKS = '.yuRUbf a[href], a:has(h3)'
 
 @Injectable()
 export class AppConfigService {
@@ -273,7 +284,10 @@ export class AppConfigService {
 			const t = String(v).trim()
 			if (!t) throw new BadRequestException(`${field}: пустое значение`)
 			if (t.length > 500) throw new BadRequestException(`${field}: слишком длинно`)
-			if (/[<>\n\r]/.test(t)) throw new BadRequestException(`${field}: недопустимые символы`)
+			// '>' НЕ запрещаем: это дочерний комбинатор CSS, он есть в самом дефолте
+			// ('.yuRUbf > a'), и запрет делал дефолт невводимым через админку — в инцидент
+			// с Google это мешало откатить селектор обратно.
+			if (/[<\n\r]/.test(t)) throw new BadRequestException(`${field}: недопустимые символы`)
 			return t
 		}
 		const textOk = (v: string | null, field: string) => {
