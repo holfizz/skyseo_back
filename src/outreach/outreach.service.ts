@@ -4,7 +4,7 @@ import { NotificationsService } from '../notifications/notifications.service'
 import { OutreachLead, OutreachStatus, Prisma } from '@prisma/client'
 import { newReportToken } from './outreach-import.service'
 import { fetchVolumes } from './outreach-wordstat'
-import { buildOpeningMessage, buildOutreachMessage, MessageCompetitor, MessageKeyword, sumShownVolume } from './outreach-message'
+import { buildOpeningMessage, buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN, MessageCompetitor, MessageKeyword, sumShownVolume } from './outreach-message'
 
 @Injectable()
 export class OutreachService {
@@ -189,9 +189,16 @@ export class OutreachService {
 			orderBy: { position: 'asc' },
 			select: { keyword: true, position: true },
 		})
+		// rows отсортированы по возрастанию, поэтому первая строка ключа — лучшая позиция.
+		// Фильтруем ИМЕННО по лучшей, а не в SQL: в старых прогонах выдача бралась
+		// без группировки по домену, и один сайт занимал по ключу десятки строк.
+		// Отбор в запросе выбрал бы из них строку в окне и написал «вы на 17 месте»
+		// тому, кто по этому же ключу стоит первым.
 		const best = new Map<string, MessageKeyword>()
 		for (const r of rows) if (!best.has(r.keyword)) best.set(r.keyword, r)
-		return Array.from(best.values())
+		return Array.from(best.values()).filter(
+			k => k.position >= MESSAGE_POSITION_MIN && k.position <= MESSAGE_POSITION_MAX,
+		)
 	}
 
 	private async buildMessage(lead: OutreachLead): Promise<string> {
