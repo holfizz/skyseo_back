@@ -39,6 +39,16 @@ export class AdminOutreachController {
 		return this.outreach.getMessage(id)
 	}
 
+	/**
+	 * Открывающее сообщение — первое касание, которое уходит ДО основного.
+	 * В базе не хранится: фраза про день недели зависит от того, когда его
+	 * открыли, поэтому собирается на каждый запрос (см. buildOpeningMessage).
+	 */
+	@Get(':id/opening')
+	getOpening(@Param('id') id: string) {
+		return this.outreach.getOpeningMessage(id)
+	}
+
 	@Patch(':id')
 	update(
 		@Param('id') id: string,
