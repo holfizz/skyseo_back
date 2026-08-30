@@ -733,6 +733,10 @@ model OutreachLead {
   phone          String?
   whatsapp       String?
   telegram       String?
+  // true = хэндл вписан руками в админке. Менеджеру в очередь попадают ТОЛЬКО такие:
+  // спарсенные со страниц телеграмы почти всегда каналы и боты, а не владелец,
+  // и рассылка по ним жжёт аккаунт менеджера впустую. Флаг ставится в updateLead.
+  telegramManual Boolean        @default(false)
   email          String?
   keywords       String? // список запросов и позиций
   message        String         @db.Text

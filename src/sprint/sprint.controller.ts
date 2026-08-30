@@ -48,6 +48,12 @@ export class SprintController {
 	 * и добавление роли MANAGER туда открыло бы ей около шестидесяти админских роутов.
 	 * Сама логика не дублируется, зовём готовый ManagerService.issuePayment.
 	 */
+	/** Сменить статус лида. Менеджеру доступен только статус, остальную карточку правит админ. */
+	@Post('leads/:id/status')
+	setLeadStatus(@Param('id') id: string, @Body() body: { status: string }) {
+		return this.svc.setLeadStatus(id, body?.status)
+	}
+
 	@Post('clients/:id/points')
 	issuePoints(
 		@Param('id') clientId: string,

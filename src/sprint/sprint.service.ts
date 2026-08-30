@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { OutreachService } from '../outreach/outreach.service'
 import { TelegramService } from '../telegram/telegram.service'
@@ -150,38 +151,85 @@ export class SprintService {
 	}
 
 	/**
-	 * Очередь на сегодня. Две пачки:
-	 *   step1 — кому ещё не писали (по ним считается план),
-	 *   step2 — кто ответил (статус «заинтересовался»), но второе письмо не ушло.
-	 * Тексты собираются тем же генератором, что и в админке.
+	 * Очередь менеджера тремя этапами. Отмеченный контакт НЕ исчезает, а переезжает
+	 * в следующую группу: раньше после отметки лид пропадал из обеих выборок, если
+	 * ещё не ответил, и менеджер терял его из виду совсем.
+	 *
+	 *   1. Стартовое сообщение — первое касание ещё не отправлено
+	 *   2. Второе сообщение    — первое отправлено, лид в работе
+	 *   3. Оплатил             — статус PAID, финал воронки
+	 *
+	 * Отказавшихся не показываем ни в первой, ни во второй группе: писать им больше
+	 * нечего, но и удалять их из базы нельзя, они нужны в статистике.
 	 */
 	async getQueue(limit = 20) {
-		const [fresh, replied] = await Promise.all([
+		// Общее условие: только хэндлы, вписанные руками (см. telegramManual в схеме).
+		const reachable: Prisma.OutreachLeadWhereInput = {
+			telegramManual: true,
+			telegram: { not: null },
+			NOT: { telegram: '' },
+		}
+		// Отказавшихся и оплативших в рабочих группах не показываем.
+		const active: Prisma.EnumOutreachStatusFilter = { notIn: ['PAID', 'REJECTED'] }
+
+		const [first, second, paid] = await Promise.all([
 			this.prisma.outreachLead.findMany({
-				where: { touches: { none: { step: 1 } }, telegram: { not: null }, NOT: { telegram: '' } },
+				where: { ...reachable, status: active, touches: { none: { step: 1 } } },
 				orderBy: [{ score: 'desc' }, { createdAt: 'asc' }],
 				take: limit,
+				include: { touches: { select: { step: true } } },
 			}),
 			this.prisma.outreachLead.findMany({
-				where: { status: 'INTERESTED', touches: { some: { step: 1 } }, NOT: { touches: { some: { step: 2 } } } },
+				where: { ...reachable, status: active, touches: { some: { step: 1 } } },
 				orderBy: { updatedAt: 'desc' },
 				take: limit,
+				include: { touches: { select: { step: true } } },
+			}),
+			this.prisma.outreachLead.findMany({
+				where: { ...reachable, status: 'PAID' },
+				orderBy: { updatedAt: 'desc' },
+				take: limit,
+				include: { touches: { select: { step: true } } },
 			}),
 		])
+
 		return {
-			fresh: await Promise.all(fresh.map(l => this.card(l, 1))),
-			replied: await Promise.all(replied.map(l => this.card(l, 2))),
+			first: await Promise.all(first.map(l => this.card(l, 1))),
+			second: await Promise.all(second.map(l => this.card(l, 2))),
+			paid: await Promise.all(paid.map(l => this.card(l, 2))),
 		}
 	}
 
 	private async card(lead: any, step: 1 | 2) {
-		const text = step === 1
-			? (await this.outreach.getOpeningMessage(lead.id)).message
-			: (await this.outreach.getMessage(lead.id)).message
-		const tg = (lead.telegram || '').replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '')
+		const opening = (await this.outreach.getOpeningMessage(lead.id)).message
+		// Второе сообщение пересобираем только тогда, когда его действительно шлют.
+		// Для карточек первого шага показываем сохранённый текст: свежая сборка
+		// каждого лида дёргает Вордстат по всем его ключам, и очередь из двадцати
+		// карточек превращалась бы в шестьдесят запросов на каждое открытие.
+		// Пустой message бывает у лидов, заведённых мимо импорта: там текст никто не
+		// собирал. Тогда строим на месте, иначе менеджер увидит пустой блок.
+		const second =
+			step === 2 || !lead.message
+				? (await this.outreach.getMessage(lead.id)).message
+				: lead.message
+		const text = step === 1 ? opening : second
+		// В поле бывает несколько хэндлов через запятую («@company_bot, @ceo»).
+		// Раньше строка шла в ссылку целиком, и получалось t.me/@a, @b — битый адрес.
+		// Берём первый и чистим от префиксов.
+		const tg = (lead.telegram || '')
+			.split(',')[0]
+			.trim()
+			.replace(/^https?:\/\/t\.me\//, '')
+			.replace(/^@/, '')
+			.trim()
+		const steps: number[] = (lead.touches ?? []).map((t: any) => t.step)
 		return {
 			id: lead.id,
 			domain: lead.domain,
+			// Что уже отправлено — чтобы карточка во второй группе показывала,
+			// ждём ли мы ответа на первое или второе уже ушло.
+			firstSent: steps.includes(1),
+			secondSent: steps.includes(2),
 			companyName: lead.companyName,
 			fio: [lead.lastName, lead.firstName, lead.middleName].filter(Boolean).join(' ') || null,
 			telegram: tg ? '@' + tg : null,
@@ -189,7 +237,48 @@ export class SprintService {
 			status: lead.status,
 			step,
 			text,
+			// Оба текста разом: менеджер видит, что отправит сейчас и что пойдёт после ответа.
+			openingText: opening,
+			secondText: second,
+			// Подробности для раскрытой карточки.
+			city: lead.city,
+			inn: lead.inn,
+			phone: lead.phone,
+			email: lead.email,
+			whatsapp: lead.whatsapp,
+			notes: lead.notes,
+			keywords: lead.keywords,
+			keywordsCount: lead.keywordsCount,
+			bestPosition: lead.bestPosition,
+			// Ссылку на PDF собирает фронт: он знает адрес API, бэкенду про это знать незачем.
+			reportToken: lead.reportToken,
+			reportOpens: lead.reportOpens,
+			reportOpenedAt: lead.reportOpenedAt,
+			contactedAt: lead.contactedAt,
+			createdAt: lead.createdAt,
 		}
+	}
+
+	/**
+	 * Смена статуса лида из кабинета менеджера.
+	 *
+	 * Отдельно от админской PATCH-ручки: там правится вся карточка целиком,
+	 * включая телеграм, а менеджеру можно менять только статус.
+	 */
+	async setLeadStatus(leadId: string, status: string) {
+		const allowed = ['NEW', 'CONTACTED', 'INTERESTED', 'REJECTED', 'PAID']
+		if (!allowed.includes(status)) throw new BadRequestException('Неизвестный статус')
+		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId }, select: { id: true } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		const updated = await this.prisma.outreachLead.update({
+			where: { id: leadId },
+			data: {
+				status: status as any,
+				...(status === 'CONTACTED' ? { contactedAt: new Date() } : {}),
+			},
+			select: { id: true, status: true },
+		})
+		return { ok: true, ...updated }
 	}
 
 	/** Отметка «отправил». Повторная отметка не удваивает счёт (UNIQUE в базе). */

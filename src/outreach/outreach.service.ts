@@ -117,6 +117,12 @@ export class OutreachService {
 		for (const key of fields) {
 			if (body[key] !== undefined) (data as any)[key] = body[key]?.toString().trim() || null
 		}
+		// Правка телеграма руками — единственный способ разрешить его менеджеру.
+		// Очистили поле — признак снимаем, иначе пустой «ручной» контакт остался бы
+		// в очереди и менеджер увидел бы карточку, которую некому отправить.
+		if (body.telegram !== undefined) {
+			data.telegramManual = !!(body.telegram?.toString().trim())
+		}
 		if (body.status !== undefined) {
 			data.status = body.status
 			if (body.status === 'CONTACTED') data.contactedAt = new Date()
