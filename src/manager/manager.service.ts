@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { extendPaidUntil, PAID_PERIOD_DAYS } from '../common/trial'
 import { hasRole } from '../common/roles'
 import { ConfigService } from '@nestjs/config'
 import { Prisma } from '@prisma/client'
@@ -832,7 +833,9 @@ export class ManagerService {
 	private async assertUser(clientId: string) {
 		const user = await this.prisma.user.findUnique({
 			where: { id: clientId },
-			select: { id: true, email: true },
+			// paidUntil нужен issuePayment: без него продление считалось бы от «сейчас»
+			// и оплата в середине оплаченного месяца сжигала бы остаток срока.
+			select: { id: true, email: true, paidUntil: true },
 		})
 		if (!user) throw new NotFoundException('Клиент не найден')
 		return user
@@ -950,13 +953,16 @@ export class ManagerService {
 
 	async issuePayment(
 		clientId: string,
-		dto: { amount: number; points: number },
+		dto: { amount: number; points: number; days?: number },
 		operatorEmail: string,
 	) {
 		const user = await this.assertUser(clientId)
 		const points = Math.round(Number(dto.points))
 		if (!points || points <= 0) throw new BadRequestException('Баллы должны быть больше 0')
 		const amount = Number(dto.amount) || 0
+		// Сколько дней продвижения открывает оплата. По умолчанию месяц; менеджер
+		// может провести сразу три, это обычный срок до устойчивого результата.
+		const days = Math.round(Number(dto.days)) || PAID_PERIOD_DAYS
 
 		const payment = await this.prisma.$transaction(async tx => {
 			const p = await tx.payment.create({
@@ -972,13 +978,21 @@ export class ManagerService {
 				select: { id: true },
 			})
 			// Баллы + запись PAYMENT — делает клиента платным (приоритет выдачи) и финансирует визиты.
-			await tx.user.update({ where: { id: clientId }, data: { balance: { increment: points } } })
+			// paidUntil двигаем здесь же: кабинет считает оставшиеся дни именно по нему,
+			// и без этого человек оплатил бы, получил баллы и всё равно увидел пейволл.
+			await tx.user.update({
+				where: { id: clientId },
+				data: {
+					balance: { increment: points },
+					paidUntil: extendPaidUntil(user.paidUntil, days),
+				},
+			})
 			await tx.balanceHistory.create({
 				data: {
 					userId: clientId,
 					amount: points,
 					type: 'PAYMENT',
-					description: `Оплата на расчётный счёт — ${amount} ₽ (провёл ${operatorEmail})`,
+					description: `Оплата на расчётный счёт — ${amount} ₽ за ${days} дн. (провёл ${operatorEmail})`,
 				},
 			})
 			return p
@@ -994,6 +1008,7 @@ export class ManagerService {
 			paymentId: payment.id,
 			amount,
 			points,
+			days,
 			approxVisits: Math.floor(points / 30),
 		}
 	}

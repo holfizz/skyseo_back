@@ -32,12 +32,10 @@ export class PaymentsService implements OnModuleInit {
 	}
 
 	onModuleInit() {
-		// Дожим брошенных платежей: раз в 15 минут ищем неоплаченные заявки и шлём скидку 10%.
-		setInterval(() => {
-			this.processAbandonedPayments().catch(err =>
-				console.error('[Payments] abandoned offers error:', err?.message),
-			)
-		}, 15 * 60 * 1000)
+		// Дожим брошенных платежей отключён вместе с самостоятельной покупкой.
+		// Он рассылал ссылку со скидкой 10% на createDiscountedRepeat, а тот роут
+		// теперь отдаёт отказ: письма звали бы людей в тупик.
+		// Сам processAbandonedPayments оставлен в коде нетронутым на случай возврата модели.
 	}
 
 	private get frontendUrl(): string {

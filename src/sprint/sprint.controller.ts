@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { AdminGuard } from '../admin/admin.guard'
 import { SprintGuard } from './sprint.guard'
 import { SprintService } from './sprint.service'
+import { ManagerService } from '../manager/manager.service'
 
 /**
  * Кабинет менеджера: план на день, очередь контактов, разбор недели.
@@ -14,7 +15,10 @@ import { SprintService } from './sprint.service'
 @Controller('manager')
 @UseGuards(JwtAuthGuard, SprintGuard)
 export class SprintController {
-	constructor(private svc: SprintService) {}
+	constructor(
+		private svc: SprintService,
+		private manager: ManagerService,
+	) {}
 
 	@Get('dashboard')
 	dashboard() {
@@ -34,6 +38,23 @@ export class SprintController {
 	@Post('review')
 	review(@Request() req, @Body() body: { sprintId: string; comment: string }) {
 		return this.svc.submitReview(req.user.id, body.sprintId, body.comment)
+	}
+
+	/**
+	 * Начислить клиенту баллы после оплаты на счёт. Единственный способ пополнить
+	 * баланс: самостоятельная покупка на сайте закрыта (payments.controller.ts).
+	 *
+	 * Ручка живёт здесь, а не в админке: AdminGuard навешен на весь AdminController,
+	 * и добавление роли MANAGER туда открыло бы ей около шестидесяти админских роутов.
+	 * Сама логика не дублируется, зовём готовый ManagerService.issuePayment.
+	 */
+	@Post('clients/:id/points')
+	issuePoints(
+		@Param('id') clientId: string,
+		@Body() body: { amount: number; points: number; days?: number },
+		@Request() req,
+	) {
+		return this.manager.issuePayment(clientId, body, req.user?.email ?? 'менеджер')
 	}
 }
 

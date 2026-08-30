@@ -1,13 +1,4 @@
-import {
-	Body,
-	Controller,
-	Get,
-	HttpCode,
-	Param,
-	Post,
-	Request,
-	UseGuards,
-} from '@nestjs/common'
+import { Body, Controller, ForbiddenException, Get, HttpCode, Param, Post, Request, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { CreatePaymentDto } from './dto'
 import { PaymentsService } from './payments.service'
@@ -16,10 +7,20 @@ import { PaymentsService } from './payments.service'
 export class PaymentsController {
 	constructor(private paymentsService: PaymentsService) {}
 
+	// Самостоятельной покупки больше нет: тариф не выбирают кнопкой, стоимость
+	// считается под проект, баллы начисляет менеджер. Роут не удалён, а закрыт
+	// намеренно: у людей открыты старые вкладки кабинета, и они получат внятный
+	// отказ, а не 404 с непонятной ошибкой.
+	//
+	// ВЕБХУК И ПОЛЛИНГ СТАТУСА НИЖЕ НЕ ТРОГАТЬ. По ним доезжают уже созданные
+	// платежи: деньги списаны, баллы ещё не начислены. Оба берут сумму из строки
+	// Payment, а не из тела запроса, поэтому закрытие создания на них не влияет.
 	@Post()
 	@UseGuards(JwtAuthGuard)
 	async createPayment(@Request() req, @Body() dto: CreatePaymentDto) {
-		return this.paymentsService.createPayment(req.user.id, dto)
+		throw new ForbiddenException(
+			'Оплата на сайте отключена. Продвижение подключает менеджер: напишите в Telegram t.me/skyseo_support',
+		)
 	}
 
 	@Get('history')
@@ -40,9 +41,13 @@ export class PaymentsController {
 		return this.paymentsService.getPaymentStatus(id, req.user.id)
 	}
 
-	// Оплата со скидкой 10% по одноразовому токену из письма/TG (без авторизации — токен сам по себе доступ)
+	// Ссылка со скидкой 10% из письма о брошенной оплате. Закрыта вместе с покупкой:
+	// вопреки названию она не повторяла старый платёж, а СОЗДАВАЛА новый, то есть
+	// была вторым входом в самостоятельную оплату, да ещё и без авторизации.
 	@Get('repeat/:token')
 	async repeatWithDiscount(@Param('token') token: string) {
-		return this.paymentsService.createDiscountedRepeat(token)
+		throw new ForbiddenException(
+			'Оплата на сайте отключена. Напишите менеджеру в Telegram t.me/skyseo_support, он подключит продвижение',
+		)
 	}
 }
