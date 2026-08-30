@@ -47,6 +47,13 @@ export const KEY_NETWORK_ACTIVE_PCS = 'network_active_pcs'
 export const KEY_SERP_PAGE_RAMP = 'serp_page_ramp'
 export const DEFAULT_SERP_PAGE_RAMP = '1-6:3, 7-13:4, 14+:5'
 
+// Цена продвижения, которая печатается в PDF-отчёте холодному лиду.
+// Фиксированных тарифов нет: в отчёте стоит «от N ₽ в месяц», а точную сумму
+// называет менеджер. Значение правится в админке, чтобы поднять ценник
+// не пересобирая бэкенд.
+const KEY_REPORT_PRICE = 'report_price_from'
+export const DEFAULT_REPORT_PRICE = '9000'
+
 /**
  * Как приложение находит кнопку «Дальше» в выдаче. Держим в БД, потому что
  * поисковики меняют вёрстку, а выкат новой версии приложения — долгая история.
@@ -208,6 +215,29 @@ export class AppConfigService {
 		}
 		if (!final && Object.keys(ramp).length === 0) return this.parseSerpRamp(DEFAULT_SERP_PAGE_RAMP, maxValue)
 		return { ramp, final: final || 5 }
+	}
+
+	/** Цена «от», которую видит лид в отчёте. Число в рублях. */
+	async getReportPrice() {
+		const { value, updatedAt, isDefault } = await this.getWithMeta(KEY_REPORT_PRICE, DEFAULT_REPORT_PRICE)
+		const price = Number(value)
+		return {
+			price: Number.isFinite(price) && price > 0 ? Math.round(price) : Number(DEFAULT_REPORT_PRICE),
+			updatedAt,
+			isDefault,
+			default: Number(DEFAULT_REPORT_PRICE),
+		}
+	}
+
+	async setReportPrice(raw: number | string) {
+		const price = Math.round(Number(raw))
+		// Верхнюю границу не ставим, а нижнюю ставим: ноль или минус в отчёте
+		// клиенту выглядел бы как «бесплатно», и это уже обещание.
+		if (!Number.isFinite(price) || price <= 0) {
+			throw new BadRequestException('Цена должна быть положительным числом рублей')
+		}
+		await this.set(KEY_REPORT_PRICE, String(price))
+		return this.getReportPrice()
 	}
 
 	async getSerpPageRamp() {

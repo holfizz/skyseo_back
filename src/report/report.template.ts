@@ -96,6 +96,8 @@ function tierHint(position: number | null): string {
 
 export function renderReportHtml(data: ReportData): string {
 	const main = pickMainKeyword(data.keywords)
+	// Цена приходит числом из настроек админки, в тексте показываем с разделителем разрядов.
+	const price = data.priceFrom.toLocaleString('ru-RU')
 	const totalAbove = main?.competitors.length ?? 0
 	// Объем показываем только если он реально пришел хотя бы по одному запросу:
 	// пустая колонка с прочерками выглядит хуже, чем ее отсутствие.
@@ -534,11 +536,13 @@ export function renderReportHtml(data: ReportData): string {
   ${brandBar()}
   <div class="sec"><div class="sec-n">10</div><h2>Сколько это стоит</h2></div>
   <div class="price">
-    <div class="price-n">9 000 ₽<span>в месяц</span></div>
+    <div class="price-n">от ${price} ₽<span>в месяц</span></div>
     <div class="price-t">
-      Это цена одного месяца работы по вашим запросам. Если не сработает, вы потеряли
-      <b>9 000 ₽ и один месяц</b>. Если сработает, сайт начнет приводить заявки из поиска
-      постоянно, и это уже совсем другая экономика.
+      Цена зависит от проекта: сколько запросов, какая конкуренция в нише и какого
+      размера сайт. Точную сумму назовем до начала работы. Стартовать можно
+      с одного месяца: если не сработает, вы потеряли <b>${price} ₽ и один месяц</b>.
+      Если сработает, сайт начнет приводить заявки из поиска постоянно, и это уже
+      совсем другая экономика.
     </div>
   </div>
 

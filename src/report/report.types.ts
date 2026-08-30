@@ -20,5 +20,6 @@ export interface ReportData {
 	addressee: string | null // «Имя Отчество» / «Имя» / null — заполняется руками в админке
 	keywords: ReportKeyword[]
 	region: string | null // регион, по которому снимались позиции и объёмы
+	priceFrom: number // цена «от», рублей в месяц; правится в админке (/holfizz/settings)
 	generatedAt: Date
 }

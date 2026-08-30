@@ -152,6 +152,16 @@ export class AdminController {
 		return this.adminService.setNetworkConfig(body)
 	}
 
+	@Get('settings/report-price')
+	async getReportPrice() {
+		return this.appConfig.getReportPrice()
+	}
+
+	@Put('settings/report-price')
+	async setReportPrice(@Body() body: { price?: number }) {
+		return this.appConfig.setReportPrice(body?.price ?? 0)
+	}
+
 	@Get('settings/serp-pages')
 	async getSerpPages() {
 		return this.appConfig.getSerpPageRamp()

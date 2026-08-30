@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
+import { AppConfigService } from '../app-config/app-config.service'
 import { OutreachLead } from '@prisma/client'
 import { domainToUnicode } from 'node:url'
 import { PrismaService } from '../prisma/prisma.service'
@@ -112,7 +113,10 @@ function parseKeywordsText(text: string | null): { keyword: string; position: nu
 // сюда лид приходит уже найденным по токену (см. outreach/report.controller.ts).
 @Injectable()
 export class ReportService {
-	constructor(private prisma: PrismaService) {}
+	constructor(
+		private prisma: PrismaService,
+		private appConfig: AppConfigService,
+	) {}
 
 	async renderPdf(leadId: string): Promise<Buffer> {
 		return renderPdf(await this.renderHtml(leadId))
@@ -139,6 +143,9 @@ export class ReportService {
 			addressee: buildAddressee(lead),
 			keywords: await this.withVolumes(keywords, imp?.region ?? null),
 			region: imp?.region ?? null,
+			// Цену тянем из настроек, а не хардкодим: менеджер поднимает ценник
+			// в админке, и следующий же отчёт печатается с новой суммой.
+			priceFrom: (await this.appConfig.getReportPrice()).price,
 			generatedAt: new Date(),
 		}
 	}
