@@ -240,16 +240,15 @@ export class SprintService {
 			// Оба текста разом: менеджер видит, что отправит сейчас и что пойдёт после ответа.
 			openingText: opening,
 			secondText: second,
-			// Подробности для раскрытой карточки.
+			// Подробности для раскрытой карточки. Намеренно НЕ отдаём менеджеру
+			// почту, список запросов и позиции: для разговора они не нужны, а
+			// карточку раздувают. В админке эти поля остаются на месте.
+			// ИНН оставлен: по нему ищут владельца и проверяют контрагента.
 			city: lead.city,
 			inn: lead.inn,
 			phone: lead.phone,
-			email: lead.email,
 			whatsapp: lead.whatsapp,
 			notes: lead.notes,
-			keywords: lead.keywords,
-			keywordsCount: lead.keywordsCount,
-			bestPosition: lead.bestPosition,
 			// Ссылку на PDF собирает фронт: он знает адрес API, бэкенду про это знать незачем.
 			reportToken: lead.reportToken,
 			reportOpens: lead.reportOpens,
@@ -279,6 +278,30 @@ export class SprintService {
 			select: { id: true, status: true },
 		})
 		return { ok: true, ...updated }
+	}
+
+	/**
+	 * Счётчики для бейджей в меню кабинета. Отдельная ручка, а не подсчёт по
+	 * очередям: те собирают тексты сообщений через генератор, а меню грузится
+	 * на каждой странице — платить сборкой писем за цифру в бейдже незачем.
+	 */
+	async getCounts() {
+		const reachable: Prisma.OutreachLeadWhereInput = {
+			telegramManual: true,
+			telegram: { not: null },
+			NOT: { telegram: '' },
+		}
+		const active: Prisma.EnumOutreachStatusFilter = { notIn: ['PAID', 'REJECTED'] }
+
+		const [search, firstStep, secondStep] = await Promise.all([
+			this.prisma.outreachLead.count({
+				where: { inn: { not: null }, NOT: { inn: '' }, telegramManual: false, contactSearchFailed: false, status: active },
+			}),
+			this.prisma.outreachLead.count({ where: { ...reachable, status: active, touches: { none: { step: 1 } } } }),
+			this.prisma.outreachLead.count({ where: { ...reachable, status: active, touches: { some: { step: 1 } } } }),
+		])
+		// В бейдже «Контакты» показываем то, что требует действия: и первые, и вторые.
+		return { search, contacts: firstStep + secondStep, first: firstStep, second: secondStep }
 	}
 
 	/**

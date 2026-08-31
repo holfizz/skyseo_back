@@ -48,6 +48,12 @@ export class SprintController {
 	 * и добавление роли MANAGER туда открыло бы ей около шестидесяти админских роутов.
 	 * Сама логика не дублируется, зовём готовый ManagerService.issuePayment.
 	 */
+	/** Цифры для бейджей в меню кабинета. */
+	@Get('counts')
+	counts() {
+		return this.svc.getCounts()
+	}
+
 	/** Очередь поиска: лиды с ИНН, но без подтверждённого телеграма. */
 	@Get('search')
 	searchQueue(@Query('limit') limit?: string) {
