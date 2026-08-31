@@ -48,6 +48,13 @@ type Seed = {
 	// запрос → позиция лида (обязательно 15-50, иначе он не лид)
 	positions: Record<string, number>
 	replied?: boolean
+	/**
+	 * Куда лид попадёт в кабинете:
+	 *   ready  — телеграм подтверждён, сразу в «Контакты» (по умолчанию)
+	 *   search — телеграма нет, лежит в «Поиске контактов» без статуса
+	 *   failed — в «Поиске» с отметкой «не удалось найти»
+	 */
+	mode?: 'ready' | 'search' | 'failed'
 }
 
 const LEADS: Seed[] = [
@@ -94,6 +101,39 @@ const LEADS: Seed[] = [
 		city: 'Москва', inn: '7716802625',
 		positions: { 'шкаф купе на заказ': 26, 'гардеробная на заказ': 45 },
 		replied: true,
+	},
+	// Ниже — для вкладки «Поиск контактов»: ИНН есть, владелец ещё не найден.
+	{
+		domain: 'kuhni-standart.ru', company: 'ООО «Кухни Стандарт»',
+		first: '', middle: '', last: '',
+		tg: '', phone: '+74954445566', email: 'info@kuhni-standart.ru',
+		city: 'Москва', inn: '7724152639',
+		positions: { 'кухни на заказ': 25, 'кухонный гарнитур цена': 40 },
+		mode: 'search',
+	},
+	{
+		domain: 'shkaf-i-ko.ru', company: 'ООО «Шкаф и Ко»',
+		first: '', middle: '', last: '',
+		tg: '', phone: '+74955556677', email: 'zakaz@shkaf-i-ko.ru',
+		city: 'Москва', inn: '9724152639',
+		positions: { 'шкаф купе на заказ': 29, 'гардеробная на заказ': 36 },
+		mode: 'search',
+	},
+	{
+		domain: 'mebel-atelier.ru', company: 'ООО «Мебель Ателье»',
+		first: '', middle: '', last: '',
+		tg: '', phone: '+74956667788', email: 'hello@mebel-atelier.ru',
+		city: 'Москва', inn: '7710140679',
+		positions: { 'кухни на заказ': 34 },
+		mode: 'search',
+	},
+	{
+		domain: 'garderobnye-systemy.ru', company: 'ООО «Гардеробные системы»',
+		first: '', middle: '', last: '',
+		tg: '', phone: '+74957778899', email: 'info@garderobnye-systemy.ru',
+		city: 'Москва', inn: '7702070139',
+		positions: { 'гардеробная на заказ': 42 },
+		mode: 'failed',
 	},
 ]
 
@@ -143,6 +183,8 @@ async function main() {
 
 	let fresh = 0
 	let replied = 0
+	let search = 0
+	let failed = 0
 	for (const l of LEADS) {
 		const positions = Object.entries(l.positions).sort((a, b) => a[1] - b[1])
 		const best = positions[0][1]
@@ -156,19 +198,21 @@ async function main() {
 				domain: l.domain,
 				importId: imp.id,
 				companyName: l.company,
-				firstName: l.first,
-				middleName: l.middle,
-				lastName: l.last,
+				firstName: l.first || null,
+				middleName: l.middle || null,
+				lastName: l.last || null,
 				city: l.city,
 				inn: l.inn,
 				phone: l.phone,
 				email: l.email,
 				whatsapp: l.phone,
-				telegram: l.tg,
-				// Главное для очереди: без этого флага менеджер лида не увидит.
-				telegramManual: true,
-				contact: l.tg,
-				channel: 'Telegram',
+				telegram: l.tg || null,
+				// Главное для очереди: без этого флага менеджер лида не увидит,
+				// он останется во вкладке «Поиск контактов».
+				telegramManual: (l.mode ?? 'ready') === 'ready',
+				contactSearchFailed: l.mode === 'failed',
+				contact: l.tg || l.phone,
+				channel: l.tg ? 'Telegram' : 'Телефон',
 				keywords: positions.map(([k, p]) => `${k} (${p})`).join('; '),
 				keywordsCount: positions.length,
 				bestPosition: best,
@@ -181,7 +225,9 @@ async function main() {
 			},
 		})
 
-		if (l.replied && manager) {
+		if (l.mode === 'failed') failed++
+		else if (l.mode === 'search') search++
+		else if (l.replied && manager) {
 			await prisma.outreachTouch.create({ data: { leadId: lead.id, userId: manager.id, step: 1 } })
 			replied++
 		} else {
@@ -191,7 +237,9 @@ async function main() {
 
 	console.log(`Прогон: ${imp.id}`)
 	console.log(`Строк выдачи: ${rows.length}`)
-	console.log(`Лидов: ${LEADS.length} (в очереди «написать первое»: ${fresh}, «ответили»: ${replied})`)
+	console.log(`Лидов: ${LEADS.length}`)
+	console.log(`  Контакты → «Стартовое»: ${fresh}, «Второе»: ${replied}`)
+	console.log(`  Поиск    → «Без статуса»: ${search}, «Не удалось найти»: ${failed}`)
 	if (!manager) {
 		console.log('ВНИМАНИЕ: пользователя с ролью MANAGER нет, касания не проставлены — все лиды попадут в первый шаг.')
 	} else {

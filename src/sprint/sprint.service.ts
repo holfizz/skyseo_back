@@ -281,6 +281,82 @@ export class SprintService {
 		return { ok: true, ...updated }
 	}
 
+	/**
+	 * Очередь поиска контактов. Лид приходит из парсера с ИНН, но без человека:
+	 * ассистент пробивает ИНН в Telegram-боте, находит владельца и вписывает
+	 * телеграм и ФИО. Как только телеграм записан, лид сам уезжает в «Стартовое
+	 * сообщение» — отдельного действия не нужно.
+	 *
+	 * Две группы: «без статуса» и «не удалось найти». Вторая нужна, чтобы
+	 * случайное нажатие можно было отменить, а не потерять лида навсегда.
+	 */
+	async getSearchQueue(limit = 50) {
+		const base: Prisma.OutreachLeadWhereInput = {
+			// Без ИНН пробивать нечего, такие лиды в поиск не показываем.
+			inn: { not: null },
+			NOT: { inn: '' },
+			telegramManual: false,
+			status: { notIn: ['PAID', 'REJECTED'] },
+		}
+		const select = {
+			id: true, domain: true, companyName: true, inn: true, ogrn: true, ogrnip: true,
+			city: true, firstName: true, lastName: true, middleName: true, telegram: true,
+			keywordsCount: true, bestPosition: true, contactSearchFailed: true,
+		}
+		const [pending, failed] = await Promise.all([
+			this.prisma.outreachLead.findMany({
+				where: { ...base, contactSearchFailed: false },
+				orderBy: [{ score: 'desc' }, { createdAt: 'asc' }],
+				take: limit,
+				select,
+			}),
+			this.prisma.outreachLead.findMany({
+				where: { ...base, contactSearchFailed: true },
+				orderBy: { updatedAt: 'desc' },
+				take: limit,
+				select,
+			}),
+		])
+		return { pending, failed }
+	}
+
+	/**
+	 * Сохранить найденные контакты. Телеграм помечаем ручным: это единственный
+	 * путь, которым лид попадает к менеджеру в работу (см. telegramManual).
+	 */
+	async saveFoundContact(
+		leadId: string,
+		body: { telegram?: string; lastName?: string; firstName?: string; middleName?: string },
+	) {
+		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId }, select: { id: true } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		const telegram = (body.telegram || '').trim().replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '').trim()
+		if (!telegram) throw new BadRequestException('Укажите телеграм: без него лид не попадёт в рассылку')
+
+		const updated = await this.prisma.outreachLead.update({
+			where: { id: leadId },
+			data: {
+				telegram: '@' + telegram,
+				telegramManual: true,
+				// Нашли — снимаем отметку неудачи, даже если она стояла.
+				contactSearchFailed: false,
+				lastName: body.lastName?.trim() || null,
+				firstName: body.firstName?.trim() || null,
+				middleName: body.middleName?.trim() || null,
+			},
+			select: { id: true, domain: true, telegram: true, firstName: true, middleName: true },
+		})
+		return { ok: true, ...updated }
+	}
+
+	/** Пометить, что владельца по ИНН найти не удалось (или вернуть обратно). */
+	async setSearchFailed(leadId: string, failed: boolean) {
+		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId }, select: { id: true } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		await this.prisma.outreachLead.update({ where: { id: leadId }, data: { contactSearchFailed: failed } })
+		return { ok: true, failed }
+	}
+
 	/** Отметка «отправил». Повторная отметка не удваивает счёт (UNIQUE в базе). */
 	async markSent(userId: string, leadId: string, step: number) {
 		if (step !== 1 && step !== 2) throw new BadRequestException('step должен быть 1 или 2')

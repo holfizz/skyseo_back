@@ -48,6 +48,27 @@ export class SprintController {
 	 * и добавление роли MANAGER туда открыло бы ей около шестидесяти админских роутов.
 	 * Сама логика не дублируется, зовём готовый ManagerService.issuePayment.
 	 */
+	/** Очередь поиска: лиды с ИНН, но без подтверждённого телеграма. */
+	@Get('search')
+	searchQueue(@Query('limit') limit?: string) {
+		return this.svc.getSearchQueue(limit ? Number(limit) : undefined)
+	}
+
+	/** Сохранить найденные телеграм и ФИО. После этого лид уезжает в «Контакты». */
+	@Post('leads/:id/contact')
+	saveContact(
+		@Param('id') id: string,
+		@Body() body: { telegram?: string; lastName?: string; firstName?: string; middleName?: string },
+	) {
+		return this.svc.saveFoundContact(id, body ?? {})
+	}
+
+	/** Пометить «не удалось найти» или вернуть лида обратно в поиск. */
+	@Post('leads/:id/search-failed')
+	setSearchFailed(@Param('id') id: string, @Body() body: { failed?: boolean }) {
+		return this.svc.setSearchFailed(id, body?.failed !== false)
+	}
+
 	/** Сменить статус лида. Менеджеру доступен только статус, остальную карточку правит админ. */
 	@Post('leads/:id/status')
 	setLeadStatus(@Param('id') id: string, @Body() body: { status: string }) {

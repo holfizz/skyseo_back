@@ -737,6 +737,9 @@ model OutreachLead {
   // спарсенные со страниц телеграмы почти всегда каналы и боты, а не владелец,
   // и рассылка по ним жжёт аккаунт менеджера впустую. Флаг ставится в updateLead.
   telegramManual Boolean        @default(false)
+  // true = ассистент искал владельца по ИНН и не нашёл. Лид не удаляем: контакт
+  // может найтись позже, а до тех пор он не должен мозолить глаза в поиске.
+  contactSearchFailed Boolean   @default(false)
   email          String?
   keywords       String? // список запросов и позиций
   message        String         @db.Text
