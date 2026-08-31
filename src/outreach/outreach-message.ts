@@ -133,6 +133,26 @@ export function buildOutreachMessage(input: MessageInput): string {
 	return blocks.map(trimDot).join('\n\n')
 }
 
+// Доменные зоны второго уровня: после срезания «.uk» надо срезать и «.co».
+const SECOND_LEVEL = ['com', 'co', 'net', 'org']
+
+/**
+ * Имя сайта без зоны: «dreamsstore.ru» → «dreamsstore».
+ *
+ * В первом сообщении зона только мешает: она не несёт смысла, а адрес с точкой
+ * Telegram превращает в ссылку, и живое обращение начинает выглядеть рассылкой.
+ * В остальных текстах домены остаются целиком: там это чужие сайты, и по
+ * огрызку конкурента лид его не узнает.
+ */
+export function siteName(domain: string): string {
+	const clean = (domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '')
+	const parts = clean.split('.')
+	if (parts.length < 2) return clean
+	parts.pop()
+	if (parts.length > 1 && SECOND_LEVEL.includes(parts[parts.length - 1])) parts.pop()
+	return parts.join('.')
+}
+
 /**
  * Открывающее сообщение — первое касание в Telegram.
  *
@@ -161,8 +181,9 @@ export function buildOpeningMessage(input: MessageInput, now: Date = new Date())
 
 	const hello = name ? `${name}, здравствуйте, ${waited}` : `Здравствуйте, ${waited}`
 
-	// Пробел перед вопросительным знаком поставлен намеренно, это не опечатка:
-	// вплотную к домену «?» попадает внутрь ссылки, которую Telegram строит сам,
-	// и адрес в сообщении выглядит битым.
-	return `${hello}\n\nМогу с вами пообщаться по поводу сайта - ${input.domain} ?\nЯ по работе`
+	// Пробел перед вопросительным знаком поставлен намеренно, так утвердил заказчик.
+	// Изначально он спасал от того, что Telegram затягивал «?» внутрь ссылки;
+	// теперь зону из домена срезает siteName и ссылки не возникает вовсе,
+	// но вид строки остаётся прежним.
+	return `${hello}\n\nМогу с вами пообщаться по поводу сайта - ${siteName(input.domain)} ?\nЯ по работе`
 }
