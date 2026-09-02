@@ -293,15 +293,18 @@ export class SprintService {
 		}
 		const active: Prisma.EnumOutreachStatusFilter = { notIn: ['PAID', 'REJECTED'] }
 
-		const [search, firstStep, secondStep] = await Promise.all([
+		const [search, firstStep, secondStep, waiting] = await Promise.all([
 			this.prisma.outreachLead.count({
 				where: { inn: { not: null }, NOT: { inn: '' }, telegramManual: false, contactSearchFailed: false, status: active },
 			}),
 			this.prisma.outreachLead.count({ where: { ...reachable, status: active, touches: { none: { step: 1 } } } }),
 			this.prisma.outreachLead.count({ where: { ...reachable, status: active, touches: { some: { step: 1 } } } }),
+			// В рассылке действия требуют те, кто ответил, а мы ещё не написали
+			// в ответ. Прочитавшие и молчащие ждать не заставляют.
+			this.prisma.tgRecipient.count({ where: { repliedAt: { not: null }, secondSentAt: null } }),
 		])
 		// В бейдже «Контакты» показываем то, что требует действия: и первые, и вторые.
-		return { search, contacts: firstStep + secondStep, first: firstStep, second: secondStep }
+		return { search, contacts: firstStep + secondStep, first: firstStep, second: secondStep, outreach: waiting }
 	}
 
 	/**

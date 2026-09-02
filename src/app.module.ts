@@ -6,6 +6,7 @@ import { AdminModule } from './admin/admin.module'
 import { OutreachModule } from './outreach/outreach.module'
 import { ManagerModule } from './manager/manager.module'
 import { SprintModule } from './sprint/sprint.module'
+import { TgWarmupModule } from './tg-warmup/tg-warmup.module'
 import { InboxModule } from './inbox/inbox.module'
 import { AiModule } from './ai/ai.module'
 import { AnalyticsModule } from './analytics/analytics.module'
@@ -58,6 +59,7 @@ import { TrialModule } from './trial/trial.module'
 		ManagerModule,
 		OutreachModule,
 		SprintModule,
+		TgWarmupModule,
 		InboxModule,
 		AnalyticsModule,
 		UpdatesModule,

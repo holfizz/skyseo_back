@@ -3,8 +3,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { OutreachLead, OutreachStatus, Prisma } from '@prisma/client'
 import { newReportToken } from './outreach-import.service'
-import { fetchVolumes } from './outreach-wordstat'
-import { buildOpeningMessage, buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN, MessageCompetitor, MessageKeyword, sumShownVolume } from './outreach-message'
+import { buildOpeningMessage, buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN, MessageCompetitor, MessageKeyword } from './outreach-message'
 
 @Injectable()
 export class OutreachService {
@@ -218,21 +217,17 @@ export class OutreachService {
 			await this.prisma.outreachLead.update({ where: { id: lead.id }, data: { reportToken: token } })
 		}
 
-		const imp = lead.importId
-			? await this.prisma.serpImport.findUnique({ where: { id: lead.importId }, select: { region: true } })
-			: null
-		const volumes = await fetchVolumes(
-			keywords.map(k => k.keyword),
-			imp?.region ?? null,
-		)
-
+		// Частотность больше не запрашиваем: из текста цифра ушла, а Вордстат
+		// стоил по сетевому вызову на каждого лида — и при пересборке всей базы
+		// это были десятки запросов ради значения, которое никуда не попадает.
+		// Частотность по-прежнему собирается при импорте (outreach-import.service)
+		// и оттуда идёт в отчёт.
 		return buildOutreachMessage({
 			domain: lead.domain,
 			firstName: lead.firstName,
 			middleName: lead.middleName,
 			keywords,
 			competitors,
-			volume: sumShownVolume(keywords, volumes),
 		})
 	}
 

@@ -15,6 +15,13 @@
  *   - двоих из них помечает ответившими, чтобы проверить второй шаг.
  *
  * Идемпотентно: перед вставкой сносит свой же прогон по метке в query.
+ *
+ * ВАЖНО ПРО ЮЗЕРНЕЙМЫ. Они начинаются с zz_test_ не для красоты. Пространство
+ * имён в Telegram общее и настоящее: любой правдоподобно выдуманный @ivan_petrov
+ * может принадлежать живому человеку. Один такой лид из этого сида уже попал в
+ * боевую рассылку, и незнакомцу ушло письмо с выдуманным именем и выдуманным
+ * сайтом. Поэтому здесь заведомо несуществующие хвосты, а автоматический набор
+ * контактов такие лиды пропускает по метке в notes.
  */
 import { PrismaClient } from '@prisma/client'
 import { randomBytes } from 'crypto'
@@ -23,6 +30,13 @@ const prisma = new PrismaClient()
 
 // Метка, по которой сид находит и удаляет свои прошлые данные.
 const MARK = '[дев-сид] кабинет менеджера'
+
+/**
+ * Метка в notes. По ней автоматический набор контактов отсеивает эти лиды:
+ * они выдуманные, и рассылать по ним нельзя. Значение продублировано в
+ * src/tg-warmup/campaign.service.ts — держать их в синхроне.
+ */
+export const SEED_NOTE = 'Тестовый лид из дев-сида'
 
 const KEYWORDS = [
 	'кухни на заказ',
@@ -61,35 +75,35 @@ const LEADS: Seed[] = [
 	{
 		domain: 'kuhni-vologda.ru', company: 'ООО «Кухни Вологда»',
 		first: 'Сергей', middle: 'Петрович', last: 'Ильин',
-		tg: '@ilyin_kuhni', phone: '+74951234567', email: 'info@kuhni-vologda.ru',
+		tg: '@zz_test_ilyin_kuhni', phone: '+74951234567', email: 'info@kuhni-vologda.ru',
 		city: 'Москва', inn: '7736207543',
 		positions: { 'кухни на заказ': 17, 'кухонный гарнитур цена': 24 },
 	},
 	{
 		domain: 'shkafy-doma.ru', company: 'ООО «Шкафы Дома»',
 		first: 'Оксана', middle: 'Александровна', last: 'Гринёва',
-		tg: '@grineva_shkafy', phone: '+74959876543', email: 'zakaz@shkafy-doma.ru',
+		tg: '@zz_test_grineva_shkafy', phone: '+74959876543', email: 'zakaz@shkafy-doma.ru',
 		city: 'Москва', inn: '7728168971',
 		positions: { 'шкаф купе на заказ': 15, 'гардеробная на заказ': 21, 'кухни на заказ': 38 },
 	},
 	{
 		domain: 'garderob-pro.ru', company: 'ИП Тарасов Александр Геннадьевич',
 		first: 'Александр', middle: 'Геннадьевич', last: 'Тарасов',
-		tg: '@tarasov_garderob', phone: '+79161112233', email: 'a.tarasov@garderob-pro.ru',
+		tg: '@zz_test_tarasov_garderob', phone: '+79161112233', email: 'a.tarasov@garderob-pro.ru',
 		city: 'Москва', inn: '503014816133',
 		positions: { 'гардеробная на заказ': 19, 'шкаф купе на заказ': 33 },
 	},
 	{
 		domain: 'mebelnaya-fabrika-77.ru', company: 'ООО «Мебельная фабрика 77»',
 		first: 'Юрий', middle: 'Сергеевич', last: 'Кривошеин',
-		tg: '@krivoshein77', phone: '+74952223344', email: 'sales@mebelnaya-fabrika-77.ru',
+		tg: '@zz_test_krivoshein77', phone: '+74952223344', email: 'sales@mebelnaya-fabrika-77.ru',
 		city: 'Москва', inn: '9703172271',
 		positions: { 'кухни на заказ': 28, 'кухонный гарнитур цена': 31, 'шкаф купе на заказ': 44 },
 	},
 	{
 		domain: 'kuhni-na-zakaz-msk.ru', company: 'ООО «Кухни на заказ»',
 		first: 'Марина', middle: 'Викторовна', last: 'Соболева',
-		tg: '@soboleva_mebel', phone: '+74953334455', email: 'm.soboleva@kuhni-na-zakaz-msk.ru',
+		tg: '@zz_test_soboleva_mebel', phone: '+74953334455', email: 'm.soboleva@kuhni-na-zakaz-msk.ru',
 		city: 'Москва', inn: '9726024625',
 		positions: { 'кухонный гарнитур цена': 16, 'кухни на заказ': 22 },
 		replied: true,
@@ -97,7 +111,7 @@ const LEADS: Seed[] = [
 	{
 		domain: 'stolyarnaya-masterskaya.ru', company: 'ИП Гавва Алексей Викторович',
 		first: 'Алексей', middle: 'Викторович', last: 'Гавва',
-		tg: '@gavva_wood', phone: '+79267778899', email: 'gavva@stolyarnaya-masterskaya.ru',
+		tg: '@zz_test_gavva_wood', phone: '+79267778899', email: 'gavva@stolyarnaya-masterskaya.ru',
 		city: 'Москва', inn: '7716802625',
 		positions: { 'шкаф купе на заказ': 26, 'гардеробная на заказ': 45 },
 		replied: true,
@@ -219,7 +233,7 @@ async function main() {
 				score: positions.length * 10 + Math.max(0, 50 - best),
 				competitors,
 				reportToken: randomBytes(16).toString('hex'),
-				notes: 'Тестовый лид из дев-сида',
+				notes: SEED_NOTE,
 				message: '', // соберётся при первом открытии карточки
 				status: l.replied ? 'INTERESTED' : 'NEW',
 			},

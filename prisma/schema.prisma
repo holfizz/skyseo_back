@@ -706,51 +706,51 @@ model SerpRow {
 }
 
 model OutreachLead {
-  id             String         @id @default(uuid())
-  domain         String
-  importId       String? // из какого прогона парсера пришёл
+  id                  String         @id @default(uuid())
+  domain              String
+  importId            String? // из какого прогона парсера пришёл
   // Реквизиты с сайта (см. yandex-leads/src/contacts.py — там контрольные суммы)
-  inn            String?
-  ogrn           String?
-  ogrnip         String?
-  companyName    String?
-  city           String?
+  inn                 String?
+  ogrn                String?
+  ogrnip              String?
+  companyName         String?
+  city                String?
   // ФИО заполняется руками: обращение по имени+отчеству, если отчество есть
-  firstName      String?
-  lastName       String?
-  middleName     String?
+  firstName           String?
+  lastName            String?
+  middleName          String?
   // Скоринг: чем по большему числу ключей найден и чем выше позиции — тем ценнее
-  keywordsCount  Int            @default(0)
-  bestPosition   Int?
-  score          Int            @default(0)
+  keywordsCount       Int            @default(0)
+  bestPosition        Int?
+  score               Int            @default(0)
   // Конкуренты с 9 и 10 мест по ключам этого лида — основа текста предложения
-  competitors    Json?
-  reportToken    String?        @unique // токен ссылки на PDF-отчёт
-  reportOpenedAt DateTime? // когда отчёт открыли впервые
-  reportOpens    Int            @default(0)
-  contact        String? // главный контакт (телефон / tg / email)
-  channel        String? // WhatsApp / Telegram / Email / —
-  phone          String?
-  whatsapp       String?
-  telegram       String?
+  competitors         Json?
+  reportToken         String?        @unique // токен ссылки на PDF-отчёт
+  reportOpenedAt      DateTime? // когда отчёт открыли впервые
+  reportOpens         Int            @default(0)
+  contact             String? // главный контакт (телефон / tg / email)
+  channel             String? // WhatsApp / Telegram / Email / —
+  phone               String?
+  whatsapp            String?
+  telegram            String?
   // true = хэндл вписан руками в админке. Менеджеру в очередь попадают ТОЛЬКО такие:
   // спарсенные со страниц телеграмы почти всегда каналы и боты, а не владелец,
   // и рассылка по ним жжёт аккаунт менеджера впустую. Флаг ставится в updateLead.
-  telegramManual Boolean        @default(false)
+  telegramManual      Boolean        @default(false)
   // true = ассистент искал владельца по ИНН и не нашёл. Лид не удаляем: контакт
   // может найтись позже, а до тех пор он не должен мозолить глаза в поиске.
-  contactSearchFailed Boolean   @default(false)
-  email          String?
-  keywords       String? // список запросов и позиций
-  message        String         @db.Text
-  status         OutreachStatus @default(NEW)
-  contactedAt    DateTime? // когда отправили
-  contactedVia   String? // email / tg
-  emailsSent     Int            @default(0)
-  tgLinkClicked  Int            @default(0)
-  notes          String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  contactSearchFailed Boolean        @default(false)
+  email               String?
+  keywords            String? // список запросов и позиций
+  message             String         @db.Text
+  status              OutreachStatus @default(NEW)
+  contactedAt         DateTime? // когда отправили
+  contactedVia        String? // email / tg
+  emailsSent          Int            @default(0)
+  tgLinkClicked       Int            @default(0)
+  notes               String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
   import SerpImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
 
@@ -1134,4 +1134,351 @@ model SprintReview {
   sprint Sprint @relation(fields: [sprintId], references: [id], onDelete: Cascade)
 
   @@map("sprint_reviews")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Прогрев Telegram. Способ продвижения: аккаунт из .session или tdata живёт
+// своей жизнью через MTProto (читает каналы, листает диалоги, ставит реакции),
+// чтобы к моменту рассылки не выглядеть свежерождённым и не ловить PEER_FLOOD.
+// Логика расписания и оценки — в src/tg-warmup/warmup-plan.ts и warmup-score.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TgAccountStatus {
+  NEW // загружен, живой ли — ещё не проверяли
+  READY // проверен, свободен
+  WARMING // идёт прогрев
+  PAUSED // остановлен вручную
+  BANNED // забанен, заморожен или разлогинен на стороне Telegram
+  ERROR // сессия не поднялась: битый файл, мёртвый прокси
+}
+
+enum TgWarmupStatus {
+  SCHEDULED
+  RUNNING
+  DONE
+  FAILED
+  STOPPED
+}
+
+// Пул прокси. Telegram через MTProto ходит только по SOCKS4/SOCKS5 и MTProxy —
+// HTTP-прокси библиотека не принимает, поэтому такие строки отсеиваются при
+// разборе пула, а не молча ломаются на первом соединении.
+model TgProxy {
+  id       String  @id @default(uuid())
+  host     String
+  port     Int
+  username String?
+  password String?
+  kind     String  @default("socks5") // socks5 | socks4
+  // Тип канала. Влияет на оценку сильнее всего остального в блоке «Сеть»:
+  // мобильный IP делят тысячи живых людей, а IP дата-центра — только боты.
+  // Ставится руками при загрузке пула: определить его по адресу нельзя.
+  type     String? // mobile | residential | datacenter
+  geo      String? // ISO-код страны, если известен
+  note     String?
+
+  // Живость проверяется реальным коннектом к дата-центру Telegram, а не пингом:
+  // прокси может отвечать и при этом не пускать на 149.154.x.x.
+  alive       Boolean   @default(true)
+  lastCheckAt DateTime?
+  lastError   String?
+
+  createdAt DateTime @default(now())
+
+  accounts TgAccount[]
+
+  // Один и тот же прокси не должен попасть в пул дважды при повторной вставке
+  // списка. Логин входит в ключ: у мобильных прокси один хост и порт на всех,
+  // а различает их именно логин.
+  @@unique([host, port, username])
+  @@map("tg_proxies")
+}
+
+model TgAccount {
+  id        String  @id @default(uuid())
+  label     String?
+  phone     String?
+  tgUserId  String? // строкой: id аккаунта не гарантированно влезает в Int
+  username  String?
+  firstName String?
+  lastName  String?
+
+  // Строковая сессия, зашифрованная aes-256-gcm (см. src/common/secrets.ts).
+  // Файл сессии — это полный доступ к аккаунту, в открытом виде не хранится.
+  session String
+  apiId   Int
+  apiHash String
+
+  // Фингерпринт клиента. Уходит на сервер при КАЖДОМ подключении, а не один раз
+  // при логине, поэтому обязан быть постоянным: сегодня iPhone, завтра Linux —
+  // это сигнал. Библиотека его не сохраняет, источник правды здесь.
+  deviceModel    String
+  systemVersion  String
+  appVersion     String
+  langCode       String
+  systemLangCode String
+
+  proxyId String?
+  status  TgAccountStatus @default(NEW)
+
+  // Чем аккаунту заниматься: только греться, только рассылать или и то и другое.
+  // Прогрев и рассылка живут в одном пуле, и без этого поля нельзя было отвести
+  // часть аккаунтов под отлёживание, пока остальные работают.
+  mode String @default("BOTH") // WARM | SEND | BOTH
+
+  // Захват аккаунта одним из воркеров. Два одновременных подключения с одной
+  // сессии Telegram видит, поэтому прогрев и рассылка ходят к аккаунту строго
+  // по очереди. busyUntil — срок захвата на случай, если воркер упал и не снял.
+  busyUntil DateTime?
+  busyBy    String? // warmup | send | poll | check
+
+  // Оценка. score — общий балл 1..10, warmness — прогретость 0..100.
+  score        Float?
+  warmness     Float?
+  scoredAt     DateTime?
+  probe        Json? // последний снимок AccountProbe
+  advice       Json? // список подсказок: что делать с этим аккаунтом
+  registeredAt DateTime? // оценка даты регистрации по user_id
+
+  // Аватар как data-URI. Хранится у нас, а не тянется из Telegram при каждом
+  // открытии списка: там это отдельная загрузка файла на каждый аккаунт.
+  // Снимается при проверке, весит несколько килобайт.
+  avatar String?
+
+  // Телеметрия: копится по ходу прогрева, из неё считаются блоки «Поведение»
+  // и «Ограничения» в скоринге.
+  actionsTotal   Int       @default(0)
+  warmupDaysDone Int       @default(0)
+  floodWaits     Int       @default(0)
+  peerFloods     Int       @default(0)
+  reauths        Int       @default(0)
+  lastCheckAt    DateTime?
+  lastError      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proxy      TgProxy?            @relation(fields: [proxyId], references: [id], onDelete: SetNull)
+  runs       TgWarmupRun[]
+  actions    TgWarmupAction[]
+  campaigns  TgCampaignAccount[]
+  recipients TgRecipient[]
+  events     TgAccountEvent[]
+
+  @@index([status])
+  @@map("tg_accounts")
+}
+
+// Один запуск прогрева: «греть этот аккаунт 7 дней». Живёт до конца срока,
+// каждый день строит новый план и переставляет nextRunAt.
+model TgWarmupRun {
+  id        String @id @default(uuid())
+  accountId String
+
+  days     Int // сколько суток греем
+  dayIndex Int @default(0) // какой день идёт сейчас, 1..days
+
+  status     TgWarmupStatus @default(SCHEDULED)
+  windowFrom Int            @default(9) // окно активности, часы по МСК
+  windowTo   Int            @default(23)
+
+  // Момент следующего пробуждения. Планировщик выбирает строки по nextRunAt,
+  // поэтому «случайное время внутри окна» задаётся именно здесь.
+  nextRunAt  DateTime?
+  planDate   String? // 'ГГГГ-ММ-ДД', на какой день построен plan
+  plan       Json? // минуты от начала суток, когда делать действия
+  doneToday  Int       @default(0)
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  lastError  String?
+
+  // Захват строки воркером. Без него два тика планировщика могут взять
+  // один и тот же прогон, если предыдущий подвис.
+  lockedAt DateTime?
+
+  account TgAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  actions TgWarmupAction[]
+
+  @@index([status, nextRunAt])
+  @@map("tg_warmup_runs")
+}
+
+// Журнал действий. Нужен не для отчётности, а для скоринга: по нему считается
+// равномерность активности и доля исходящих.
+model TgWarmupAction {
+  id        String   @id @default(uuid())
+  accountId String
+  runId     String?
+  dayIndex  Int      @default(0)
+  kind      String // messages.getDialogs, channels.joinChannel и т.д.
+  ok        Boolean  @default(true)
+  detail    String?
+  createdAt DateTime @default(now())
+
+  account TgAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  run     TgWarmupRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, createdAt])
+  @@map("tg_warmup_actions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Рассылка в Telegram с прогретых аккаунтов.
+// Отправка, отслеживание прочтения и ответов, история переписки, воронка.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TgCampaignStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  DONE
+}
+
+enum TgRecipientStatus {
+  QUEUED // ждёт очереди
+  SENT // первое сообщение ушло
+  READ // адресат прочитал
+  REPLIED // ответил
+  SECOND_SENT // отправлено второе сообщение
+  BLOCKED // писать нельзя: заблокировал или закрыт приватностью
+  FAILED // не доставлено по другой причине
+  STOPPED // сняли вручную
+}
+
+model TgCampaign {
+  id     String           @id @default(uuid())
+  name   String
+  status TgCampaignStatus @default(DRAFT)
+
+  // Текст первого касания. Плейсхолдеры: {имя} {отчество} {фио} {сайт} {компания}.
+  firstMessage  String
+  // Второе сообщение — заготовка. Уходит НЕ автоматически, а по кнопке после
+  // ответа: разговор с живым человеком автомат вести не должен.
+  secondMessage String?
+
+  // Цель на день по всей кампании. Если задана, дневные нормы аккаунтов
+  // считаются из неё пропорционально готовности: прогретому достаётся больше,
+  // слабому меньше. perAccountPerDay при этом остаётся жёстким потолком.
+  dailyGoal Int?
+
+  // Лимиты. Считаются на КАЖДЫЙ аккаунт отдельно, а не на кампанию: предел
+  // существует у аккаунта, а не у рассылки.
+  perAccountPerDay Int @default(20)
+  minIntervalSec   Int @default(240)
+  maxIntervalSec   Int @default(1200)
+  windowFrom       Int @default(10)
+  windowTo         Int @default(20)
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  accounts   TgCampaignAccount[]
+  recipients TgRecipient[]
+
+  @@index([status])
+  @@map("tg_campaigns")
+}
+
+// Аккаунт в кампании. Здесь же его дневной счётчик и момент следующей отправки:
+// темп у каждого аккаунта свой, общий на кампанию не имеет смысла.
+model TgCampaignAccount {
+  id         String @id @default(uuid())
+  campaignId String
+  accountId  String
+
+  sentToday   Int       @default(0)
+  dayKey      String? // 'ГГГГ-ММ-ДД', по смене даты счётчик обнуляется
+  nextSendAt  DateTime?
+  // Пауза после FLOOD_WAIT или PEER_FLOOD: до этого времени аккаунт не трогаем.
+  pausedUntil DateTime?
+  lastError   String?
+
+  campaign TgCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  account  TgAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, accountId])
+  @@map("tg_campaign_accounts")
+}
+
+model TgRecipient {
+  id         String @id @default(uuid())
+  campaignId String
+
+  // Кому пишем. Юзернейм или телефон — что-то одно обязательно.
+  username String?
+  phone    String?
+  tgUserId String?
+  // Откуда взяли: лид из базы аутрича, если пришёл оттуда.
+  leadId   String?
+
+  // Для подстановки в шаблон.
+  firstName  String?
+  middleName String?
+  lastName   String?
+  company    String?
+  domain     String?
+
+  status    TgRecipientStatus @default(QUEUED)
+  // Аккаунт, с которого писали. Закрепляется при первой отправке и больше не
+  // меняется: переписку нельзя продолжать с другого аккаунта.
+  accountId String?
+
+  sentAt       DateTime?
+  sentMsgId    Int? // id нашего сообщения в Telegram — по нему считаем прочтение
+  readAt       DateTime?
+  repliedAt    DateTime?
+  secondSentAt DateTime?
+  blockedAt    DateTime?
+  error        String?
+  attempts     Int       @default(0)
+
+  // Докуда прочитали переписку при опросе, чтобы не тянуть её заново.
+  lastSeenMsgId Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  campaign TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  account  TgAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  messages TgDialogMessage[]
+
+  @@index([campaignId, status])
+  @@index([status])
+  @@map("tg_recipients")
+}
+
+// История переписки. Хранится у нас, а не тянется из Telegram каждый раз:
+// аккаунт может умереть, а разговор нужен и после этого.
+model TgDialogMessage {
+  id          String @id @default(uuid())
+  recipientId String
+
+  tgId Int // id сообщения в Telegram
+  out  Boolean // true — наше, false — от собеседника
+  text String
+  date DateTime // время сообщения в Telegram, а не время записи
+
+  createdAt DateTime @default(now())
+
+  recipient TgRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([recipientId, tgId])
+  @@index([recipientId, date])
+  @@map("tg_dialog_messages")
+}
+
+// Журнал событий аккаунта: бан, разлогин, спам-блок, обращения в поддержку.
+// Отдельно от tg_warmup_actions намеренно: те строки считаются как активность
+// прогрева, и переписка со SpamBot раздувала бы метрику ровности.
+model TgAccountEvent {
+  id        String   @id @default(uuid())
+  accountId String
+  kind      String // banned | unauthorized | spam-check | spam-press | spam-appeal | peer-flood
+  text      String
+  createdAt DateTime @default(now())
+
+  account TgAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@map("tg_account_events")
 }

@@ -18,9 +18,12 @@
 		"seed": "ts-node --transpile-only prisma/seed.ts",
 		"seed:crm": "ts-node --transpile-only prisma/seed-crm.ts",
 		"seed:exec-errors": "ts-node --transpile-only prisma/seed-exec-errors.ts",
-		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts"
+		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts",
+		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts"
 	},
 	"dependencies": {
+		"@mtcute/convert": "^0.32.1",
+		"@mtcute/node": "^0.32.1",
 		"@nestjs/common": "^10.2.4",
 		"@nestjs/config": "^3.0.0",
 		"@nestjs/core": "^10.2.4",
@@ -30,7 +33,9 @@
 		"@nestjs/throttler": "^6.5.0",
 		"@prisma/client": "^5.0.0",
 		"@types/multer": "^2.1.0",
+		"adm-zip": "^0.5.16",
 		"bcrypt": "^5.1.0",
+		"big-integer": "^1.6.52",
 		"class-transformer": "^0.5.1",
 		"class-validator": "^0.14.4",
 		"helmet": "^8.1.0",
@@ -47,10 +52,12 @@
 		"rxjs": "^7.8.1",
 		"socks-proxy-agent": "^10.0.0",
 		"telegraf": "^4.15.0",
+		"teleproto": "^1.229.0",
 		"xlsx": "^0.18.5"
 	},
 	"devDependencies": {
 		"@nestjs/cli": "^10.1.11",
+		"@types/adm-zip": "^0.5.7",
 		"@types/bcrypt": "^5.0.0",
 		"@types/node": "^20.4.5",
 		"@types/nodemailer": "^6.4.9",

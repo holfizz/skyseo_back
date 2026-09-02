@@ -47,6 +47,10 @@ services:
       FRONTEND_URL: ${FRONTEND_URL}
       IMAP_HOST: ${IMAP_HOST:-imap.beget.com}
       IMAP_PORT: ${IMAP_PORT:-993}
+      # Ключ шифрования сессий Telegram (модуль «Прогрев ТГ»). Без него раздел
+      # откажется принимать аккаунты: строка сессии — это полный доступ к
+      # аккаунту, в открытом виде в базе ей не место.
+      SECRETS_KEY: ${SECRETS_KEY}
       PORT: 4000
       NODE_ENV: production
     ports:
