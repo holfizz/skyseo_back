@@ -78,6 +78,30 @@ export class CampaignController {
 	}
 
 	/** Календарь отправок: по дням, с временем и аккаунтом каждого сообщения. */
+	/** Что с рассылкой сегодня: идёт ли, сколько ушло, когда следующее. */
+	@Get('today')
+	today() {
+		return this.svc.today()
+	}
+
+	/** Клиенты по всем рассылкам, разложенные по стадии разговора. */
+	@Get('clients')
+	clients(@Query('stage') stage?: string, @Query('limit') limit?: string, @Query('q') q?: string) {
+		return this.svc.clients(stage, limit ? Number(limit) : undefined, q)
+	}
+
+	/** Остановить совсем: адресаты остаются, расписание снимается. */
+	@Post('campaigns/:id/cancel')
+	cancel(@Param('id') id: string) {
+		return this.svc.cancel(id)
+	}
+
+	/** Раздать дневную цель по аккаунтам руками. */
+	@Post('campaigns/:id/limits')
+	limits(@Param('id') id: string, @Body() body: { limits: Record<string, number | null> }) {
+		return this.svc.setLimits(id, body?.limits ?? {})
+	}
+
 	@Get('campaigns/:id/calendar')
 	calendar(@Param('id') id: string) {
 		return this.svc.calendar(id)

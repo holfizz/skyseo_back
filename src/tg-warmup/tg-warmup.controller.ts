@@ -104,6 +104,17 @@ export class TgWarmupController {
 	}
 
 	/** Полная пауза аккаунта: ни рассылки, ни прогрева. */
+	/**
+	 * Разрешить рассылку с непрогретого аккаунта — решение владельца.
+	 *
+	 * Ручка в разделе прогрева, а не рассылки: флаг живёт на аккаунте и
+	 * действует во всех кампаниях сразу.
+	 */
+	@Post('accounts/:id/force-send')
+	forceSend(@Param('id') id: string, @Body() body: { force: boolean }) {
+		return this.svc.setForceSend(id, body?.force !== false)
+	}
+
 	@Post('accounts/:id/pause')
 	pause(@Param('id') id: string, @Body() body: { paused: boolean }) {
 		return this.svc.pauseAccount(id, body?.paused !== false)

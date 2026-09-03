@@ -86,6 +86,14 @@ export type Allowance = {
 	allowOutgoing: boolean
 	maxJoinsPerDay: number
 	maxMessagesPerDay: number
+	/**
+	 * Норма исходящих на сутки ЦЕЛИКОМ, до вычета уже потраченного.
+	 *
+	 * maxMessagesPerDay по ходу дня уменьшается — это остаток. Для дневной
+	 * раскладки нужен именно валовый предел: план строится на сутки, и он не
+	 * должен усыхать после каждого отправленного сообщения.
+	 */
+	dailyMessages: number
 	/** Готовность 0-100: та самая совокупная оценка, из которой взяты квоты. */
 	readiness: number
 	/** Почему сегодня столько — человеческим языком, для карточки аккаунта. */
@@ -118,7 +126,7 @@ function times(n: number): string {
 export function outgoingAllowance(i: AllowanceInput): Allowance {
 	const notes: string[] = []
 	const deny = (why: string): Allowance => ({
-		allowOutgoing: false, maxJoinsPerDay: 0, maxMessagesPerDay: 0,
+		allowOutgoing: false, maxJoinsPerDay: 0, maxMessagesPerDay: 0, dailyMessages: 0,
 		readiness: 0, notes: [why],
 	})
 
@@ -192,7 +200,14 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 		notes.push('Был PEER_FLOOD: норма исходящих урезана вдвое')
 	}
 
-	return { allowOutgoing: joins > 0 || messages > 0, maxJoinsPerDay: joins, maxMessagesPerDay: messages, readiness, notes }
+	return {
+		allowOutgoing: joins > 0 || messages > 0,
+		maxJoinsPerDay: joins,
+		maxMessagesPerDay: messages,
+		dailyMessages: messages,
+		readiness,
+		notes,
+	}
 }
 
 /**

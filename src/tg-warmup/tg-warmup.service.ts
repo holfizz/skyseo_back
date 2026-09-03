@@ -375,6 +375,7 @@ export class TgWarmupService {
 				label: a.label,
 				avatar: a.avatar,
 				mode: a.mode,
+				forceSend: a.forceSend,
 				busyBy: a.busyUntil && a.busyUntil > new Date() ? a.busyBy : null,
 				phone: a.phone,
 				username: a.username,
@@ -664,6 +665,24 @@ export class TgWarmupService {
 	 * историю. Снятие возвращает его в READY, а не в тот статус, что был:
 	 * пока он стоял, всё могло измениться, и следующий шаг — проверка.
 	 */
+	/**
+	 * Разрешить рассылку с непрогретого аккаунта.
+	 *
+	 * Отдельный флаг, а не «поднять лимиты»: оценка готовности остаётся честной
+	 * и продолжает показывать, что аккаунт сырой. Меняется только одно — мы
+	 * перестаём мешать. Дневной предел при этом задаёт кампания, а не флаг.
+	 */
+	async setForceSend(id: string, force: boolean) {
+		const a = await this.prisma.tgAccount.update({
+			where: { id },
+			data: { forceSend: !!force },
+			select: { id: true, label: true, forceSend: true },
+		})
+		await this.logEvent(id, force ? 'force-send-on' : 'force-send-off',
+			force ? 'разрешена рассылка без прогрева' : 'рассылка без прогрева отключена')
+		return a
+	}
+
 	async pauseAccount(id: string, paused: boolean) {
 		const a = await this.prisma.tgAccount.findUnique({ where: { id }, select: { status: true } })
 		if (!a) throw new NotFoundException('Аккаунт не найден')

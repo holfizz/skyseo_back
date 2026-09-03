@@ -1258,6 +1258,13 @@ model TgAccount {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Рассылать с этого аккаунта, даже если он не прогрет. Осознанный выбор
+  // владельца: система считает такую отправку опасной и говорит об этом, но
+  // запрещать не её дело. Спамблок и второй PEER_FLOOD флаг НЕ отменяет —
+  // это вердикт Telegram, а не наша осторожность, и сообщения там всё равно
+  // не дойдут.
+  forceSend Boolean @default(false)
+
   proxy      TgProxy?            @relation(fields: [proxyId], references: [id], onDelete: SetNull)
   runs       TgWarmupRun[]
   actions    TgWarmupAction[]
@@ -1387,6 +1394,11 @@ model TgCampaignAccount {
   id         String @id @default(uuid())
   campaignId String
   accountId  String
+
+  // Сколько сообщений в день отдано этому аккаунту вручную. null — считать
+  // самим, по готовности. Сумма проставленных вручную не может превышать цель
+  // дня: делёжка фиксированного числа, а не отдельные независимые лимиты.
+  dailyLimit  Int?
 
   sentToday   Int       @default(0)
   dayKey      String? // 'ГГГГ-ММ-ДД', по смене даты счётчик обнуляется

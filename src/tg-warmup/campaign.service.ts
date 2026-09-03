@@ -125,6 +125,81 @@ function dayKey(d: Date): string {
 	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/**
+ * Что записано у лида в поле «телеграм».
+ *
+ * Поле заполняет менеджер руками, и туда попадает всё подряд: юзернейм с
+ * собакой и без, ссылка t.me, телефон (тоже с собакой — «@+79001234567»), а
+ * иногда и фраза вроде «нет тега, но есть контакт тг». Раньше принимался
+ * только юзернейм, и каждый третий живой лид молча отбрасывался, хотя по
+ * телефону Telegram пишет не хуже: адресат добавляется в контакты и получает
+ * сообщение так же.
+ *
+ * Телефон нормализуем как при добавлении списком — только цифры, без плюса.
+ */
+function parseContact(raw: string | null | undefined): { username: string; phone: null } | { username: null; phone: string } | null {
+	const cleaned = String(raw ?? '')
+		.trim()
+		.replace(/^https?:\/\/(t\.me|telegram\.me)\//i, '')
+		.replace(/^@/, '')
+		.trim()
+	if (!cleaned) return null
+
+	const digits = cleaned.replace(/[\s()+-]/g, '')
+	// Телефон: только цифры и 10-15 знаков. Короче — это не номер, длиннее тоже.
+	if (/^\d{10,15}$/.test(digits)) return { username: null, phone: digits }
+	if (/^[a-z0-9_]{4,32}$/i.test(cleaned)) return { username: cleaned.toLowerCase(), phone: null }
+	return null
+}
+
+/**
+ * Можно ли вообще принуждать этот аккаунт к отправке.
+ *
+ * Флаг «рассылать без прогрева» снимает НАШУ осторожность: низкую готовность,
+ * первые дни только на чтение, пустой профиль. Это оценки, и владелец вправе
+ * их отменить — аккаунты его.
+ *
+ * Чего флаг не отменяет: спамблок и второй PEER_FLOOD. Это не мнение, а ответ
+ * Telegram. Под спамблоком сообщение просто не дойдёт до человека, а попытки
+ * писать после второго PEER_FLOOD добивают аккаунт окончательно. Разрешить это
+ * значило бы не «дать выбор», а молча тратить аккаунты на пустоту.
+ */
+function forceable(acc: any): { ok: boolean; why?: string } {
+	const spam = (acc?.probe as any)?.spamBlock
+	if (spam === 'permanent') return { ok: false, why: 'вечный спамблок — сообщения не дойдут' }
+	if (spam === 'temporary') return { ok: false, why: 'временный спамблок — сообщения не дойдут' }
+	if ((acc?.peerFloods ?? 0) >= 2) return { ok: false, why: 'дважды PEER_FLOOD — писать нельзя даже принудительно' }
+	return { ok: true }
+}
+
+/**
+ * Разрешена ли отправка с аккаунта прямо сейчас.
+ *
+ * Либо он дорос сам, либо владелец поставил флаг и Telegram не против.
+ */
+function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
+	if (allow?.allowOutgoing) return true
+	return !!acc?.forceSend && forceable(acc).ok
+}
+
+/**
+ * Стадия разговора — то, докуда дошли, а не что случилось.
+ *
+ * READ и REPLIED остаются в «1 сообщение»: прочтение и ответ это события
+ * внутри стадии, а не следующий шаг. Шаг делаем мы, отправив второе.
+ */
+const STAGE_STATUS: Record<string, string[]> = {
+	queued: ['QUEUED'],
+	first: ['SENT', 'READ', 'REPLIED'],
+	second: ['SECOND_SENT'],
+	problem: ['BLOCKED', 'FAILED', 'STOPPED'],
+}
+
+function stageOf(status: string): string {
+	for (const [stage, list] of Object.entries(STAGE_STATUS)) if (list.includes(status)) return stage
+	return 'problem'
+}
+
 /** Причины, по которым писать этому человеку нельзя и повторять бессмысленно. */
 const HOPELESS = new Set([
 	'USER_PRIVACY_RESTRICTED', 'USER_IS_BLOCKED', 'YOU_BLOCKED_USER',
@@ -381,7 +456,7 @@ export class CampaignService {
 	 * с сайта контакты — это чаще всего общий канал компании, а не человек.
 	 */
 	async addRecipientsFromLeads(campaignId: string, limit = 200) {
-		// Берём с запасом: часть отсеется как «уже писали» или «кривой юзернейм»,
+		// Берём с запасом: часть отсеется как «уже писали» или «кривой контакт»,
 		// и без запаса «дай двадцать» превращалось бы в три.
 		const want = Math.max(1, Math.min(1000, limit))
 		const leads = await this.prisma.outreachLead.findMany({
@@ -391,7 +466,14 @@ export class CampaignService {
 				// Лиды из дев-сида в рассылку не берём. Их юзернеймы выдуманы, а
 				// пространство имён в Telegram настоящее: один такой контакт уже
 				// оказался живым человеком, и ему ушло письмо с чужим именем.
-				NOT: { notes: { contains: 'дев-сид' } },
+				//
+				// Условие развёрнуто через OR намеренно. Короткое
+				// `NOT: { notes: { contains: ... } }` превращается в SQL
+				// `NOT (notes LIKE ...)`, а для NULL это не «истина», а NULL —
+				// и строка отсеивается. У живых лидов заметка почти всегда
+				// пустая, так что защита от сида выбрасывала ровно тех, кого
+				// должна была пропускать: всю базу до последнего лида.
+				OR: [{ notes: null }, { NOT: { notes: { contains: 'дев-сид' } } }],
 			},
 			select: {
 				id: true, telegram: true, firstName: true, middleName: true, lastName: true,
@@ -400,18 +482,26 @@ export class CampaignService {
 			orderBy: { createdAt: 'desc' },
 			take: want * 5,
 		})
+
+		let unusable = 0
 		const rows = leads
 			.map(l => {
-				const handle = String(l.telegram ?? '').trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '')
-				if (!/^[a-z0-9_]{4,32}$/i.test(handle)) return null
+				const contact = parseContact(l.telegram)
+				if (!contact) {
+					unusable++
+					return null
+				}
 				return {
-					campaignId, username: handle.toLowerCase(), phone: null, leadId: l.id,
+					campaignId, ...contact, leadId: l.id,
 					firstName: l.firstName, middleName: l.middleName, lastName: l.lastName,
 					company: l.companyName, domain: l.domain,
 				}
 			})
 			.filter(Boolean) as any[]
-		return this.insertRecipients(campaignId, rows, want)
+
+		// scanned и unusable нужны на том конце: «добавлено 0» без них читается
+		// как «в базе никого нет», хотя причина может быть ровно обратной.
+		return { ...(await this.insertRecipients(campaignId, rows, want)), scanned: leads.length, unusable }
 	}
 
 	/**
@@ -672,9 +762,15 @@ export class CampaignService {
 			rows.push({
 				id: a.id, label: a.label, avatar: a.avatar, tgUserId: a.tgUserId, status: a.status,
 				readiness: allow.readiness,
-				allowOutgoing: allow.allowOutgoing,
+				allowOutgoing: maySend(a, allow),
+				forceSend: a.forceSend,
 				// Ниже 70 холодные сообщения слать рано: это тот же порог, по
 				// которому считается «прогрет» в разделе прогрева.
+				//
+				// Флаг «без прогрева» сюда НЕ входит намеренно: он разрешает
+				// отправку, но не делает аккаунт прогретым. Красное
+				// предупреждение в карточке должно остаться — владелец решил
+				// рискнуть, а не отменил риск.
 				coldReady: allow.allowOutgoing && allow.readiness >= 70 && !!a.probe,
 				todo,
 			})
@@ -862,8 +958,13 @@ export class CampaignService {
 				// Здоровье аккаунта важнее плана: спамблок и второй PEER_FLOOD
 				// закрывают исходящие независимо от того, что выставил человек.
 				const allow = await this.warmup.allowanceFor(acc, 0)
-				if (!allow.allowOutgoing) {
-					await this.pauseAccount(link.id, 6 * 3600, allow.notes[0] ?? 'исходящие закрыты')
+				if (!maySend(acc, allow)) {
+					// Аккаунт с флагом сюда попадает только по вердикту Telegram —
+					// в паузе стоит написать именно это, а не «мало готовности».
+					const why = acc.forceSend
+						? (forceable(acc).why ?? 'исходящие закрыты')
+						: (allow.notes[0] ?? 'исходящие закрыты')
+					await this.pauseAccount(link.id, 6 * 3600, why)
 					continue
 				}
 
@@ -975,26 +1076,107 @@ export class CampaignService {
 	 */
 	async dailyQuota(campaign: any, today: string): Promise<Map<string, number>> {
 		const links: any[] = campaign.accounts ?? []
-		if (!campaign.dailyGoal) {
-			return new Map(links.map(l => [l.accountId, campaign.perAccountPerDay]))
-		}
-
 		const rows = []
+
 		for (const l of links) {
 			const acc = l.account
 			const dead = acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED'
 			const allow = dead ? null : await this.warmup.allowanceFor(acc, 0)
+
+			// Предохранитель прогрева: сколько исходящих в сутки он считает
+			// безопасным для ЭТОГО аккаунта. Раньше рассылка его не спрашивала
+			// вовсе и всем раздавала perAccountPerDay — то есть вся система
+			// готовности на рассылку не влияла, и суточный аккаунт с нормой
+			// «ноль сообщений» спокойно получал двадцать.
+			//
+			// Флаг владельца предохранитель снимает: тогда предел задаёт только
+			// кампания. Это осознанный риск, и он должен быть его решением, а не
+			// побочным следствием того, что проверку забыли сделать.
+			const safe = acc.forceSend ? campaign.perAccountPerDay : (allow?.dailyMessages ?? 0)
+
 			// Уже отправленное сегодня из потолка не вычитаем: раскладка — это
 			// план на сутки целиком, а не остаток. Иначе доля аккаунта менялась
 			// бы после каждого сообщения.
 			rows.push({
 				id: acc.id,
 				readiness: allow?.readiness ?? 0,
-				canSend: !!allow?.allowOutgoing,
-				cap: campaign.perAccountPerDay,
+				canSend: !dead && maySend(acc, allow),
+				ceiling: Math.max(0, Math.min(campaign.perAccountPerDay, safe)),
+				manual: typeof l.dailyLimit === 'number' ? Math.max(0, l.dailyLimit) : null,
 			})
 		}
-		return distributeDaily(campaign.dailyGoal, rows)
+
+		const out = new Map<string, number>()
+		// Проставленное руками — это решение о делёжке, и оно исполняется как
+		// сказано. Потолок аккаунта его всё равно ограничивает: разделить можно
+		// только то, что аккаунт способен унести.
+		for (const r of rows) {
+			if (r.manual != null) out.set(r.id, r.canSend ? Math.min(r.manual, r.ceiling) : 0)
+		}
+
+		const auto = rows.filter(r => r.manual == null)
+
+		// Без цели дня делёжки нет: каждый работает по своему потолку.
+		if (!campaign.dailyGoal) {
+			for (const r of auto) out.set(r.id, r.canSend ? r.ceiling : 0)
+			return out
+		}
+
+		// С целью делим ОСТАТОК после ручных: они уже забрали свою часть.
+		const taken = rows.reduce((n, r) => n + (r.manual != null ? Math.min(r.manual, r.ceiling) : 0), 0)
+		const left = Math.max(0, campaign.dailyGoal - taken)
+		for (const [id, n] of distributeDaily(left, auto.map(r => ({ ...r, cap: r.ceiling })))) {
+			out.set(id, n)
+		}
+		return out
+	}
+
+	/**
+	 * Раздать дневную цель по аккаунтам руками.
+	 *
+	 * Сумма проставленных не может быть больше цели дня — это делёжка одного
+	 * числа, а не набор независимых лимитов. Аккаунты без числа разбирают
+	 * остаток сами, по готовности.
+	 */
+	async setLimits(campaignId: string, limits: Record<string, number | null>) {
+		const c = await this.prisma.tgCampaign.findUnique({
+			where: { id: campaignId },
+			include: { accounts: true },
+		})
+		if (!c) throw new NotFoundException('Кампания не найдена')
+
+		const next = new Map<string, number | null>()
+		for (const l of c.accounts) next.set(l.accountId, l.dailyLimit ?? null)
+		for (const [accountId, value] of Object.entries(limits ?? {})) {
+			if (!next.has(accountId)) continue
+			if (value === null || value === undefined || (value as any) === '') {
+				next.set(accountId, null)
+				continue
+			}
+			const n = Math.round(Number(value))
+			if (!Number.isFinite(n) || n < 0) throw new BadRequestException('Лимит аккаунта: целое число от нуля')
+			if (n > c.perAccountPerDay) {
+				throw new BadRequestException(`Больше потолка на аккаунт нельзя: ${c.perAccountPerDay} в день`)
+			}
+			next.set(accountId, n)
+		}
+
+		const total = [...next.values()].reduce((s: number, v) => s + (v ?? 0), 0)
+		if (c.dailyGoal && total > c.dailyGoal) {
+			throw new BadRequestException(
+				`Роздано ${total} из ${c.dailyGoal}: это больше цели дня. Уменьшите или поднимите цель`,
+			)
+		}
+
+		for (const l of c.accounts) {
+			const value = next.get(l.accountId) ?? null
+			if (value === (l.dailyLimit ?? null)) continue
+			await this.prisma.tgCampaignAccount.update({ where: { id: l.id }, data: { dailyLimit: value } })
+		}
+
+		// Нормы изменились — расписание по старым уже неверно.
+		await this.buildSchedule(campaignId)
+		return { assigned: total, goal: c.dailyGoal, left: c.dailyGoal ? Math.max(0, c.dailyGoal - total) : null }
 	}
 
 	private async pauseAccount(linkId: string, seconds: number, why: string) {
@@ -1523,7 +1705,7 @@ export class CampaignService {
 			if (acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED') continue
 			if (acc.mode === 'WARM') continue
 			const allow = await this.warmup.allowanceFor(acc, 0)
-			if (!allow.allowOutgoing) continue
+			if (!maySend(acc, allow)) continue
 
 			const cap = quota.get(acc.id) ?? 0
 			const sent = link.dayKey === today ? link.sentToday : 0
@@ -1629,6 +1811,37 @@ export class CampaignService {
 			}),
 		])
 
+		// Кто из аккаунтов вообще может писать прямо сейчас. Нужно, чтобы
+		// отличить «очередь длиннее норм» от «писать некому»: снаружи и то и
+		// другое выглядит как пустой календарь, а чинится по-разному.
+		const slots = await this.slotsFor(c, new Date())
+		const ready = new Set(slots.map(s => s.id))
+		const notReady = []
+		for (const link of c.accounts) {
+			if (ready.has(link.accountId)) continue
+			const acc = link.account
+			const dead = acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED'
+			const allow = dead ? null : await this.warmup.allowanceFor(acc, 0)
+			const hard = forceable(acc)
+			notReady.push({
+				id: acc.id,
+				label: acc.label,
+				avatar: acc.avatar,
+				why: dead
+					? `аккаунт ${acc.status === 'BANNED' ? 'заблокирован' : acc.status === 'ERROR' ? 'с ошибкой' : 'на паузе'}`
+					: acc.mode === 'WARM'
+						? 'отведён только под прогрев'
+						: !hard.ok
+							? hard.why!
+							: (allow?.notes?.[0] ?? 'исходящие пока закрыты'),
+				readiness: allow?.readiness ?? 0,
+				forceSend: !!acc.forceSend,
+				// Можно ли включить принудительную рассылку прямо отсюда.
+				// У мёртвых и заспамленных нельзя — и врать об этом не надо.
+				forceable: !dead && acc.mode !== 'WARM' && hard.ok,
+			})
+		}
+
 		const byId = new Map(c.accounts.map(l => [l.account.id, l.account]))
 		const name = (r: any) =>
 			[r.firstName, r.lastName].filter(Boolean).join(' ')
@@ -1666,6 +1879,12 @@ export class CampaignService {
 
 		// Кому времени не досталось: не хватает данных для текста, кончились
 		// нормы или расписание вообще не собирали.
+		//
+		// Последнее надо отличать от первых двух. Отсутствие времени у адресата
+		// само по себе не говорит НИЧЕГО о причине: у кампании, заведённой до
+		// расписания, его просто некому было проставить. Написать такому
+		// «не хватило норм» — прямая ложь, чинить он пойдёт не то.
+		const neverPlanned = !queued.some(r => r.scheduledAt || r.plannedAccountId)
 		const unplanned = queued
 			.filter(r => !r.scheduledAt)
 			.map(r => ({
@@ -1674,7 +1893,17 @@ export class CampaignService {
 				username: r.username,
 				why: missingPlaceholders(c.firstMessage, r).length
 					? `нет данных: ${missingPlaceholders(c.firstMessage, r).join(', ')}`
-					: 'не хватило дневных норм',
+					: neverPlanned && slots.length
+						? 'расписание ещё не собрано'
+						: !slots.length
+						? 'писать некому: ни один аккаунт не готов'
+						// Аккаунт в строю, но нормы ему не выдали — так бывает, пока
+						// он греется: готовность низкая, и дневная цель до него не
+						// доходит. «Не хватило норм» тут прозвучало бы как «добавьте
+						// потолок», а лечится это только временем.
+						: slots.every(x => x.quota <= 0)
+							? 'аккаунтам ещё не выдана дневная норма — они греются'
+							: 'не хватило дневных норм',
 			}))
 
 		return {
@@ -1692,7 +1921,13 @@ export class CampaignService {
 				label: l.account.label,
 				avatar: l.account.avatar,
 				tgUserId: l.account.tgUserId,
+				forceSend: l.account.forceSend,
 			})),
+			// Сколько аккаунтов реально может писать и что мешает остальным.
+			ready: slots.length,
+			notReady,
+			/** Расписание для этой кампании ни разу не собирали. */
+			neverPlanned: neverPlanned && queued.length > 0,
 			days: [...days]
 				.sort(([a], [b]) => (a < b ? -1 : 1))
 				.map(([key, items]) => ({
@@ -1772,6 +2007,233 @@ export class CampaignService {
 		}
 	}
 
+	/**
+	 * Люди по всем рассылкам сразу, разложенные по стадии разговора.
+	 *
+	 * Стадий три, и это НЕ статусы из базы: статусов восемь, и половина из них
+	 * отвечает на вопрос «что случилось», а не «докуда дошли». Здесь важно
+	 * второе — сколько сообщений человек от нас получил.
+	 *
+	 *   не отправлено — стоит в очереди, первого касания ещё не было
+	 *   1 сообщение   — открывающее ушло; прочитал он или ответил, видно в строке
+	 *   2 сообщение   — отправили и второе, разговор идёт
+	 *
+	 * Кому написать не смогли (заблокировал, приватность, ошибка) отдельной
+	 * вкладкой не выношу: их немного, и они видны во «Всех» с красной пометкой.
+	 * Иначе список стадий перестаёт читаться как путь и превращается в
+	 * перечисление статусов, от которого и уходим.
+	 */
+	async clients(stage = 'all', limit = 200, query?: string) {
+		const take = Math.max(1, Math.min(1000, Math.round(limit || 200)))
+		const q = String(query ?? '').trim()
+
+		const where: any = {}
+		if (STAGE_STATUS[stage]) where.status = { in: STAGE_STATUS[stage] }
+		if (q) {
+			where.OR = [
+				{ username: { contains: q, mode: 'insensitive' } },
+				{ phone: { contains: q } },
+				{ firstName: { contains: q, mode: 'insensitive' } },
+				{ lastName: { contains: q, mode: 'insensitive' } },
+				{ company: { contains: q, mode: 'insensitive' } },
+				{ domain: { contains: q, mode: 'insensitive' } },
+			]
+		}
+
+		const [rows, grouped] = await Promise.all([
+			this.prisma.tgRecipient.findMany({
+				where,
+				take,
+				orderBy: stage === 'queued'
+					// В очереди интересно, кто следующий, поэтому по времени
+					// отправки вперёд. В остальных стадиях — свежие сверху.
+					? [{ scheduledAt: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }]
+					: [{ sentAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+				select: {
+					id: true, username: true, phone: true, status: true,
+					firstName: true, middleName: true, lastName: true, company: true, domain: true,
+					scheduledAt: true, sentAt: true, readAt: true, repliedAt: true, secondSentAt: true,
+					blockedAt: true, error: true,
+					campaign: { select: { id: true, name: true } },
+					account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+					plannedAccountId: true,
+				},
+			}),
+			this.prisma.tgRecipient.groupBy({ by: ['status'], _count: { _all: true } }),
+		])
+
+		const byStatus = new Map(grouped.map(g => [String(g.status), g._count._all]))
+		const sum = (list: string[]) => list.reduce((n, st) => n + (byStatus.get(st) ?? 0), 0)
+
+		return {
+			counts: {
+				all: [...byStatus.values()].reduce((a, b) => a + b, 0),
+				queued: sum(STAGE_STATUS.queued),
+				first: sum(STAGE_STATUS.first),
+				second: sum(STAGE_STATUS.second),
+				problem: sum(STAGE_STATUS.problem),
+			},
+			rows: rows.map(r => ({
+				id: r.id,
+				name: [r.firstName, r.lastName].filter(Boolean).join(' ')
+					|| r.company
+					|| (r.username ? `@${r.username}` : null)
+					|| r.phone
+					|| 'без имени',
+				username: r.username,
+				phone: r.phone,
+				company: r.company,
+				domain: r.domain,
+				status: r.status,
+				stage: stageOf(r.status),
+				campaignId: r.campaign.id,
+				campaignName: r.campaign.name,
+				scheduledAt: r.scheduledAt,
+				sentAt: r.sentAt,
+				readAt: r.readAt,
+				repliedAt: r.repliedAt,
+				secondSentAt: r.secondSentAt,
+				error: r.error,
+				account: r.account,
+			})),
+		}
+	}
+
+	/**
+	 * Что происходит с рассылкой сегодня.
+	 *
+	 * Отдельная сводка, а не выжимка из списка кампаний: главный вопрос к
+	 * рассылке — «она сейчас идёт или стоит», и ответ на него не должен
+	 * требовать открыть карточку и сложить в уме цифры по аккаунтам.
+	 *
+	 * Берём кампании, которые идут или стоят на паузе с непустой очередью:
+	 * закрытые сегодня уже не касаются, а черновики ещё не начинались.
+	 */
+	async today() {
+		const now = new Date()
+		const today = dayKey(now)
+		const midnight = startOfDay(now)
+
+		const campaigns = await this.prisma.tgCampaign.findMany({
+			where: { status: { in: ['RUNNING', 'PAUSED'] } },
+			include: { accounts: { include: { account: true } } },
+			orderBy: { createdAt: 'desc' },
+		})
+
+		const rows = []
+		for (const c of campaigns) {
+			const [queued, sentToday, blockedToday, plannedToday, next] = await Promise.all([
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, status: 'QUEUED' } }),
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { gte: midnight } } }),
+				// Считаем только то, у чего есть отметка времени. У FAILED её нет,
+				// и приписывать сегодняшнему дню все прошлые сбои — вранье.
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, blockedAt: { gte: midnight } } }),
+				// Запланировано на сегодня — то, что стоит в календаре до конца
+				// окна. Именно это число человек видел, когда запускал.
+				this.prisma.tgRecipient.count({
+					where: {
+						campaignId: c.id, status: 'QUEUED',
+						scheduledAt: { gte: midnight, lt: windowStart(now, c.windowTo, 0) },
+					},
+				}),
+				this.prisma.tgRecipient.findFirst({
+					where: { campaignId: c.id, status: 'QUEUED', scheduledAt: { not: null } },
+					orderBy: { scheduledAt: 'asc' },
+					select: {
+						scheduledAt: true, firstName: true, lastName: true, company: true, username: true, phone: true,
+						plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+					},
+				}),
+			])
+
+			// Кампания без единого адресата в очереди и без сегодняшних отправок
+			// в сводке «что идёт сегодня» только мешает.
+			if (!queued && !sentToday) continue
+
+			rows.push({
+				id: c.id,
+				name: c.name,
+				status: c.status,
+				windowFrom: c.windowFrom,
+				windowTo: c.windowTo,
+				dailyGoal: c.dailyGoal,
+				queued,
+				sentToday,
+				blockedToday,
+				plannedToday: plannedToday + sentToday,
+				next: next?.scheduledAt
+					? {
+							at: next.scheduledAt,
+							who: [next.firstName, next.lastName].filter(Boolean).join(' ')
+								|| next.company
+								|| (next.username ? `@${next.username}` : null)
+								|| next.phone
+								|| 'без имени',
+							account: next.plannedAccount,
+						}
+					: null,
+				accounts: c.accounts
+					.map(l => ({
+						id: l.account.id,
+						label: l.account.label,
+						avatar: l.account.avatar,
+						tgUserId: l.account.tgUserId,
+						forceSend: l.account.forceSend,
+						sentToday: l.dayKey === today ? l.sentToday : 0,
+						dailyLimit: l.dailyLimit ?? null,
+						nextSendAt: l.nextSendAt,
+						pausedUntil: l.pausedUntil,
+						lastError: l.lastError,
+					}))
+					.sort((a, b) => b.sentToday - a.sentToday),
+			})
+		}
+
+		const hour = now.getHours()
+		return {
+			// Идёт ли отправка прямо сейчас: мало быть запущенной, надо ещё
+			// попасть в окно. Вне окна кампания «запущена, но молчит», и это
+			// разные вещи, которые нельзя показывать одинаково.
+			sending: rows.some(r => r.status === 'RUNNING' && hour >= r.windowFrom && hour < r.windowTo && r.queued > 0),
+			now: now.toISOString(),
+			campaigns: rows,
+			totals: {
+				sentToday: rows.reduce((n, r) => n + r.sentToday, 0),
+				plannedToday: rows.reduce((n, r) => n + r.plannedToday, 0),
+				queued: rows.reduce((n, r) => n + r.queued, 0),
+			},
+		}
+	}
+
+	/**
+	 * Остановить рассылку совсем.
+	 *
+	 * Тем, кому уже писали, ничего не делаем: переписка и вся статистика по ней
+	 * остаются — это история, и стирать её нельзя.
+	 *
+	 * А вот тех, до кого не дошла очередь, из кампании УБИРАЕМ. Иначе они
+	 * заперты навсегда: при наборе новой рассылки отсеивается всякий, кто уже
+	 * стоит в списке любой другой кампании, — и отменённая забирала бы полсотни
+	 * живых лидов с собой в могилу. Написать им не успели, терять их незачем.
+	 *
+	 * Этим «Отменить» и отличается от «Паузы»: пауза сохраняет всё и
+	 * продолжается одной кнопкой, отмена закрывает рассылку и возвращает
+	 * несостоявшихся адресатов в общий котёл.
+	 */
+	async cancel(campaignId: string) {
+		const c = await this.prisma.tgCampaign.findUnique({ where: { id: campaignId }, select: { id: true } })
+		if (!c) throw new NotFoundException('Кампания не найдена')
+
+		const released = await this.prisma.tgRecipient.deleteMany({
+			where: { campaignId, status: 'QUEUED', sentAt: null },
+		})
+		await this.prisma.tgCampaign.update({
+			where: { id: campaignId },
+			data: { status: 'DONE', finishedAt: new Date() },
+		})
+		return { ok: true, released: released.count }
+	}
+
 	/** Кампания целиком: настройки, аккаунты, воронка. */
 	async card(id: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
@@ -1793,7 +2255,14 @@ export class CampaignService {
 				avatar: link.account.avatar,
 				status: link.account.status,
 				mode: link.account.mode,
+				forceSend: link.account.forceSend,
+				forceBlocked: forceable(link.account).why ?? null,
 				quotaToday: quota.get(link.account.id) ?? 0,
+				// Что стоит в поле ввода (null — «считать самим») и какой у
+				// аккаунта потолок: выше него делить бессмысленно.
+				dailyLimit: link.dailyLimit ?? null,
+				ceiling: Math.max(0, Math.min(c.perAccountPerDay,
+					link.account.forceSend ? c.perAccountPerDay : allow.dailyMessages)),
 				readiness: allow.readiness,
 				allowOutgoing: allow.allowOutgoing,
 				notes: allow.notes,
@@ -1804,6 +2273,9 @@ export class CampaignService {
 			})
 		}
 
+		// Сколько цели дня уже роздано руками и сколько осталось делить.
+		const assigned = c.accounts.reduce((n, l) => n + (l.dailyLimit ?? 0), 0)
+
 		const plan = await this.forecast(id)
 		const readiness = await this.accountsReadiness(id)
 		return {
@@ -1813,6 +2285,9 @@ export class CampaignService {
 			today: plan.today,
 			firstMessage: c.firstMessage, secondMessage: c.secondMessage,
 			dailyGoal: c.dailyGoal,
+			// Делёжка цели дня руками: роздано и сколько ещё можно раздать.
+			assigned,
+			leftToAssign: c.dailyGoal ? Math.max(0, c.dailyGoal - assigned) : null,
 			// Когда уйдёт последнее сообщение очереди. Оценка: паузы случайные.
 			finishAt: plan.finishAt,
 			preflight: await this.preflight(id, c.firstMessage),

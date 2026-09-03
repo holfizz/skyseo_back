@@ -32,6 +32,24 @@ export class CampaignManagerController {
 	}
 
 	/** Календарь отправок. Менеджеру он нужен так же: он ведёт переписку. */
+	/** Что с рассылкой сегодня: идёт ли, сколько ушло, когда следующее. */
+	@Get('today')
+	today() {
+		return this.svc.today()
+	}
+
+	/** Клиенты по всем рассылкам, разложенные по стадии разговора. */
+	@Get('clients')
+	clients(@Query('stage') stage?: string, @Query('limit') limit?: string, @Query('q') q?: string) {
+		return this.svc.clients(stage, limit ? Number(limit) : undefined, q)
+	}
+
+	/** Остановить совсем: адресаты остаются, расписание снимается. */
+	@Post('campaigns/:id/cancel')
+	cancel(@Param('id') id: string) {
+		return this.svc.cancel(id)
+	}
+
 	@Get('campaigns/:id/calendar')
 	calendar(@Param('id') id: string) {
 		return this.svc.calendar(id)
