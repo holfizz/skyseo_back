@@ -31,6 +31,17 @@ export class CampaignManagerController {
 		return this.svc.card(id)
 	}
 
+	/** Календарь отправок. Менеджеру он нужен так же: он ведёт переписку. */
+	@Get('campaigns/:id/calendar')
+	calendar(@Param('id') id: string) {
+		return this.svc.calendar(id)
+	}
+
+	@Post('campaigns/:id/schedule')
+	schedule(@Param('id') id: string) {
+		return this.svc.buildSchedule(id)
+	}
+
 	@Get('campaigns/:id/recipients')
 	recipients(@Param('id') id: string, @Query('status') status?: string, @Query('limit') limit?: string) {
 		return this.svc.recipients(id, status, limit ? Number(limit) : undefined)

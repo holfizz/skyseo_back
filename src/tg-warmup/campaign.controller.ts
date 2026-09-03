@@ -77,6 +77,24 @@ export class CampaignController {
 		return this.svc.testSend(id, body?.accountId, body?.target, body?.recipientId)
 	}
 
+	/** Календарь отправок: по дням, с временем и аккаунтом каждого сообщения. */
+	@Get('campaigns/:id/calendar')
+	calendar(@Param('id') id: string) {
+		return this.svc.calendar(id)
+	}
+
+	/** Пересобрать расписание: после смены окна, состава аккаунтов или норм. */
+	@Post('campaigns/:id/schedule')
+	schedule(@Param('id') id: string) {
+		return this.svc.buildSchedule(id)
+	}
+
+	/** Вернуть текст к заготовке из кода. */
+	@Post('campaigns/:id/reset-text')
+	resetText(@Param('id') id: string) {
+		return this.svc.resetText(id)
+	}
+
 	@Get('campaigns/:id/recipients')
 	recipients(@Param('id') id: string, @Query('status') status?: string, @Query('limit') limit?: string) {
 		return this.svc.recipients(id, status, limit ? Number(limit) : undefined)

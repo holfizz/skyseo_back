@@ -33,10 +33,16 @@ function siteName(domain?: string | null): string {
 	return parts.join('.')
 }
 
-export const PLACEHOLDERS = ['имя', 'отчество', 'фамилия', 'фио', 'сайт', 'компания'] as const
+export const PLACEHOLDERS = ['имя', 'отчество', 'фамилия', 'фио', 'сайт', 'компания', 'ждал'] as const
 
-function values(p: Placeholders): Record<string, string> {
+function values(p: Placeholders, now: Date): Record<string, string> {
+	const weekend = now.getDay() === 0 || now.getDay() === 6
 	return {
+		// Единственный плейсхолдер, который берётся не из адресата, а из
+		// календаря. Смысл фразы — показать, что момент выбирали, а не писали
+		// веером; в субботу «ждал будние» этот смысл переворачивает. Поэтому
+		// подставляется при отправке, а не при сохранении текста.
+		'ждал': weekend ? 'ждал выходные, чтобы вам написать' : 'ждал будние, чтобы вам написать',
 		'имя': (p.firstName ?? '').trim(),
 		'отчество': (p.middleName ?? '').trim(),
 		'фамилия': (p.lastName ?? '').trim(),
@@ -46,8 +52,8 @@ function values(p: Placeholders): Record<string, string> {
 	}
 }
 
-export function fillTemplate(template: string, p: Placeholders): string {
-	const vals = values(p)
+export function fillTemplate(template: string, p: Placeholders, now: Date = new Date()): string {
+	const vals = values(p, now)
 
 	let out = template.replace(/\{([^{}]+)\}/g, (_, key) => vals[String(key).trim().toLowerCase()] ?? '')
 
@@ -68,8 +74,8 @@ export function fillTemplate(template: string, p: Placeholders): string {
 }
 
 /** Какие плейсхолдеры в шаблоне не будут заполнены у этого адресата. */
-export function missingPlaceholders(template: string, p: Placeholders): string[] {
+export function missingPlaceholders(template: string, p: Placeholders, now: Date = new Date()): string[] {
 	const used = [...template.matchAll(/\{([^{}]+)\}/g)].map(m => m[1].trim().toLowerCase())
-	const filled = values(p)
+	const filled = values(p, now)
 	return [...new Set(used.filter(k => !filled[k]))]
 }

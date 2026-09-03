@@ -6,7 +6,9 @@ import { TelegramService } from '../telegram/telegram.service'
 import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
 import { fillTemplate, missingPlaceholders } from './campaign-text'
+import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { distributeDaily } from './warmup-plan'
+import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -111,12 +113,11 @@ function recipientFilter(group?: string) {
 	}
 }
 
-/** Начало окна в указанный день от сегодняшнего (0 — сегодня, 1 — завтра). */
-function windowStart(now: Date, hour: number, dayShift: number): Date {
-	const d = new Date(now)
-	d.setDate(d.getDate() + dayShift)
-	d.setHours(hour, 0, 0, 0)
-	return d
+/** Полночь указанных суток. */
+function startOfDay(d: Date): Date {
+	const t = new Date(d)
+	t.setHours(0, 0, 0, 0)
+	return t
 }
 
 /** Ключ суток для дневных счётчиков. */
@@ -182,16 +183,31 @@ export class CampaignService {
 		}))
 	}
 
-	async create(body: { name?: string; firstMessage?: string; secondMessage?: string }) {
-		if (!body?.firstMessage?.trim()) throw new BadRequestException('Пустой текст первого сообщения')
+	/**
+	 * Новая кампания. Текст берётся из кода, руками его не вводят.
+	 *
+	 * Параметры firstMessage и secondMessage оставлены: их присылает импорт
+	 * старых списков, и запрещать это незачем. Но по умолчанию — заготовка из
+	 * campaign-preset.ts, и именно она уходит при нажатии кнопки.
+	 */
+	async create(body?: { name?: string; firstMessage?: string; secondMessage?: string }) {
 		return this.prisma.tgCampaign.create({
 			data: {
-				name: body.name?.trim() || 'Без названия',
-				firstMessage: body.firstMessage.trim(),
-				secondMessage: body.secondMessage?.trim() || null,
+				name: body?.name?.trim() || new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+				firstMessage: body?.firstMessage?.trim() || FIRST_MESSAGE,
+				secondMessage: body?.secondMessage?.trim() || SECOND_MESSAGE,
 			},
 			select: { id: true },
 		})
+	}
+
+	/** Перезалить в кампанию заготовленный текст из кода. */
+	async resetText(id: string) {
+		await this.prisma.tgCampaign.update({
+			where: { id },
+			data: { firstMessage: FIRST_MESSAGE, secondMessage: SECOND_MESSAGE },
+		})
+		return { ok: true }
 	}
 
 	async update(id: string, body: any) {
@@ -223,6 +239,11 @@ export class CampaignService {
 		if (!data.name) delete data.name
 		if (!data.firstMessage) delete data.firstMessage
 		await this.prisma.tgCampaign.update({ where: { id }, data })
+
+		// Окно, паузы и нормы задают само расписание. Сохранить их и оставить
+		// прежний план — значит показывать календарь по старым настройкам.
+		const affectsPlan = ['perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo', 'dailyGoal']
+		if (affectsPlan.some(k => data[k] !== undefined)) await this.buildSchedule(id)
 		return { ok: true }
 	}
 
@@ -254,7 +275,13 @@ export class CampaignService {
 		// бы в первую же минуту после нажатия кнопки: одновременный старт пула —
 		// самое заметное, что можно сделать, никакие паузы между сообщениями
 		// этого уже не исправят.
-		if (status === 'RUNNING') return { ok: true, schedule: await this.scheduleStart(id) }
+		if (status === 'RUNNING') {
+			// Порядок важен: scheduleStart раскидывает ПЕРВЫЙ выход каждого
+			// аккаунта по случайной минуте окна, и планировщик отсчитывает от
+			// этих минут. Соберись план раньше — все стартовали бы разом.
+			const schedule = await this.scheduleStart(id)
+			return { ok: true, schedule, plan: await this.buildSchedule(id) }
+		}
 		return { ok: true }
 	}
 
@@ -342,7 +369,9 @@ export class CampaignService {
 				firstName: first || null, middleName: middle || null, domain: domain || null,
 			})
 		}
-		return { ...(await this.insertRecipients(campaignId, rows)), rejected }
+		const res = await this.insertRecipients(campaignId, rows)
+		if (res.added) await this.buildSchedule(campaignId)
+		return { ...res, rejected }
 	}
 
 	/**
@@ -431,7 +460,12 @@ export class CampaignService {
 			return true
 		})
 		const chosen = take ? fresh.slice(0, take) : fresh
-		if (chosen.length) await this.prisma.tgRecipient.createMany({ data: chosen })
+		if (chosen.length) {
+			await this.prisma.tgRecipient.createMany({ data: chosen })
+			// Добавили — сразу раскладываем по времени. Иначе новый адресат
+			// висел бы в календаре «без времени» до следующего запуска.
+			await this.buildSchedule(campaignId)
+		}
 		return { added: chosen.length, duplicates, alreadyWritten, available: fresh.length }
 	}
 
@@ -467,36 +501,47 @@ export class CampaignService {
 		}
 
 		if (!target) {
-			const last = await this.prisma.tgCampaign.findFirst({
-				orderBy: { createdAt: 'desc' },
-				where: { firstMessage: { not: '' } },
-			})
-			if (!last) {
-				throw new BadRequestException(
-					'Не с чего начать: создайте первую кампанию с текстом, дальше он будет подставляться сам',
-				)
-			}
+			// Текст — из кода, всегда. Раньше он наследовался от предыдущей
+			// кампании, и однажды введённая в админке формулировка закреплялась
+			// навсегда: правка в коде до новых рассылок уже не доходила.
+			//
+			// Пределы и аккаунты, наоборот, наследуем: это настройки пула, они
+			// меняются редко, и выставлять их заново каждый день — лишний шаг.
+			const last = await this.prisma.tgCampaign.findFirst({ orderBy: { createdAt: 'desc' } })
+			const accounts = last
+				? await this.prisma.tgCampaignAccount.findMany({
+						where: { campaignId: last.id },
+						select: { accountId: true },
+					})
+				: []
+			// Не нашлось ни одной прошлой кампании — берём все аккаунты, которым
+			// разрешена рассылка. Иначе первое же нажатие кнопки упиралось бы в
+			// «не выбрано ни одного аккаунта», а выбирать негде: настроек нет.
+			const pool = last
+				? accounts.map(a => a.accountId)
+				: (
+						await this.prisma.tgAccount.findMany({
+							where: { mode: { in: ['SEND', 'BOTH'] }, status: { notIn: ['BANNED', 'ERROR', 'PAUSED'] } },
+							select: { id: true },
+						})
+					).map(a => a.id)
+
 			target = await this.prisma.tgCampaign.create({
 				data: {
 					name: new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-					firstMessage: last.firstMessage,
-					secondMessage: last.secondMessage,
-					dailyGoal: last.dailyGoal,
-					perAccountPerDay: last.perAccountPerDay,
-					minIntervalSec: last.minIntervalSec,
-					maxIntervalSec: last.maxIntervalSec,
-					windowFrom: last.windowFrom,
-					windowTo: last.windowTo,
-					// Аккаунты наследуем от предыдущей: выбирать их заново каждый
-					// раз — лишний шаг, а состав пула меняется редко.
-					accounts: {
-						create: (
-							await this.prisma.tgCampaignAccount.findMany({
-								where: { campaignId: last.id },
-								select: { accountId: true },
-							})
-						).map(a => ({ accountId: a.accountId })),
-					},
+					firstMessage: FIRST_MESSAGE,
+					secondMessage: SECOND_MESSAGE,
+					dailyGoal: last?.dailyGoal ?? null,
+					...(last
+						? {
+								perAccountPerDay: last.perAccountPerDay,
+								minIntervalSec: last.minIntervalSec,
+								maxIntervalSec: last.maxIntervalSec,
+								windowFrom: last.windowFrom,
+								windowTo: last.windowTo,
+							}
+						: {}),
+					accounts: { create: pool.map(accountId => ({ accountId })) },
 				},
 			})
 			created = true
@@ -827,18 +872,40 @@ export class CampaignService {
 				const SKIP_LIMIT = 25
 				let verdict: SendVerdict = 'skipped'
 				let done = false
+				let planned = false
 				for (let skipped = 0; skipped <= SKIP_LIMIT; skipped++) {
-					const recipient = await this.prisma.tgRecipient.findFirst({
-						where: { campaignId: c.id, status: 'QUEUED' },
-						orderBy: { createdAt: 'asc' },
+					// Сначала — тот, кому этому аккаунту пора писать по плану.
+					let recipient = await this.prisma.tgRecipient.findFirst({
+						where: {
+							campaignId: c.id, status: 'QUEUED',
+							plannedAccountId: acc.id, scheduledAt: { lte: now },
+						},
+						orderBy: { scheduledAt: 'asc' },
 					})
+					planned = !!recipient
 					if (!recipient) {
-						// Очередь кончилась — кампания закрывается сама.
-						await this.prisma.tgCampaign.update({
-							where: { id: c.id },
-							data: { status: 'DONE', finishedAt: now },
+						// Адресаты без расписания: кампании, заведённые до него, и
+						// добавленные руками уже после сборки плана. Их разбирает
+						// любой свободный аккаунт, как было раньше.
+						recipient = await this.prisma.tgRecipient.findFirst({
+							where: { campaignId: c.id, status: 'QUEUED', plannedAccountId: null },
+							orderBy: { createdAt: 'asc' },
 						})
-						done = true
+					}
+					if (!recipient) {
+						// Пусто ИМЕННО у этого аккаунта — это не конец кампании:
+						// у остальных план может быть расписан на дни вперёд.
+						// Закрываем только когда в очереди не осталось никого.
+						const left = await this.prisma.tgRecipient.count({
+							where: { campaignId: c.id, status: 'QUEUED' },
+						})
+						if (!left) {
+							await this.prisma.tgCampaign.update({
+								where: { id: c.id },
+								data: { status: 'DONE', finishedAt: now },
+							})
+							done = true
+						}
 						break
 					}
 
@@ -865,21 +932,38 @@ export class CampaignService {
 						// Пауза между сообщениями нужна после отправки. После
 						// неудачи паузу уже поставил sendOne, своей длины, а после
 						// пропуска ждать нечего.
-						...(verdict === 'sent'
-							? {
-									nextSendAt: new Date(
-										now.getTime() +
-											(c.minIntervalSec +
-												Math.floor(Math.random() * Math.max(1, c.maxIntervalSec - c.minIntervalSec))) *
-												1000,
-									),
-								}
-							: {}),
+						...(verdict === 'sent' ? { nextSendAt: await this.nextSendAfter(c, acc.id, now, planned) } : {}),
 					},
 				})
 			}
 		}
 		return sent
+	}
+
+	/**
+	 * Когда этому аккаунту писать в следующий раз.
+	 *
+	 * Если отправка шла по расписанию, берём время следующей записи плана — так
+	 * календарь не разъезжается с делом. Раньше пауза бралась случайной каждый
+	 * раз, и стоило одной вытянуться длиннее запланированной, как весь остаток
+	 * дня уезжал: показанное время становилось всё более неправдой.
+	 *
+	 * Минимальную паузу всё равно выдерживаем: план мог быть собран при других
+	 * настройках, а два сообщения подряд с одного аккаунта — это то, за что
+	 * прилетает PEER_FLOOD.
+	 */
+	private async nextSendAfter(c: any, accountId: string, now: Date, planned: boolean): Promise<Date> {
+		const floor = new Date(now.getTime() + Math.max(30, c.minIntervalSec) * 1000)
+		if (planned) {
+			const next = await this.prisma.tgRecipient.findFirst({
+				where: { campaignId: c.id, status: 'QUEUED', plannedAccountId: accountId, scheduledAt: { not: null } },
+				orderBy: { scheduledAt: 'asc' },
+				select: { scheduledAt: true },
+			})
+			if (next?.scheduledAt) return next.scheduledAt > floor ? next.scheduledAt : floor
+		}
+		const spread = Math.max(1, c.maxIntervalSec - c.minIntervalSec)
+		return new Date(now.getTime() + (c.minIntervalSec + Math.floor(Math.random() * spread)) * 1000)
 	}
 
 	/**
@@ -1422,90 +1506,269 @@ export class CampaignService {
 	 * Считаем только тех, кому реально напишем: адресат без данных для текста
 	 * будет пропущен, и обещать ему время нельзя.
 	 */
-	async forecast(campaignId: string) {
+	/**
+	 * Состояние аккаунтов кампании на начало планирования.
+	 *
+	 * Отсев ровно тот же, что у отправщика: забаненные, ошибочные, снятые на
+	 * паузу и отведённые только под прогрев не участвуют. Расписание, которое
+	 * учитывает аккаунт, не умеющий писать, — просто красивая картинка.
+	 */
+	private async slotsFor(c: any, now: Date): Promise<PlanSlot[]> {
+		const today = dayKey(now)
+		const quota = await this.dailyQuota(c, today)
+		const slots: PlanSlot[] = []
+
+		for (const link of c.accounts) {
+			const acc = link.account
+			if (acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED') continue
+			if (acc.mode === 'WARM') continue
+			const allow = await this.warmup.allowanceFor(acc, 0)
+			if (!allow.allowOutgoing) continue
+
+			const cap = quota.get(acc.id) ?? 0
+			const sent = link.dayKey === today ? link.sentToday : 0
+			const floor = Math.max(link.nextSendAt?.getTime() ?? 0, link.pausedUntil?.getTime() ?? 0)
+			slots.push({
+				id: acc.id,
+				quota: cap,
+				left: Math.max(0, cap - sent),
+				cursor: startCursor(now, c, floor),
+				floor,
+				day: 0,
+			})
+		}
+		return slots
+	}
+
+	/**
+	 * Пересобрать расписание и записать его в базу.
+	 *
+	 * Записываем, а не считаем каждый раз заново, по двум причинам. Аккаунт
+	 * выбирается случайно — такой выбор надо запомнить, иначе при каждом
+	 * открытии календаря он был бы другим. И отправщик обязан идти по тому же
+	 * плану, который человек видел: календарь, расходящийся с делом, вреднее
+	 * отсутствия календаря.
+	 *
+	 * Планируются только те, кому есть чем писать: без данных для подстановки
+	 * сообщение всё равно не уйдёт, и держать такого адресата в календаре —
+	 * врать самому себе.
+	 */
+	async buildSchedule(campaignId: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
 			include: { accounts: { include: { account: true } } },
 		})
-		if (!c) return { times: {} as Record<string, PlannedSend>, finishAt: null as string | null, skipped: 0, today: 0 }
+		if (!c) throw new NotFoundException('Кампания не найдена')
 
+		const now = new Date()
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
 			orderBy: { createdAt: 'asc' },
 			select: { id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true },
 		})
 		const willWrite = queued.filter(r => missingPlaceholders(c.firstMessage, r).length === 0)
+		const slots = await this.slotsFor(c, now)
+		const plan = planQueue(willWrite.map(r => r.id), slots, c, now)
 
-		const now = new Date()
-		const today = dayKey(now)
-		const quota = await this.dailyQuota(c, today)
-		const avgPause = ((c.minIntervalSec + c.maxIntervalSec) / 2) * 1000
+		// Сначала снимаем прежний план со всей очереди, потом раскладываем
+		// новый: адресат, выпавший из плана (аккаунт убрали, данных не хватает),
+		// иначе остался бы с прошлым временем и попал в календарь как живой.
+		await this.prisma.tgRecipient.updateMany({
+			where: { campaignId, status: 'QUEUED' },
+			data: { scheduledAt: null, plannedAccountId: null },
+		})
 
-		// Начальное состояние каждого аккаунта: когда освободится и сколько
-		// сообщений ему осталось сегодня.
-		type Slot = { id: string; label: string | null; tgUserId: string | null; cursor: number; left: number; day: number }
-		const slots: Slot[] = []
-		for (const link of c.accounts) {
-			const acc = link.account
-			if (acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED') continue
-			const allow = await this.warmup.allowanceFor(acc, 0)
-			if (!allow.allowOutgoing) continue
-
-			const cap = quota.get(acc.id) ?? 0
-			const sent = link.dayKey === today ? link.sentToday : 0
-			const from = Math.max(
-				now.getTime(),
-				link.nextSendAt?.getTime() ?? 0,
-				link.pausedUntil?.getTime() ?? 0,
-				windowStart(now, c.windowFrom, 0).getTime(),
+		// Пачками: у каждого адресата своё время, одним updateMany не выйдет, а
+		// пятьсот отдельных запросов подряд — это пятьсот обращений к базе.
+		const entries = [...plan]
+		for (let i = 0; i < entries.length; i += 200) {
+			await this.prisma.$transaction(
+				entries.slice(i, i + 200).map(([id, p]) =>
+					this.prisma.tgRecipient.update({
+						where: { id },
+						data: { scheduledAt: p.at, plannedAccountId: p.accountId },
+					}),
+				),
 			)
-			slots.push({
-				id: acc.id, label: acc.label, tgUserId: acc.tgUserId,
-				cursor: from, left: Math.max(0, cap - sent), day: 0,
-			})
 		}
+
+		return { planned: plan.size, unplanned: queued.length - plan.size, accounts: slots.length }
+	}
+
+	/**
+	 * Календарь на сутки вперёд, столько дней, сколько занимает очередь.
+	 *
+	 * Кроме запланированного показывает и уже отправленное за эти дни: иначе к
+	 * вечеру день выглядит пустым, хотя по нему прошло двадцать сообщений, и
+	 * непонятно, случилось что-то или нет.
+	 */
+	async calendar(campaignId: string) {
+		const c = await this.prisma.tgCampaign.findUnique({
+			where: { id: campaignId },
+			include: { accounts: { include: { account: true } } },
+		})
+		if (!c) throw new NotFoundException('Кампания не найдена')
+
+		const pick = {
+			id: true, username: true, phone: true, status: true,
+			firstName: true, middleName: true, lastName: true, company: true, domain: true,
+			scheduledAt: true, plannedAccountId: true, sentAt: true, accountId: true, error: true,
+		}
+		const [queued, done] = await Promise.all([
+			this.prisma.tgRecipient.findMany({
+				where: { campaignId, status: 'QUEUED' },
+				orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
+				select: pick,
+			}),
+			// Уже ушедшее берём с начала сегодняшних суток: раньше это уже не
+			// «что происходит», а история, и ей место в списке адресатов.
+			this.prisma.tgRecipient.findMany({
+				where: { campaignId, sentAt: { gte: startOfDay(new Date()) } },
+				orderBy: { sentAt: 'asc' },
+				select: pick,
+			}),
+		])
+
+		const byId = new Map(c.accounts.map(l => [l.account.id, l.account]))
+		const name = (r: any) =>
+			[r.firstName, r.lastName].filter(Boolean).join(' ')
+			|| r.company
+			|| (r.username ? `@${r.username}` : null)
+			|| r.phone
+			|| 'без имени'
+
+		const event = (r: any, at: Date, sent: boolean) => {
+			const acc = byId.get(sent ? r.accountId : r.plannedAccountId) ?? null
+			return {
+				id: r.id,
+				at: at.toISOString(),
+				name: name(r),
+				username: r.username,
+				domain: r.domain,
+				sent,
+				status: r.status,
+				accountId: acc?.id ?? null,
+				accountLabel: acc?.label ?? null,
+				accountAvatar: acc?.avatar ?? null,
+				tgUserId: acc?.tgUserId ?? null,
+			}
+		}
+
+		const days = new Map<string, any[]>()
+		const add = (r: any, at: Date, sent: boolean) => {
+			const key = dayKey(at)
+			const list = days.get(key)
+			if (list) list.push(event(r, at, sent))
+			else days.set(key, [event(r, at, sent)])
+		}
+		for (const r of done) if (r.sentAt) add(r, r.sentAt, true)
+		for (const r of queued) if (r.scheduledAt) add(r, r.scheduledAt, false)
+
+		// Кому времени не досталось: не хватает данных для текста, кончились
+		// нормы или расписание вообще не собирали.
+		const unplanned = queued
+			.filter(r => !r.scheduledAt)
+			.map(r => ({
+				id: r.id,
+				name: name(r),
+				username: r.username,
+				why: missingPlaceholders(c.firstMessage, r).length
+					? `нет данных: ${missingPlaceholders(c.firstMessage, r).join(', ')}`
+					: 'не хватило дневных норм',
+			}))
+
+		return {
+			campaignId: c.id,
+			name: c.name,
+			status: c.status,
+			windowFrom: c.windowFrom,
+			windowTo: c.windowTo,
+			minIntervalSec: c.minIntervalSec,
+			maxIntervalSec: c.maxIntervalSec,
+			dailyGoal: c.dailyGoal,
+			perAccountPerDay: c.perAccountPerDay,
+			accounts: c.accounts.map(l => ({
+				id: l.account.id,
+				label: l.account.label,
+				avatar: l.account.avatar,
+				tgUserId: l.account.tgUserId,
+			})),
+			days: [...days]
+				.sort(([a], [b]) => (a < b ? -1 : 1))
+				.map(([key, items]) => ({
+					key,
+					items: items.sort((x, y) => (x.at < y.at ? -1 : 1)),
+					total: items.length,
+					sent: items.filter(i => i.sent).length,
+				})),
+			unplanned,
+		}
+	}
+
+	/**
+	 * Когда и с какого аккаунта уйдёт каждое сообщение.
+	 *
+	 * Читает записанное расписание, а не считает своё: показывать одно, а
+	 * отправлять по другому нельзя. Если расписание не собирали вовсе — старая
+	 * кампания, — прикидываем на месте и НЕ записываем: цифры «сегодня уйдёт
+	 * столько» нужны и там, а молча менять план у работающей рассылки нельзя.
+	 */
+	async forecast(campaignId: string) {
+		const empty = { times: {} as Record<string, PlannedSend>, finishAt: null as string | null, skipped: 0, today: 0, unplanned: 0 }
+		const c = await this.prisma.tgCampaign.findUnique({
+			where: { id: campaignId },
+			include: { accounts: { include: { account: true } } },
+		})
+		if (!c) return empty
+
+		const queued = await this.prisma.tgRecipient.findMany({
+			where: { campaignId, status: 'QUEUED' },
+			orderBy: { createdAt: 'asc' },
+			select: {
+				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true,
+				scheduledAt: true, plannedAccountId: true,
+			},
+		})
+		const willWrite = queued.filter(r => missingPlaceholders(c.firstMessage, r).length === 0)
+		const skipped = queued.length - willWrite.length
 
 		const times: Record<string, PlannedSend> = {}
-		if (!slots.length || !willWrite.length) {
-			return { times, finishAt: null, skipped: queued.length - willWrite.length, today: 0 }
+		const byId = new Map(c.accounts.map(l => [l.account.id, l.account]))
+		const put = (id: string, at: Date, accountId: string) => {
+			const acc = byId.get(accountId)
+			times[id] = {
+				at: at.toISOString(),
+				accountId,
+				accountLabel: acc?.label ?? null,
+				tgUserId: acc?.tgUserId ?? null,
+			}
 		}
 
-		let last = 0
 		for (const r of willWrite) {
-			// Берём аккаунт, который освободится раньше всех.
-			let slot = slots[0]
-			for (const s of slots) if (s.cursor < slot.cursor) slot = s
-
-			// Норма на сегодня выбрана или окно кончилось — переносим на завтра.
-			const dayEnd = windowStart(now, c.windowTo, slot.day).getTime()
-			if (slot.left <= 0 || slot.cursor >= dayEnd) {
-				slot.day++
-				slot.cursor = windowStart(now, c.windowFrom, slot.day).getTime()
-				// Норма следующего дня та же, что сегодня: состав пула и готовность
-				// за сутки заметно не меняются, а гадать точнее смысла нет.
-				slot.left = quota.get(slot.id) ?? c.perAccountPerDay
+			if (r.scheduledAt && r.plannedAccountId && byId.has(r.plannedAccountId)) {
+				put(r.id, r.scheduledAt, r.plannedAccountId)
 			}
-
-			times[r.id] = {
-				at: new Date(slot.cursor).toISOString(),
-				accountId: slot.id,
-				accountLabel: slot.label,
-				tgUserId: slot.tgUserId,
-			}
-			last = Math.max(last, slot.cursor)
-			slot.cursor += avgPause
-			slot.left--
 		}
 
-		// Сколько из очереди уйдёт сегодня — главная цифра при запуске «на сегодня».
-		const endOfToday = windowStart(now, c.windowTo, 0).getTime()
-		const goesToday = Object.values(times).filter(t => new Date(t.at).getTime() < endOfToday).length
+		// Ни одного запланированного при непустой очереди — расписание никогда
+		// не собирали. Прикидка нужна, чтобы карточка не показывала нули.
+		if (!Object.keys(times).length && willWrite.length) {
+			const now = new Date()
+			const slots = await this.slotsFor(c, now)
+			for (const [id, p] of planQueue(willWrite.map(r => r.id), slots, c, now)) put(id, p.at, p.accountId)
+		}
+
+		const all = Object.values(times).map(t => new Date(t.at).getTime())
+		const endOfToday = windowStart(new Date(), c.windowTo, 0).getTime()
 
 		return {
 			times,
-			finishAt: last ? new Date(last).toISOString() : null,
-			skipped: queued.length - willWrite.length,
-			today: goesToday,
+			finishAt: all.length ? new Date(Math.max(...all)).toISOString() : null,
+			skipped,
+			// Главная цифра при запуске «на сегодня».
+			today: all.filter(t => t < endOfToday).length,
+			// Кому времени не досталось: норм не хватило либо не собирали план.
+			unplanned: willWrite.length - Object.keys(times).length,
 		}
 	}
 

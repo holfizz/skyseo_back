@@ -1262,7 +1262,8 @@ model TgAccount {
   runs       TgWarmupRun[]
   actions    TgWarmupAction[]
   campaigns  TgCampaignAccount[]
-  recipients TgRecipient[]
+  recipients TgRecipient[]       @relation("RecipientSender")
+  planned    TgRecipient[]       @relation("RecipientPlanned")
   events     TgAccountEvent[]
 
   @@index([status])
@@ -1424,6 +1425,14 @@ model TgRecipient {
   // меняется: переписку нельзя продолжать с другого аккаунта.
   accountId String?
 
+  // Расписание: когда и с какого аккаунта планируем написать. Хранится, а не
+  // считается на лету, по двум причинам. Календарь должен показывать то, что
+  // действительно произойдёт, а не прогноз, который разъедется на первой же
+  // паузе. И аккаунт выбирается СЛУЧАЙНО — такой выбор надо запомнить, иначе
+  // при каждом пересчёте он был бы другим.
+  scheduledAt      DateTime?
+  plannedAccountId String?
+
   sentAt       DateTime?
   sentMsgId    Int? // id нашего сообщения в Telegram — по нему считаем прочтение
   readAt       DateTime?
@@ -1438,12 +1447,16 @@ model TgRecipient {
 
   createdAt DateTime @default(now())
 
-  campaign TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  account  TgAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  messages TgDialogMessage[]
+  campaign       TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  account        TgAccount?        @relation("RecipientSender", fields: [accountId], references: [id], onDelete: SetNull)
+  plannedAccount TgAccount?        @relation("RecipientPlanned", fields: [plannedAccountId], references: [id], onDelete: SetNull)
+  messages       TgDialogMessage[]
 
   @@index([campaignId, status])
   @@index([status])
+  // По этому индексу отправщик каждую минуту ищет, кому пора писать с данного
+  // аккаунта. Без него это перебор всей очереди кампании на каждый аккаунт.
+  @@index([campaignId, plannedAccountId, status, scheduledAt])
   @@map("tg_recipients")
 }
 
