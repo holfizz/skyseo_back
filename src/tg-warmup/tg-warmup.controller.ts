@@ -1,5 +1,5 @@
 import {
-	Body, Controller, Delete, Get, Param, Post, Put, UploadedFiles, UseGuards, UseInterceptors,
+	Body, Controller, Delete, Get, Param, Post, Put, Query, UploadedFiles, UseGuards, UseInterceptors,
 } from '@nestjs/common'
 import { FilesInterceptor } from '@nestjs/platform-express'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
@@ -131,6 +131,19 @@ export class TgWarmupController {
 		return this.svc.timeline(id)
 	}
 
+	/**
+	 * Общая лента по всему пулу: действия прогрева, события аккаунтов и отправки
+	 * рассылки в одном списке. filter=errors показывает только отказы.
+	 */
+	@Get('activity')
+	activity(
+		@Query('filter') filter?: 'all' | 'errors' | 'ok',
+		@Query('accountId') accountId?: string,
+		@Query('limit') limit?: string,
+	) {
+		return this.svc.activity({ filter, accountId, limit: limit ? Number(limit) : undefined })
+	}
+
 	/** Журнал событий: баны, разлогины, обращения по спам-блоку. */
 	@Get('accounts/:id/events')
 	events(@Param('id') id: string) {
@@ -147,6 +160,17 @@ export class TgWarmupController {
 	@Post('stop')
 	stop(@Body() body: { ids: string[] }) {
 		return this.svc.stopWarmup(body?.ids ?? [])
+	}
+
+	/** Каталог действий прогрева с пометкой «включено». */
+	@Get('actions')
+	actions() {
+		return this.svc.actionsCatalog()
+	}
+
+	@Put('actions')
+	setActions(@Body() body: { disabled: string[] }) {
+		return this.svc.setDisabledActions(body?.disabled ?? [])
 	}
 
 	@Get('channels')

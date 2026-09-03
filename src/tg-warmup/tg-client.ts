@@ -291,6 +291,33 @@ export async function probeAccount(client: TelegramClient): Promise<ProbeResult>
 	const dialogList: any[] = Array.isArray(dialogs) ? dialogs : (dialogs?.dialogs ?? [])
 	const channels = dialogList.filter(d => d?.isChannel || d?.entity?.className === 'Channel').length
 
+	/*
+	 * Своя история аккаунта — та, что была ДО нас.
+	 *
+	 * Без неё оценка врала в обе стороны: купленный аккаунт с двумя годами
+	 * переписки выглядел так же пусто, как вчерашняя пустышка, потому что в
+	 * нашем журнале у обоих ноль. А это ровно тот признак, за который платят.
+	 *
+	 * Считаем по номеру последнего сообщения в диалоге: в личной переписке
+	 * номера идут подряд с единицы, так что topMessage — это и есть, сколько
+	 * сообщений там всего было. Для каналов так нельзя (там своя нумерация на
+	 * весь канал, а не на нашу с ним переписку), поэтому берём только личные.
+	 * Оценка грубая, но отличает «переписывался годами» от «чистый лист».
+	 */
+	let historyMessages = 0
+	let oldestDialogDays: number | null = null
+	for (const d of dialogList) {
+		if (!d?.isUser) continue
+		const top = Number(d?.dialog?.topMessage ?? 0)
+		// Отсекаем нелепые значения: битый диалог не должен раздувать сумму.
+		if (Number.isFinite(top) && top > 0 && top < 500_000) historyMessages += top
+		const date = Number(d?.message?.date ?? 0)
+		if (date > 0) {
+			const days = Math.floor((Date.now() / 1000 - date) / 86400)
+			if (oldestDialogDays == null || days > oldestDialogDays) oldestDialogDays = days
+		}
+	}
+
 	const probe: AccountProbe = {
 		ageDays: est ? est.ageDays : null,
 		oldestSessionDays: oldest ? Math.floor((Date.now() - oldest) / DAY) : null,
@@ -304,6 +331,8 @@ export async function probeAccount(client: TelegramClient): Promise<ProbeResult>
 		twoFactor: !!password?.hasPassword,
 		dialogs: dialogList.length,
 		channels,
+		historyMessages,
+		oldestDialogDays,
 		contacts: Number(contacts?.contacts?.length ?? contacts?.savedCount ?? 0) || 0,
 		// Точного счётчика исходящих Telegram не отдаёт. Здесь ноль, а реальное
 		// значение подставляет сервис: он знает наш собственный журнал действий.

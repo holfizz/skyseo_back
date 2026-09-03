@@ -46,9 +46,17 @@ const BOT = 'SpamBot'
 export function readState(text: string): SpamAnswer['state'] {
 	const t = (text ?? '').toLowerCase()
 	if (!t) return 'unknown'
+
+	// Порядок проверок важен, и «чисто» обязано идти ДО «ограничено».
+	// Бот пишет «Ваш аккаунт свободен от каких-либо ограничений» — в этой фразе
+	// есть слово «ограничений», и поиск подстроки принимал её за ограничение.
+	// Здоровый аккаунт помечался как заблокированный и переставал рассылать.
 	if (/навсегда|permanently|forever|will not be lifted/.test(t)) return 'permanent'
-	if (/ограничен|ограничения|limited|restricted|until|до\s+\d/.test(t)) return 'temporary'
-	if (/no limits|free as a bird|свободен|ограничени\w* нет|good news/.test(t)) return 'clean'
+	if (/свободен от|нет ограничени|без ограничени|no limits|free as a bird|good news/.test(t)) return 'clean'
+	// Ограничение бот всегда называет вместе со сроком или прямым «ограничен».
+	if (/ограничен\s+(до|на)|limited until|restricted until|заблокирован\s+до/.test(t)) return 'temporary'
+	// Отдельный случай: «аккаунт ограничен» без срока.
+	if (/(аккаунт|account)[^.!?]{0,40}(ограничен|limited|restricted)/.test(t)) return 'temporary'
 	return 'unknown'
 }
 

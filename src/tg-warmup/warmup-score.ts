@@ -25,6 +25,14 @@ export type AccountProbe = {
 	dialogs: number
 	channels: number
 	contacts: number
+	/**
+	 * Сколько сообщений в личных переписках накопилось за всю жизнь аккаунта,
+	 * включая то, что было до нас. Оценка по номеру последнего сообщения.
+	 */
+	historyMessages: number | null
+	/** Возраст самой старой переписки: сколько аккаунтом реально пользовались. */
+	oldestDialogDays: number | null
+	/** Исходящие, которые сделали МЫ. Своя работа, а не унаследованная. */
 	outgoingTotal: number
 	spamBlock: 'clean' | 'temporary' | 'permanent' | 'unknown'
 	frozen: boolean
@@ -105,7 +113,11 @@ function blockAge(p: AccountProbe, t: AccountTelemetry): number {
 	const byId = p.ageDays == null ? 30 : steps(p.ageDays, [[2, 0], [7, 30], [30, 60], [90, 85]], 100)
 	const managed = steps(t.daysManaged * 24, [[2, 0], [24, 40], [24 * 7, 70]], 100)
 	const session = p.oldestSessionDays == null ? 40 : steps(p.oldestSessionDays, [[1, 20], [7, 50], [30, 80]], 100)
-	return avg([byId, managed, session])
+	// Возраст по номеру говорит, когда аккаунт ЗАВЕЛИ, а возраст самой старой
+	// переписки — когда им начали пользоваться. Между ними бывает пропасть:
+	// зарегистрирован два года назад, а первое сообщение позавчера.
+	const used = p.oldestDialogDays == null ? 50 : steps(p.oldestDialogDays, [[7, 20], [30, 50], [90, 75]], 100)
+	return avg([byId, managed, session, used])
 }
 
 function blockIdentity(p: AccountProbe): number {
@@ -136,7 +148,14 @@ function blockBehavior(p: AccountProbe, t: AccountTelemetry): number {
 	const dialogs = steps(p.dialogs, [[0, 0], [5, 40], [20, 75]], 100)
 	const channels = steps(p.channels, [[0, 0], [5, 50], [30, 90]], 100)
 	const contacts = steps(p.contacts, [[0, 0], [10, 60]], 100)
-	const outgoing = steps(p.outgoingTotal, [[0, 0], [20, 50]], 100)
+	// Накопленная переписка — то, чего не подделать прогревом за неделю, и
+	// главное, чем купленный живой аккаунт отличается от свежерождённого.
+	const history = p.historyMessages == null
+		? 40
+		: steps(p.historyMessages, [[0, 0], [50, 45], [300, 75], [1500, 92]], 100)
+	// Наши собственные исходящие считаем отдельно и мягче: это работа за дни,
+	// а не за годы, и требовать от неё сотен сообщений бессмысленно.
+	const outgoing = steps(p.outgoingTotal, [[0, 20], [20, 55]], 100)
 	const activeDays = steps(t.activeDaysLast30, [[0, 0], [7, 40], [20, 80]], 100)
 	// Ровный поток лучше рывка: считаем коэффициент вариации по дням.
 	const m = avg(t.actionsPerDay)
@@ -144,7 +163,7 @@ function blockBehavior(p: AccountProbe, t: AccountTelemetry): number {
 	const evenness = Math.max(0, 100 - cv * 60)
 	// «Залили и сразу погнали» — прямой штраф.
 	const burst = t.firstDayActionShare > 0.5 ? 0 : 100
-	return avg([dialogs, channels, contacts, outgoing, activeDays, evenness, burst])
+	return avg([dialogs, channels, contacts, history, outgoing, activeDays, evenness, burst])
 }
 
 function blockRestrictions(p: AccountProbe, t: AccountTelemetry): number {
@@ -205,6 +224,9 @@ export type Advice = { level: 'стоп' | 'важно' | 'совет'; text: st
 
 function warmness(p: AccountProbe, t: AccountTelemetry): Warmness {
 	const endurance = Math.min(100, (t.daysManaged / 7) * 100)
+	// Накопленная активность считается за ВСЁ время под нашим управлением, а не
+	// за текущий прогон: аккаунт, который грели трижды по неделе, прогрет
+	// сильнее, чем тот, что первый день на первом прогоне.
 	const byActions = Math.min(100, (t.actionsTotal / 40) * 100)
 	const byDays = Math.min(100, (t.activeDaysLast30 / 5) * 100)
 	const activity = Math.min(byActions, byDays)
@@ -260,6 +282,14 @@ function buildAdvice(i: ScoreInput, blocks: Record<BlockKey, number>, w: Warmnes
 	if (p.photoCount === 0) out.push({ level: 'совет', text: 'Нет фото профиля. Добавьте одно, позже второе — разными днями' })
 	if (!p.twoFactor) out.push({ level: 'совет', text: 'Не включена двухфакторка. Это и признак хозяйского аккаунта, и защита от угона' })
 	if (p.channels < 5) out.push({ level: 'совет', text: 'Мало подписок. Чтение каналов — самое безопасное действие, наращивайте им историю' })
+	// Разводим два очень разных случая, которые снаружи выглядят одинаково
+	// «молодыми»: у одного нет истории вообще, у другого она есть, но чужая.
+	if (p.historyMessages != null && p.historyMessages < 30 && (p.ageDays ?? 0) > 90) {
+		out.push({ level: 'важно', text: 'Аккаунту не первый месяц, а переписки почти нет. Такой возраст Telegram не засчитывает — прогревайте как новый' })
+	}
+	if (p.historyMessages != null && p.historyMessages > 300) {
+		out.push({ level: 'совет', text: `В переписках уже около ${p.historyMessages} сообщений — своя история у аккаунта есть, разгонять его можно смелее` })
+	}
 	if (blocks.origin < 50 && o.numberGeo) out.push({ level: 'совет', text: `Гео ${o.numberGeo} по нашим данным живёт хуже среднего. Для новых закупок берите RU, UA, KZ` })
 	if (!o.supplier) out.push({ level: 'совет', text: 'Не указан поставщик. Ведите статистику выживаемости по поставщикам, это сильнейший признак' })
 

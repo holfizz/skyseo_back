@@ -11,7 +11,7 @@ import { parseProxyPool } from './proxy-pool'
 import { detectOrigin } from './proxy-geo'
 import { classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
 import { askStatus, pressButton, sendText } from './spam-bot'
-import { DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
+import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
 import {
 	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, planDay,
 	type Allowance, type Session, type Window,
@@ -23,6 +23,7 @@ const DAY_MS = 86400000
 const KEY_CHANNELS = 'tg_warmup_channels'
 const KEY_API_ID = 'tg_warmup_api_id'
 const KEY_API_HASH = 'tg_warmup_api_hash'
+const KEY_ACTIONS = 'tg_warmup_disabled_actions'
 
 /** Адрес дата-центра Telegram, по которому проверяется живость прокси. */
 const DC_PROBE = { host: '149.154.167.51', port: 443 }
@@ -325,6 +326,7 @@ export class TgWarmupService {
 		if (!scored.length) return out
 
 		const rowsByAccount = await this.actionRows(scored.map(a => a.id))
+		const outgoingByAccount = await this.outgoingLifetime(scored.map(a => a.id))
 		// Соседи по прокси и размер пачки считаются относительно ВСЕХ аккаунтов,
 		// а не только переданных. Когда список уже загружен целиком, он и есть
 		// население; для одной карточки его надо дочитать, иначе у аккаунта
@@ -337,7 +339,7 @@ export class TgWarmupService {
 		const created = all.map(a => a.createdAt.getTime())
 
 		for (const a of scored) {
-			const t = this.telemetryFrom(rowsByAccount.get(a.id) ?? [], a.createdAt, a)
+			const t = this.telemetryFrom(rowsByAccount.get(a.id) ?? [], a.createdAt, a, outgoingByAccount.get(a.id) ?? 0)
 			const neighbors = a.proxyId ? Math.max(0, (byProxy.get(a.proxyId) ?? 1) - 1) : 0
 			const batchSize = created.filter(c => Math.abs(c - a.createdAt.getTime()) <= 60_000).length
 			out.set(
@@ -846,7 +848,25 @@ export class TgWarmupService {
 			where: { id: accountId },
 			select: { actionsTotal: true, warmupDaysDone: true, floodWaits: true, peerFloods: true, reauths: true },
 		})
-		return this.telemetryFrom(rowsByAccount.get(accountId) ?? [], createdAt, acc)
+		const outgoing = await this.outgoingLifetime([accountId])
+		return this.telemetryFrom(rowsByAccount.get(accountId) ?? [], createdAt, acc, outgoing.get(accountId) ?? 0)
+	}
+
+	/**
+	 * Исходящие за ВСЁ время, а не за последние 30 суток.
+	 *
+	 * Журнал действий мы читаем окном — иначе у долгоживущего аккаунта запрос
+	 * разрастается, — но наработка так теряется: аккаунт, который грели три
+	 * недели весной, к лету снова выглядел бы чистым листом. Счётчик берём
+	 * отдельным агрегатом по всей истории.
+	 */
+	private async outgoingLifetime(ids: string[]) {
+		const rows = await this.prisma.tgWarmupAction.groupBy({
+			by: ['accountId'],
+			where: { accountId: { in: ids }, ok: true, kind: { in: OUTGOING as string[] } },
+			_count: { _all: true },
+		})
+		return new Map(rows.map(r => [r.accountId, r._count._all]))
 	}
 
 	/** Журнал действий за 30 суток сразу по нескольким аккаунтам — одним запросом. */
@@ -870,6 +890,7 @@ export class TgWarmupService {
 		rows: Array<{ kind: string; createdAt: Date; ok: boolean }>,
 		createdAt: Date,
 		acc: { actionsTotal: number; warmupDaysDone: number; floodWaits: number; peerFloods: number; reauths: number } | null,
+		outgoingAll?: number,
 	) {
 		const byDay = new Map<string, number>()
 		for (const r of rows) byDay.set(dateKey(r.createdAt), (byDay.get(dateKey(r.createdAt)) ?? 0) + 1)
@@ -898,7 +919,7 @@ export class TgWarmupService {
 			revives: 0,
 			reauths: acc?.reauths ?? 0,
 		}
-		return { value, outgoing: rows.filter(r => OUTGOING.includes(r.kind as ActionKind) && r.ok).length }
+		return { value, outgoing: outgoingAll ?? rows.filter(r => OUTGOING.includes(r.kind as ActionKind) && r.ok).length }
 	}
 
 	/** Происхождение: номер, прокси, соседи по IP, размер пачки при заливке. */
@@ -975,11 +996,16 @@ export class TgWarmupService {
 			})
 			await this.persistSession(a.id, opts.session, session)
 
-			// Статус кладём в анкету: из него считается блок «Ограничения».
-			await this.prisma.tgAccount.update({
-				where: { id: a.id },
-				data: { probe: { ...((a.probe as any) ?? {}), spamBlock: result.state } as any },
-			})
+			// В анкету пишем только когда бот действительно назвал статус.
+			// После нажатия кнопки он отвечает вежливостью вроде «Всегда
+			// пожалуйста», и разбор честно даёт unknown — затирать этим прежний
+			// ответ нельзя, иначе результат проверки теряется следующим же шагом.
+			if (result.state !== 'unknown') {
+				await this.prisma.tgAccount.update({
+					where: { id: a.id },
+					data: { probe: { ...((a.probe as any) ?? {}), spamBlock: result.state } as any },
+				})
+			}
 
 			const what =
 				action.kind === 'press' ? `нажата кнопка №${action.index + 1}`
@@ -1071,6 +1097,95 @@ export class TgWarmupService {
 		}
 	}
 
+	/**
+	 * Общая лента по всему пулу: что делали аккаунты, что сломалось, что ушло.
+	 *
+	 * Собирается из трёх источников, потому что события живут в разных таблицах
+	 * и по отдельности не отвечают на вопрос «что вообще происходит»:
+	 *   действия прогрева  — чтение, вступления, реакции;
+	 *   события аккаунтов  — баны, разлогины, разговоры со спам-ботом;
+	 *   отправки рассылки  — первые касания и ответы.
+	 *
+	 * Слияние делаем в памяти, а не запросом с UNION: таблицы разной формы, а
+	 * объём тут — сотни строк за сутки, не миллионы.
+	 */
+	async activity(opts?: { filter?: 'all' | 'errors' | 'ok'; accountId?: string; limit?: number }) {
+		const take = Math.max(10, Math.min(500, opts?.limit ?? 200))
+		// Из каждого источника берём с запасом: фильтр по сбоям применяется уже
+		// после слияния, и без запаса «покажи 5 ошибок» возвращало две — просто
+		// потому, что в пятёрке свежих строк каждого источника их столько и было.
+		const grab = Math.min(1000, take * 4)
+		const where = opts?.accountId ? { accountId: opts.accountId } : {}
+
+		const [actions, events, sends] = await Promise.all([
+			this.prisma.tgWarmupAction.findMany({
+				where,
+				orderBy: { createdAt: 'desc' },
+				take: grab,
+				include: { account: { select: { id: true, label: true, avatar: true } } },
+			}),
+			this.prisma.tgAccountEvent.findMany({
+				where,
+				orderBy: { createdAt: 'desc' },
+				take: grab,
+				include: { account: { select: { id: true, label: true, avatar: true } } },
+			}),
+			this.prisma.tgRecipient.findMany({
+				where: { ...where, OR: [{ sentAt: { not: null } }, { error: { not: null } }] },
+				orderBy: { createdAt: 'desc' },
+				take: grab,
+				include: { account: { select: { id: true, label: true, avatar: true } } },
+			}),
+		])
+
+		type Row = {
+			id: string
+			at: Date
+			source: 'прогрев' | 'аккаунт' | 'рассылка'
+			kind: string
+			ok: boolean
+			text: string
+			account: { id: string; label: string | null; avatar: string | null } | null
+		}
+
+		const rows: Row[] = [
+			...actions.map(a => ({
+				id: `a:${a.id}`, at: a.createdAt, source: 'прогрев' as const,
+				kind: a.kind, ok: a.ok, text: a.detail ?? '', account: a.account,
+			})),
+			...events.map(e => ({
+				id: `e:${e.id}`, at: e.createdAt, source: 'аккаунт' as const,
+				kind: e.kind,
+				// Бан, разлогин и спам-лимит — это отказы, остальное просто отметки.
+				ok: !['banned', 'unauthorized', 'peer-flood'].includes(e.kind),
+				text: e.text, account: e.account,
+			})),
+			...sends
+				.filter(r => r.account)
+				.map(r => ({
+					id: `s:${r.id}`,
+					at: r.sentAt ?? r.createdAt,
+					source: 'рассылка' as const,
+					kind: r.error ? 'send-failed' : 'send',
+					ok: !r.error,
+					text: r.error
+						? `${r.username ? '@' + r.username : r.phone}: ${r.error}`
+						: `${r.username ? '@' + r.username : r.phone}${r.domain ? ` · ${r.domain}` : ''}`,
+					account: r.account!,
+				})),
+		]
+
+		const filtered =
+			opts?.filter === 'errors' ? rows.filter(r => !r.ok)
+				: opts?.filter === 'ok' ? rows.filter(r => r.ok)
+					: rows
+
+		return {
+			rows: filtered.sort((a, b) => b.at.getTime() - a.at.getTime()).slice(0, take),
+			counts: { all: rows.length, errors: rows.filter(r => !r.ok).length, ok: rows.filter(r => r.ok).length },
+		}
+	}
+
 	/** Журнал событий аккаунта: баны, разлогины, разговоры со SpamBot. */
 	async events(accountId: string, limit = 50) {
 		return this.prisma.tgAccountEvent.findMany({
@@ -1081,6 +1196,40 @@ export class TgWarmupService {
 	}
 
 	// ── список каналов ───────────────────────────────────────────────────────
+
+	/**
+	 * Что владелец выключил в настройках прогрева.
+	 *
+	 * Храним ВЫКЛЮЧЕННЫЕ, а не включённые: тогда новое действие, добавленное
+	 * позже, включается само и не приходится трогать настройки у всех.
+	 */
+	async getDisabledActions(): Promise<Set<string>> {
+		const row = await this.prisma.appConfig.findUnique({ where: { key: KEY_ACTIONS } })
+		if (!row?.value) return new Set()
+		try {
+			const list = JSON.parse(row.value)
+			return new Set(Array.isArray(list) ? list.map(String) : [])
+		} catch {
+			return new Set()
+		}
+	}
+
+	async setDisabledActions(ids: string[]) {
+		const known = new Set(catalogInfo().map(a => a.id))
+		const value = JSON.stringify([...new Set(ids ?? [])].filter(id => known.has(id as any)))
+		await this.prisma.appConfig.upsert({
+			where: { key: KEY_ACTIONS },
+			create: { key: KEY_ACTIONS, value },
+			update: { value },
+		})
+		return { disabled: JSON.parse(value).length }
+	}
+
+	/** Каталог действий с пометкой, что включено. */
+	async actionsCatalog() {
+		const disabled = await this.getDisabledActions()
+		return catalogInfo().map(a => ({ ...a, enabled: !disabled.has(a.id) }))
+	}
 
 	async getChannels(): Promise<string[]> {
 		const row = await this.prisma.appConfig.findUnique({ where: { key: KEY_CHANNELS } })
@@ -1375,6 +1524,7 @@ export class TgWarmupService {
 		}
 
 		const channels = await this.getChannels()
+		const disabled = await this.getDisabledActions()
 		const peer = await this.pickPeer(account.id)
 		const usedToday = await this.usedToday(account.id)
 		const allow = await this.allowanceFor(account, dayIndex)
@@ -1409,6 +1559,7 @@ export class TgWarmupService {
 						// аккаунтов должен быть один и тот же разговор.
 						chatKey: peer ? [account.username ?? account.id, peer].sort().join(':') : undefined,
 						chatIndex: usedToday.messages + dayIndex * 7,
+						disabled,
 					})
 					await this.prisma.tgWarmupAction.create({
 						data: {
