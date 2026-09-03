@@ -27,8 +27,8 @@ export class TgWarmupController {
 	}
 
 	@Post('proxies')
-	addProxies(@Body() body: { text: string; type?: string; geo?: string }) {
-		return this.svc.addProxies(body?.text ?? '', body?.type, body?.geo)
+	addProxies(@Body() body: { text: string }) {
+		return this.svc.addProxies(body?.text ?? '')
 	}
 
 	@Delete('proxies/:id')
@@ -37,8 +37,8 @@ export class TgWarmupController {
 	}
 
 	@Post('proxies/check-all')
-	checkAllProxies() {
-		return this.svc.checkAllProxies()
+	checkAllProxies(@Body() body?: { onlyNew?: boolean }) {
+		return this.svc.checkAllProxies(!!body?.onlyNew)
 	}
 
 	@Post('proxies/assign')
@@ -71,7 +71,10 @@ export class TgWarmupController {
 	@UseInterceptors(FilesInterceptor('files', 50, { limits: { fileSize: 60 * 1024 * 1024 } }))
 	importAccounts(
 		@UploadedFiles() files: Express.Multer.File[],
-		@Body() body: { strings?: string; apiId?: string; apiHash?: string; passcode?: string; proxyId?: string },
+		@Body() body: {
+			strings?: string; apiId?: string; apiHash?: string; passcode?: string
+			proxyMode?: 'pool' | 'one' | 'none'; proxyId?: string
+		},
 	) {
 		return this.svc.importAccounts({
 			files: (files ?? []).map(f => ({ name: f.originalname, buffer: f.buffer })),
@@ -79,6 +82,7 @@ export class TgWarmupController {
 			apiId: body?.apiId ? Number(body.apiId) : undefined,
 			apiHash: body?.apiHash || undefined,
 			passcode: body?.passcode || undefined,
+			proxyMode: body?.proxyMode ?? 'pool',
 			proxyId: body?.proxyId || null,
 		})
 	}

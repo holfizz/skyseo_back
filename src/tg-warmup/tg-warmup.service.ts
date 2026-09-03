@@ -8,6 +8,7 @@ import {
 	mergeFingerprint, parseCompanionJson, type CompanionMeta, type Fingerprint,
 } from './session-import'
 import { parseProxyPool } from './proxy-pool'
+import { detectOrigin } from './proxy-geo'
 import { classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
 import { askStatus, pressButton, sendText } from './spam-bot'
 import { DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
@@ -154,7 +155,7 @@ export class TgWarmupService {
 	 * Вставка пула одним текстом. Что не разобралось — возвращаем построчно с
 	 * причиной: молча проглотить половину списка хуже, чем не принять его вовсе.
 	 */
-	async addProxies(text: string, type?: string | null, geo?: string | null) {
+	async addProxies(text: string) {
 		const { proxies, rejected } = parseProxyPool(text ?? '')
 		if (!proxies.length) {
 			return { added: 0, duplicates: 0, rejected }
@@ -172,9 +173,10 @@ export class TgWarmupService {
 				duplicates++
 				continue
 			}
-			await this.prisma.tgProxy.create({
-				data: { ...p, type: type || null, geo: geo || null, alive: true },
-			})
+			// Тип канала и страну не спрашиваем: их определит проверка, сходив
+			// через сам прокси. Введённое руками всё равно было бы пересказом
+			// того, что написал продавец.
+			await this.prisma.tgProxy.create({ data: { ...p, alive: true } })
 			added++
 		}
 		return { added, duplicates, rejected }
@@ -212,20 +214,52 @@ export class TgWarmupService {
 		} catch (e: any) {
 			lastError = String(e?.message ?? e).slice(0, 300)
 		}
+
+		// Страну и тип канала выясняем сами, запросом ЧЕРЕЗ прокси. У мобильных
+		// адрес входа и адрес выхода разные, а значение имеет именно выход —
+		// его и видит Telegram. Не определилось — оставляем прежнее, а не
+		// затираем: разовый сбой справочника не должен обнулять разметку.
+		let origin = { ip: null as string | null, geo: null as string | null, type: null as string | null, isp: null as string | null }
+		if (alive) origin = await detectOrigin(p)
+
 		await this.prisma.tgProxy.update({
 			where: { id },
-			data: { alive, lastError, lastCheckAt: new Date() },
+			data: {
+				alive,
+				lastError,
+				lastCheckAt: new Date(),
+				...(origin.geo ? { geo: origin.geo } : {}),
+				...(origin.type ? { type: origin.type } : {}),
+				// Владельца адреса и точку выхода держим в заметке: по ним видно,
+				// что два «разных» прокси на самом деле сидят на одном канале.
+				...(origin.ip ? { note: [origin.ip, origin.isp].filter(Boolean).join(' · ').slice(0, 200) } : {}),
+			},
 		})
-		return { alive, lastError }
+		return { alive, lastError, ...origin }
 	}
 
-	async checkAllProxies() {
-		const rows = await this.prisma.tgProxy.findMany({ select: { id: true } })
+	/**
+	 * Проверить пул. По умолчанию только те, что ещё ни разу не проверяли, —
+	 * после вставки списка это ровно новые. Проверка идёт пачками: каждая
+	 * занимает до двенадцати секунд на коннект плюс запрос происхождения, и
+	 * полсотни прокси по очереди — это двадцать минут ожидания.
+	 */
+	async checkAllProxies(onlyNew = false) {
+		const rows = await this.prisma.tgProxy.findMany({
+			where: onlyNew ? { lastCheckAt: null } : {},
+			select: { id: true },
+		})
 		let alive = 0
-		for (const r of rows) {
-			const res = await this.checkProxy(r.id)
-			if (res.alive) alive++
+		const queue = [...rows]
+		const worker = async () => {
+			for (;;) {
+				const r = queue.shift()
+				if (!r) return
+				const res = await this.checkProxy(r.id).catch(() => ({ alive: false }))
+				if (res.alive) alive++
+			}
 		}
+		await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker))
 		return { checked: rows.length, alive }
 	}
 
@@ -236,26 +270,43 @@ export class TgWarmupService {
 	 * и это видно в списке, а не подменяется общим адресом.
 	 */
 	async assignProxies() {
-		const free = await this.prisma.tgProxy.findMany({
-			where: { alive: true },
-			include: { _count: { select: { accounts: true } } },
-			orderBy: { createdAt: 'asc' },
-		})
 		const accounts = await this.prisma.tgAccount.findMany({
 			where: { proxyId: null },
 			select: { id: true },
 			orderBy: { createdAt: 'asc' },
 		})
-		const pool = free.sort((a, b) => a._count.accounts - b._count.accounts)
+		return this.assignFromPool(accounts.map(a => a.id))
+	}
+
+	/**
+	 * Раздать прокси перечисленным аккаунтам — по одному на каждого, начиная с
+	 * наименее загруженных.
+	 *
+	 * Соседи по адресу — прямой минус в оценке, поэтому раскладываем ровно, а не
+	 * вешаем всех на первый попавшийся. Если прокси меньше, чем аккаунтов,
+	 * лишние остаются без него, и это видно в списке — молча сажать двоих на
+	 * один канал хуже, чем оставить одного без.
+	 */
+	async assignFromPool(accountIds: string[]) {
+		if (!accountIds.length) return { assigned: 0, left: 0 }
+
+		const pool = (
+			await this.prisma.tgProxy.findMany({
+				where: { alive: true },
+				include: { _count: { select: { accounts: true } } },
+				orderBy: { createdAt: 'asc' },
+			})
+		).map(p => ({ id: p.id, load: p._count.accounts }))
+
 		let assigned = 0
-		for (const acc of accounts) {
-			const target = pool.sort((a, b) => a._count.accounts - b._count.accounts)[0]
+		for (const id of accountIds) {
+			const target = pool.sort((a, b) => a.load - b.load)[0]
 			if (!target) break
-			await this.prisma.tgAccount.update({ where: { id: acc.id }, data: { proxyId: target.id } })
-			target._count.accounts++
+			await this.prisma.tgAccount.update({ where: { id }, data: { proxyId: target.id } })
+			target.load++
 			assigned++
 		}
-		return { assigned, left: accounts.length - assigned }
+		return { assigned, left: accountIds.length - assigned }
 	}
 
 	// ── аккаунты ─────────────────────────────────────────────────────────────
@@ -418,6 +469,13 @@ export class TgWarmupService {
 		apiId?: number
 		apiHash?: string
 		passcode?: string
+		/**
+		 * Что делать с прокси у загруженных:
+		 *   pool — раздать по одному из пула (по умолчанию),
+		 *   one  — посадить всех на указанный,
+		 *   none — оставить без прокси, назначить потом.
+		 */
+		proxyMode?: 'pool' | 'one' | 'none'
 		proxyId?: string | null
 	}) {
 		if (!secretsReady()) {
@@ -532,7 +590,9 @@ export class TgWarmupService {
 					session: encryptSecret(p.session),
 					apiId, apiHash,
 					...fp,
-					proxyId: input.proxyId || null,
+					// Раздача из пула идёт после вставки: чтобы делить поровну,
+					// надо знать, сколько аккаунтов создалось.
+					proxyId: input.proxyMode === 'one' ? input.proxyId || null : null,
 					registeredAt: p.meta.registeredAt ?? (est ? est.date : null),
 					status: 'NEW',
 				},
@@ -541,7 +601,12 @@ export class TgWarmupService {
 			created.push({ id: row.id, source: p.source })
 		}
 
-		return { created: created.length, duplicates, errors, ids: created.map(c => c.id) }
+		const ids = created.map(c => c.id)
+		const pool = input.proxyMode !== 'one' && input.proxyMode !== 'none' && ids.length
+			? await this.assignFromPool(ids)
+			: null
+
+		return { created: created.length, duplicates, errors, ids, pool }
 	}
 
 	async deleteAccount(id: string) {
@@ -550,7 +615,15 @@ export class TgWarmupService {
 	}
 
 	async setProxy(accountId: string, proxyId: string | null) {
+		if (proxyId) {
+			const exists = await this.prisma.tgProxy.findUnique({ where: { id: proxyId }, select: { id: true } })
+			if (!exists) throw new NotFoundException('Такого прокси нет')
+		}
 		await this.prisma.tgAccount.update({ where: { id: accountId }, data: { proxyId } })
+		// Сессия остаётся прежней, меняется только маршрут — переподключение
+		// произойдёт само при следующем заходе. Проверять аккаунт заново здесь
+		// не станем: это сетевой вызов, а человек мог менять прокси у десятка
+		// подряд и не ждать каждого.
 		return { ok: true }
 	}
 
@@ -855,9 +928,13 @@ export class TgWarmupService {
 			proxyGeo: a.proxy?.geo ?? null,
 			proxyAlive: a.proxy ? a.proxy.alive : true,
 			neighborsOnIp: neighbors,
-			// Мобильный канал меняет адрес внутри подсети оператора — это норма
-			// и для живых людей. Остальные типы считаем закреплёнными.
-			ipStability: proxyType === 'mobile' ? 'subnet' : 'fixed',
+			// Постоянство адреса мы НЕ измеряем: для этого надо следить за точкой
+			// выхода во времени, а мы её видим только в момент проверки. Раньше
+			// значение выводилось из типа канала — и получалось, что тип
+			// учитывается дважды: мобильный штрафовался за «подсеть» и в итоге
+			// оказывался хуже дата-центра, хотя должен быть лучше всех.
+			// Ставим нейтральное, а качество канала целиком судит его тип.
+			ipStability: 'fixed',
 			langCode: a.langCode ?? null,
 			supplier: null,
 			batchSize,

@@ -121,7 +121,11 @@ function blockIdentity(p: AccountProbe): number {
 }
 
 function blockNetwork(o: AccountOrigin): number {
-	const type = o.proxyType === 'mobile' ? 100 : o.proxyType === 'residential' ? 80 : o.proxyType === 'datacenter' ? 30 : 0
+	// Неизвестный тип канала — это «ещё не проверяли», а не «дата-центр».
+	// Раньше тип вводили руками и он был всегда, теперь его определяет проверка,
+	// и до неё ноль занижал бы оценку на ровном месте. Берём середину, как и
+	// для остальных неизвестных в этом блоке.
+	const type = o.proxyType === 'mobile' ? 100 : o.proxyType === 'residential' ? 80 : o.proxyType === 'datacenter' ? 30 : 50
 	const geoMatch = !o.proxyGeo || !o.numberGeo ? 40 : o.proxyGeo === o.numberGeo ? 100 : 0
 	const stability = o.ipStability === 'fixed' ? 100 : o.ipStability === 'subnet' ? 70 : 0
 	const neighbors = steps(o.neighborsOnIp, [[1, 100], [3, 70], [10, 40]], 0)
