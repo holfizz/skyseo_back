@@ -29,6 +29,11 @@ export type PlanSlot = {
 	floor: number
 	/** Какой день плана сейчас разбирается: 0 — сегодня. */
 	day: number
+	/**
+	 * Готовность аккаунта, 0-100. Влияет на то, кому чаще достаётся адресат,
+	 * когда очередь короче суммы норм и выбор есть.
+	 */
+	readiness: number
 }
 
 /**
@@ -66,9 +71,14 @@ export function startCursor(
 	now: Date,
 	c: { windowFrom: number; windowTo: number },
 	floor: number,
+	dayShift = 0,
 ): number {
-	const base = Math.max(now.getTime(), windowStart(now, c.windowFrom, 0).getTime())
-	if (floor > 0) return Math.max(base, floor)
+	const open = windowStart(now, c.windowFrom, dayShift).getTime()
+	// На сегодня раньше «сейчас» не начнёшь, на будущие дни — с начала окна.
+	const base = dayShift === 0 ? Math.max(now.getTime(), open) : open
+	if (floor > base) return floor
+	// Случайный сдвиг у каждого аккаунта свой: без него весь пул выходит в одну
+	// минуту, и ровно в начало окна. Это заметнее любой активности.
 	const spread = Math.min(45 * 60_000, (c.windowTo - c.windowFrom) * 3600_000 * 0.25)
 	return base + Math.random() * spread
 }
@@ -78,8 +88,21 @@ export function planQueue(
 	slots: PlanSlot[],
 	c: { windowFrom: number; windowTo: number; minIntervalSec: number; maxIntervalSec: number },
 	now: Date,
-	maxDays = 60,
+	opts: {
+		/**
+		 * Уложить всё в ОДИН день и никуда не переползать.
+		 *
+		 * Без этого очередь течёт по дням, пока не кончится, и десять сообщений
+		 * при норме «одно в сутки» превращаются в десять дней календаря. Когда
+		 * человек говорит «запустить на четверг», он имеет в виду четверг — а
+		 * то, что не влезло, должно остаться без времени и быть видно, а не
+		 * тихо расползтись до конца месяца.
+		 */
+		singleDay?: boolean
+		maxDays?: number
+	} = {},
 ): Map<string, { at: Date; accountId: string }> {
+	const maxDays = opts.maxDays ?? 60
 	const out = new Map<string, { at: Date; accountId: string }>()
 	if (!slots.length) return out
 
@@ -101,12 +124,23 @@ export function planQueue(
 	 */
 	const jitter = () => Math.random() * Math.min(45 * 60_000, (c.windowTo - c.windowFrom) * 3600_000 * 0.25)
 
-	/** Жребий с весами: чем больше у аккаунта осталось нормы, тем чаще выпадает. */
+	/**
+	 * Жребий с весами: остаток нормы, умноженный на прогретость.
+	 *
+	 * Два множителя отвечают на разные вопросы. Остаток нормы держит делёжку:
+	 * если аккаунтам роздано 8, 5 и 7, столько они и получат — веса влияют на
+	 * порядок, но не на итог, потому что нормы всё равно выбираются до конца.
+	 *
+	 * Прогретость решает там, где нормы НЕ ограничивают: десять адресатов на
+	 * три аккаунта с потолком по двадцать. Тогда чаще выпадает тот, кто лучше
+	 * прогрет, — на нём меньше риска, и работу логично отдавать ему.
+	 */
 	const weighted = (pool: PlanSlot[]): PlanSlot => {
-		const total = pool.reduce((sum, s) => sum + s.left, 0)
+		const w = (s: PlanSlot) => s.left * Math.max(1, s.readiness)
+		const total = pool.reduce((sum, s) => sum + w(s), 0)
 		let n = Math.random() * total
 		for (const s of pool) {
-			n -= s.left
+			n -= w(s)
 			if (n <= 0) return s
 		}
 		return pool[pool.length - 1]
@@ -115,6 +149,9 @@ export function planQueue(
 	for (const id of ids) {
 		let ready = usable()
 		while (!ready.length) {
+			// В режиме одного дня переезжать некуда: остаток очереди остаётся
+			// без времени, и в календаре про него написано, почему.
+			if (opts.singleDay) break
 			// Норму выбрали все или окно кончилось — вся очередь переезжает на
 			// следующий день. Пауза после ошибки при этом сохраняется: floor
 			// может отбросить аккаунт и через начало окна.

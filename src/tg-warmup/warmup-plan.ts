@@ -45,16 +45,97 @@ export type Intensity = {
 }
 
 /**
- * Сколько действий в сутки. Числа подобраны так, чтобы суммарное время в сети
- * оставалось в пределах десяти-сорока минут: столько человек и проводит в
- * мессенджере за день, если не переписывается часами. Прежние пятьдесят
- * действий у зрелого давали под два часа онлайна — это уже не поведение
- * читателя, а работа.
+ * Темп прогрева. Выбирается при запуске и живёт до конца прогона.
+ *
+ * ОТКУДА ЧИСЛА. Точных порогов Telegram не публикует — ни для сообщений, ни
+ * для остальных вызовов, и это сказано прямо в документации к его API. Любое
+ * «безопасно ровно 25 действий» было бы выдумкой. Поэтому опираемся не на
+ * несуществующий лимит, а на две вещи, которые проверяемы.
+ *
+ * Первое: как выглядит живой пользователь. По открытой статистике Telegram
+ * человек открывает приложение около двадцати раз в день и проводит в нём
+ * порядка сорока минут; в России — заметно больше среднего. Наш верхний темп
+ * упирается примерно в этот же час в сети, и в этом весь смысл потолка: выше
+ * начинается поведение, которого у людей не бывает.
+ *
+ * Второе: за что вообще наказывают. FLOOD_WAIT — это ограничитель скорости,
+ * он возвращает срок ожидания и проходит сам. Спамблок и PEER_FLOOD — вердикт
+ * о поведении, и прилетает он за ИСХОДЯЩЕЕ: сообщения незнакомым, вступления,
+ * реакции. Чтение к нему не ведёт.
+ *
+ * Отсюда главное свойство темпа: он умножает ЧТЕНИЕ, а не исходящие. Сколько
+ * аккаунту позволено вступать и писать, решает outgoingAllowance по готовности
+ * — и темп на это не влияет вовсе. Быстрый темп не делает аккаунт наглее.
+ *
+ * ЧЕГО ТЕМП НЕ ДЕЛАЕТ. Готовность он почти не ускоряет, и обещать обратное
+ * было бы неправдой. Из шести её признаков объём действий — только один, и он
+ * упирается в потолок уже на тридцати действиях за всё время: этот рубеж любой
+ * темп проходит за два-три дня. Остальные пять — возраст, выдержка, обжитость,
+ * профиль, чистота — временем и подписками, а не скоростью чтения.
+ *
+ * Что интенсивный темп действительно даёт: правдоподобную историю просмотров и
+ * заходов в глазах Telegram. Аккаунт, заходящий шесть раз в день и что-то
+ * читающий, выглядит живым; заходящий дважды на пять минут — заготовкой.
  */
+export type Pace = 'calm' | 'normal' | 'fast'
+
+export const PACES: Pace[] = ['calm', 'normal', 'fast']
+
+export const PACE: Record<Pace, {
+	label: string
+	/** Действий в сутки на каждой стадии, при полном разгоне. */
+	actions: Record<Stage, number>
+	/** Сколько заходов в день: base и шанс на один лишний. */
+	sessions: number
+	hint: string
+}> = {
+	calm: {
+		label: 'Бережный',
+		actions: { new: 6, warm: 12, mature: 18 },
+		sessions: 2,
+		hint: 'Для аккаунтов, которым Telegram уже говорил сбавить, и для тех, кого жалко потерять',
+	},
+	normal: {
+		label: 'Обычный',
+		actions: { new: 10, warm: 20, mature: 30 },
+		sessions: 3,
+		hint: 'Похоже на обычного читателя каналов. Подходит почти всем',
+	},
+	fast: {
+		label: 'Интенсивный',
+		actions: { new: 16, warm: 32, mature: 45 },
+		sessions: 5,
+		hint: 'Больше просмотров и заходов — около часа в сети. Готовность так не обгонишь: её держат возраст и выдержка',
+	},
+}
+
+/** Профиль стадии при выбранном темпе. */
+export function intensityFor(stage: Stage, pace: Pace = 'normal'): Intensity {
+	return { stage, actionsPerDay: (PACE[pace] ?? PACE.normal).actions[stage] }
+}
+
+/**
+ * Оценка времени в сети за сутки: минуты, а не действия.
+ *
+ * Именно минуты стоит показывать человеку. «Тридцать действий» ни о чём не
+ * говорят, а «полчаса в приложении» сразу сравнимо с тем, как ведут себя люди.
+ * Считаем по той же формуле, что и planDay: около минуты на действие плюс
+ * минута на заход «осмотреться».
+ */
+export function paceMinutes(stage: Stage, pace: Pace): { min: number; max: number } {
+	const actions = (PACE[pace] ?? PACE.normal).actions[stage]
+	const sessions = (PACE[pace] ?? PACE.normal).sessions
+	return {
+		min: Math.round(actions * 0.6 + sessions),
+		max: Math.round(actions * 1.4 + sessions),
+	}
+}
+
+/** Прежнее имя таблицы: обычный темп. Оставлено, чтобы не трогать зовущих. */
 export const INTENSITY: Record<Stage, Intensity> = {
-	new: { stage: 'new', actionsPerDay: 10 },
-	warm: { stage: 'warm', actionsPerDay: 20 },
-	mature: { stage: 'mature', actionsPerDay: 30 },
+	new: intensityFor('new'),
+	warm: intensityFor('warm'),
+	mature: intensityFor('mature'),
 }
 
 // Сколько первых суток прогрева аккаунт только читает. Двое, а не семь:
@@ -306,9 +387,15 @@ export type Session = {
 }
 
 /** Сколько заходов в день по стадии: у новичка их меньше, чем у зрелого. */
-function sessionsPerDay(stage: Stage, rnd: () => number): number {
-	const base = stage === 'new' ? 2 : stage === 'warm' ? 3 : 4
-	return base + (rnd() < 0.4 ? 1 : 0)
+/**
+ * Сколько заходов в день. Зависит от темпа, а не от стадии: свежий аккаунт,
+ * который заходит трижды по чуть-чуть, выглядит живее того, кто зашёл один раз
+ * и просидел двадцать минут. Живой человек открывает мессенджер часто и
+ * ненадолго — по открытой статистике около двадцати раз за сутки.
+ */
+function sessionsPerDay(pace: Pace, rnd: () => number): number {
+	const base = (PACE[pace] ?? PACE.normal).sessions
+	return base + (rnd() < 0.4 ? 1 : 0) + (rnd() < 0.2 ? 1 : 0)
 }
 
 export type DayPlan = {
@@ -334,9 +421,10 @@ export function planDay(opts: {
 	ageDays: number
 	windows: Window[]
 	timezoneOffsetMin?: number
+	pace?: Pace
 }): DayPlan {
 	const stage = stageFor(opts.ageDays)
-	const intensity = INTENSITY[stage]
+	const intensity = intensityFor(stage, opts.pace ?? 'normal')
 	const seed = accountSeed(opts.accountId)
 	const rnd = makeRng(seed + opts.dayIndex * 104729 + opts.runIndex * 31)
 	const actions = actionsForDay(intensity, opts.dayIndex)
@@ -346,7 +434,7 @@ export function planDay(opts: {
 	const total = slots.reduce((s, w) => s + w.len, 0)
 	if (total <= 0) return { stage, actions: 0, minutes: 0, sessions: [] }
 
-	const count = Math.max(1, Math.min(sessionsPerDay(stage, rnd), actions))
+	const count = Math.max(1, Math.min(sessionsPerDay(opts.pace ?? 'normal', rnd), actions))
 
 	// Действия раскидываем по заходам неровно: два-три подряд и один короткий
 	// куда правдоподобнее, чем поровну.

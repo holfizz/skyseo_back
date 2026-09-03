@@ -163,9 +163,25 @@ export class TgWarmupController {
 
 	// ── прогрев ──────────────────────────────────────────────────────────────
 
+	/**
+	 * Календарь суток: заходы прогрева и отправки рассылки на одной сетке.
+	 */
+	@Get('calendar')
+	calendar(@Query('date') date?: string) {
+		return this.svc.dayCalendar(date)
+	}
+
+	/** Что означают темпы прогрева — числами. */
+	@Get('pace')
+	pace() {
+		return this.svc.paceInfo()
+	}
+
 	@Post('start')
-	start(@Body() body: { ids: string[]; days?: number; windowFrom?: number; windowTo?: number }) {
-		return this.svc.startWarmup(body?.ids ?? [], body?.days ?? 7, body?.windowFrom ?? 9, body?.windowTo ?? 23)
+	start(@Body() body: { ids: string[]; days?: number; windowFrom?: number; windowTo?: number; pace?: any }) {
+		return this.svc.startWarmup(
+			body?.ids ?? [], body?.days ?? 7, body?.windowFrom ?? 9, body?.windowTo ?? 23, body?.pace ?? 'normal',
+		)
 	}
 
 	@Post('stop')

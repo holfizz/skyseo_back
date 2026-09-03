@@ -113,6 +113,26 @@ function recipientFilter(group?: string) {
 	}
 }
 
+/**
+ * Дата вида «2026-09-06» в полночь по местному времени.
+ *
+ * Именно по местному, а не в UTC: человек выбирает день в календаре, глядя на
+ * свои часы, и «шестое» должно значить шестое у него, а не сдвинутое на
+ * часовой пояс сервера.
+ */
+function parseDay(value?: string | null): Date | null {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? '').trim())
+	if (!m) return null
+	const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
+	return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** «ГГГГ-ММ-ДД» по местному времени. ISO тут не годится: со сдвигом часового
+ * пояса полночь шестого превращается в пятое, и день на экране уезжает. */
+function dayString(d: Date | null | undefined): string | null {
+	return d ? dayKey(d) : null
+}
+
 /** Полночь указанных суток. */
 function startOfDay(d: Date): Date {
 	const t = new Date(d)
@@ -243,6 +263,7 @@ export class CampaignService {
 
 	async list() {
 		const rows = await this.prisma.tgCampaign.findMany({
+			where: { archivedAt: null },
 			orderBy: { createdAt: 'desc' },
 			include: { _count: { select: { recipients: true, accounts: true } } },
 		})
@@ -311,20 +332,55 @@ export class CampaignService {
 		if (data.windowFrom !== undefined && data.windowTo !== undefined && data.windowFrom >= data.windowTo) {
 			throw new BadRequestException('Окно отправки задано наоборот: конец раньше начала')
 		}
+		if (body?.sendDate !== undefined) {
+			data.sendDate = body.sendDate ? parseDay(body.sendDate) : null
+			if (body.sendDate && !data.sendDate) throw new BadRequestException('День отправки: ожидается дата вида 2026-09-06')
+		}
 		if (!data.name) delete data.name
 		if (!data.firstMessage) delete data.firstMessage
 		await this.prisma.tgCampaign.update({ where: { id }, data })
 
 		// Окно, паузы и нормы задают само расписание. Сохранить их и оставить
 		// прежний план — значит показывать календарь по старым настройкам.
-		const affectsPlan = ['perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo', 'dailyGoal']
+		const affectsPlan = ['perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo', 'dailyGoal', 'sendDate']
 		if (affectsPlan.some(k => data[k] !== undefined)) await this.buildSchedule(id)
 		return { ok: true }
 	}
 
+	/**
+	 * Удалить рассылку.
+	 *
+	 * Неотправленных выбрасываем: им уже не напишут, а держать их в мёртвой
+	 * кампании нельзя — при наборе новой отсеивается всякий, кто стоит в списке
+	 * любой другой, и они оказались бы заперты навсегда.
+	 *
+	 * Отправленных не трогаем. Переписка с живым человеком — это не «данные
+	 * кампании», это разговор, который идёт; удалить его вместе со строкой в
+	 * списке было бы дико. Поэтому когда с рассылки уже писали, строку не
+	 * сносим, а прячем: у TgRecipient каскад на кампанию, и удаление забрало бы
+	 * с собой всю переписку и всю статистику.
+	 *
+	 * Если не писали никому — сносим целиком, прятать нечего.
+	 */
 	async remove(id: string) {
-		await this.prisma.tgCampaign.delete({ where: { id } })
-		return { ok: true }
+		const c = await this.prisma.tgCampaign.findUnique({ where: { id }, select: { id: true } })
+		if (!c) throw new NotFoundException('Кампания не найдена')
+
+		const dropped = await this.prisma.tgRecipient.deleteMany({
+			where: { campaignId: id, sentAt: null, secondSentAt: null },
+		})
+		const kept = await this.prisma.tgRecipient.count({ where: { campaignId: id } })
+
+		if (!kept) {
+			await this.prisma.tgCampaign.delete({ where: { id } })
+			return { ok: true, mode: 'deleted' as const, dropped: dropped.count, kept: 0 }
+		}
+
+		await this.prisma.tgCampaign.update({
+			where: { id },
+			data: { status: 'DONE', finishedAt: new Date(), archivedAt: new Date() },
+		})
+		return { ok: true, mode: 'archived' as const, dropped: dropped.count, kept }
 	}
 
 	async setStatus(id: string, status: 'RUNNING' | 'PAUSED' | 'DONE') {
@@ -570,7 +626,11 @@ export class CampaignService {
 	 * они уже выверены, а начинать каждый раз с пустого поля — верный способ
 	 * запустить рассылку с недописанным текстом.
 	 */
-	async quickFill(count: number, campaignId?: string, opts?: { windowFrom?: number; windowTo?: number; start?: boolean }) {
+	async quickFill(
+		count: number,
+		campaignId?: string,
+		opts?: { windowFrom?: number; windowTo?: number; start?: boolean; date?: string; force?: boolean },
+	) {
 		const n = Math.max(1, Math.min(500, Math.round(count || 20)))
 
 		let target = campaignId
@@ -637,14 +697,34 @@ export class CampaignService {
 			created = true
 		}
 
-		// Окно применяем до набора: если тут же запускаем, расписание должно
-		// считаться уже по новому времени, а не по унаследованному.
+		// Окно и день применяем ДО набора: если тут же запускаем, расписание
+		// должно считаться уже по новым, а не по унаследованным.
 		const from = Number(opts?.windowFrom)
 		const to = Number(opts?.windowTo)
 		if (Number.isFinite(from) && Number.isFinite(to)) {
 			if (from >= to) throw new BadRequestException('Окно отправки задано наоборот: конец раньше начала')
 			await this.prisma.tgCampaign.update({ where: { id: target.id }, data: { windowFrom: from, windowTo: to } })
 			target = { ...target, windowFrom: from, windowTo: to }
+		}
+
+		// День отправки. По умолчанию сегодня: «взять двадцать и запустить»
+		// означает двадцать сегодня, а не двадцать когда-нибудь.
+		const sendDate = parseDay(opts?.date) ?? startOfDay(new Date())
+		await this.prisma.tgCampaign.update({ where: { id: target.id }, data: { sendDate } })
+		target = { ...target, sendDate }
+
+		// Разрешение работать сверх норм прогрева. Ставится на аккаунты пула:
+		// флаг живёт на аккаунте, и отдельного «разового» режима заводить не
+		// стоит — иначе их станет два, и никто не вспомнит, какой сейчас.
+		if (opts?.force) {
+			const links = await this.prisma.tgCampaignAccount.findMany({
+				where: { campaignId: target.id },
+				select: { accountId: true },
+			})
+			await this.prisma.tgAccount.updateMany({
+				where: { id: { in: links.map(l => l.accountId) } },
+				data: { forceSend: true },
+			})
 		}
 
 		// «Взять двадцать и запустить» означает двадцать ЗА СЕГОДНЯ. Без цели дня
@@ -672,17 +752,19 @@ export class CampaignService {
 			schedule = (started as any).schedule ?? null
 		}
 
-		const plan = await this.forecast(target.id)
+		// Пересобираем всегда: день мог смениться, нормы тоже.
+		const plan = await this.buildSchedule(target.id)
 		const queued = await this.prisma.tgRecipient.count({ where: { campaignId: target.id, status: 'QUEUED' } })
 
 		return {
 			campaignId: target.id, name: target.name, created, ...res,
 			started: !!schedule, schedule,
-			finishAt: plan.finishAt,
-			// Сколько из очереди реально уложится сегодня и что мешает остальным.
-			today: plan.today,
+			sendDate: dayString(sendDate),
+			// Сколько из набранного реально встало на выбранный день и сколько
+			// туда вообще влезает при текущих нормах.
+			planned: plan.planned, capacity: plan.capacity,
 			queued,
-			bottleneck: await this.bottleneck(target, queued, plan.today),
+			bottleneck: await this.bottleneck(target, queued, plan.planned),
 			windowFrom: target.windowFrom, windowTo: target.windowTo,
 		}
 	}
@@ -1695,7 +1777,7 @@ export class CampaignService {
 	 * паузу и отведённые только под прогрев не участвуют. Расписание, которое
 	 * учитывает аккаунт, не умеющий писать, — просто красивая картинка.
 	 */
-	private async slotsFor(c: any, now: Date): Promise<PlanSlot[]> {
+	private async slotsFor(c: any, now: Date, dayShift = 0): Promise<PlanSlot[]> {
 		const today = dayKey(now)
 		const quota = await this.dailyQuota(c, today)
 		const slots: PlanSlot[] = []
@@ -1708,18 +1790,34 @@ export class CampaignService {
 			if (!maySend(acc, allow)) continue
 
 			const cap = quota.get(acc.id) ?? 0
-			const sent = link.dayKey === today ? link.sentToday : 0
+			// Сегодняшний счётчик вычитаем только когда планируем сегодня: на
+			// завтра у аккаунта снова полная норма.
+			const sent = dayShift === 0 && link.dayKey === today ? link.sentToday : 0
 			const floor = Math.max(link.nextSendAt?.getTime() ?? 0, link.pausedUntil?.getTime() ?? 0)
 			slots.push({
 				id: acc.id,
 				quota: cap,
 				left: Math.max(0, cap - sent),
-				cursor: startCursor(now, c, floor),
+				cursor: startCursor(now, c, floor, dayShift),
 				floor,
-				day: 0,
+				day: dayShift,
+				readiness: allow.readiness,
 			})
 		}
 		return slots
+	}
+
+	/**
+	 * На какой день по счёту от сегодня назначена рассылка.
+	 *
+	 * Прошедшая дата — это сегодня: назначить отправку во вчера нельзя, а
+	 * молча не отправить ничего хуже, чем отправить сегодня.
+	 */
+	private dayShiftOf(c: { sendDate: Date | null }, now: Date): number | null {
+		if (!c.sendDate) return null
+		const target = startOfDay(c.sendDate)
+		const diff = Math.round((target.getTime() - startOfDay(now).getTime()) / 86400000)
+		return Math.max(0, diff)
 	}
 
 	/**
@@ -1749,8 +1847,9 @@ export class CampaignService {
 			select: { id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true },
 		})
 		const willWrite = queued.filter(r => missingPlaceholders(c.firstMessage, r).length === 0)
-		const slots = await this.slotsFor(c, now)
-		const plan = planQueue(willWrite.map(r => r.id), slots, c, now)
+		const shift = this.dayShiftOf(c, now)
+		const slots = await this.slotsFor(c, now, shift ?? 0)
+		const plan = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null })
 
 		// Сначала снимаем прежний план со всей очереди, потом раскладываем
 		// новый: адресат, выпавший из плана (аккаунт убрали, данных не хватает),
@@ -1774,7 +1873,15 @@ export class CampaignService {
 			)
 		}
 
-		return { planned: plan.size, unplanned: queued.length - plan.size, accounts: slots.length }
+		return {
+			planned: plan.size,
+			unplanned: queued.length - plan.size,
+			accounts: slots.length,
+			// Сколько всего влезает в выбранный день: по этому числу видно, надо
+			// ли поднимать нормы или добавлять аккаунты.
+			capacity: slots.reduce((n, s) => n + s.left, 0),
+			sendDate: dayString(c.sendDate),
+		}
 	}
 
 	/**
@@ -1811,10 +1918,11 @@ export class CampaignService {
 			}),
 		])
 
+		const shift = this.dayShiftOf(c, new Date())
 		// Кто из аккаунтов вообще может писать прямо сейчас. Нужно, чтобы
 		// отличить «очередь длиннее норм» от «писать некому»: снаружи и то и
 		// другое выглядит как пустой календарь, а чинится по-разному.
-		const slots = await this.slotsFor(c, new Date())
+		const slots = await this.slotsFor(c, new Date(), shift ?? 0)
 		const ready = new Set(slots.map(s => s.id))
 		const notReady = []
 		for (const link of c.accounts) {
@@ -1903,7 +2011,9 @@ export class CampaignService {
 						// потолок», а лечится это только временем.
 						: slots.every(x => x.quota <= 0)
 							? 'аккаунтам ещё не выдана дневная норма — они греются'
-							: 'не хватило дневных норм',
+							: shift != null
+								? 'не влезло в выбранный день'
+								: 'не хватило дневных норм',
 			}))
 
 		return {
@@ -1926,6 +2036,9 @@ export class CampaignService {
 			// Сколько аккаунтов реально может писать и что мешает остальным.
 			ready: slots.length,
 			notReady,
+			// День, на который назначена рассылка, и сколько в него влезает.
+			sendDate: dayString(c.sendDate),
+			capacity: slots.reduce((n, x) => n + x.left, 0),
 			/** Расписание для этой кампании ни разу не собирали. */
 			neverPlanned: neverPlanned && queued.length > 0,
 			days: [...days]
@@ -1989,8 +2102,10 @@ export class CampaignService {
 		// не собирали. Прикидка нужна, чтобы карточка не показывала нули.
 		if (!Object.keys(times).length && willWrite.length) {
 			const now = new Date()
-			const slots = await this.slotsFor(c, now)
-			for (const [id, p] of planQueue(willWrite.map(r => r.id), slots, c, now)) put(id, p.at, p.accountId)
+			const shift = this.dayShiftOf(c, now)
+			const slots = await this.slotsFor(c, now, shift ?? 0)
+			const projected = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null })
+			for (const [id, p] of projected) put(id, p.at, p.accountId)
 		}
 
 		const all = Object.values(times).map(t => new Date(t.at).getTime())
@@ -2115,7 +2230,7 @@ export class CampaignService {
 		const midnight = startOfDay(now)
 
 		const campaigns = await this.prisma.tgCampaign.findMany({
-			where: { status: { in: ['RUNNING', 'PAUSED'] } },
+			where: { status: { in: ['RUNNING', 'PAUSED'] }, archivedAt: null },
 			include: { accounts: { include: { account: true } } },
 			orderBy: { createdAt: 'desc' },
 		})
@@ -2157,6 +2272,7 @@ export class CampaignService {
 				windowFrom: c.windowFrom,
 				windowTo: c.windowTo,
 				dailyGoal: c.dailyGoal,
+				sendDate: dayString(c.sendDate),
 				queued,
 				sentToday,
 				blockedToday,
@@ -2285,6 +2401,8 @@ export class CampaignService {
 			today: plan.today,
 			firstMessage: c.firstMessage, secondMessage: c.secondMessage,
 			dailyGoal: c.dailyGoal,
+			// День, на который назначена вся очередь.
+			sendDate: dayString(c.sendDate),
 			// Делёжка цели дня руками: роздано и сколько ещё можно раздать.
 			assigned,
 			leftToAssign: c.dailyGoal ? Math.max(0, c.dailyGoal - assigned) : null,

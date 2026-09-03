@@ -92,11 +92,16 @@ export class CampaignManagerController {
 	}
 
 	@Post('quick')
-	quick(@Body() body: { count?: number; campaignId?: string; windowFrom?: number; windowTo?: number; start?: boolean }) {
+	quick(@Body() body: {
+		count?: number; campaignId?: string; windowFrom?: number; windowTo?: number
+		start?: boolean; date?: string; force?: boolean
+	}) {
 		return this.svc.quickFill(body?.count ?? 20, body?.campaignId, {
 			windowFrom: body?.windowFrom,
 			windowTo: body?.windowTo,
 			start: body?.start,
+			date: body?.date,
+			force: body?.force,
 		})
 	}
 

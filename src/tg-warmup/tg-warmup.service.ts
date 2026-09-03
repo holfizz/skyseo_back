@@ -13,8 +13,8 @@ import { classifyError, probeAccount, TgError, withClient, type ProxySettings } 
 import { askStatus, pressButton, sendText } from './spam-bot'
 import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
 import {
-	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, planDay,
-	type Allowance, type Session, type Window,
+	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, PACE, PACES, paceMinutes, planDay,
+	type Allowance, type Pace, type Session, type Window,
 } from './warmup-plan'
 import { scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
 import { estimateRegistration } from './account-age'
@@ -64,6 +64,20 @@ function displayName(self: { firstName?: string | null; lastName?: string | null
 }
 
 /** Ключ дня в местной шкале сервера: планы строятся по календарным суткам. */
+/** Полночь указанных суток по местному времени. */
+function startOfDayLocal(d: Date): Date {
+	const t = new Date(d)
+	t.setHours(0, 0, 0, 0)
+	return t
+}
+
+/** «ГГГГ-ММ-ДД» → полночь этого дня. Местная, а не UTC: день выбирают глазами. */
+function parseDayLocal(value?: string | null): Date | null {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? '').trim())
+	if (!m) return null
+	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
+}
+
 function dateKey(d: Date): string {
 	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -398,6 +412,8 @@ export class TgWarmupService {
 					? {
 							id: run.id, days: run.days, dayIndex: run.dayIndex, status: run.status,
 							nextRunAt: run.nextRunAt, doneToday: run.doneToday,
+							pace: run.pace,
+							paceLabel: PACE[(run.pace as Pace) ?? 'normal']?.label ?? null,
 							planned: Array.isArray(run.plan) ? (run.plan as number[]).length : 0,
 						}
 					: null,
@@ -1053,6 +1069,148 @@ export class TgWarmupService {
 	 * только по счётчику действий, а он растёт раз в несколько часов и ничего
 	 * не объясняет.
 	 */
+	/**
+	 * Календарь прогрева на сутки — и рассылки на них же.
+	 *
+	 * Раньше увидеть, что аккаунт будет делать за день, можно было только в его
+	 * карточке и только списком заходов. Вопрос при этом почти всегда общий:
+	 * «что сегодня происходит по всему пулу», а не «что у третьего аккаунта».
+	 *
+	 * Прогрев и рассылка показаны на ОДНОЙ сетке намеренно. Аккаунт в режиме
+	 * «Оба» днём и греется, и пишет, и увидеть это можно только рядом: заходы
+	 * прогрева и отправки должны чередоваться, а не сваливаться в один час.
+	 *
+	 * План на сегодня берём тот, что построен воркером, — это и есть правда.
+	 * На будущие дни считаем planDay заново: она детерминированная и от базы не
+	 * зависит, так что показанное совпадёт с тем, что построится утром.
+	 */
+	async dayCalendar(date?: string): Promise<any> {
+		const now = new Date()
+		const today = startOfDayLocal(now)
+		const target = parseDayLocal(date) ?? today
+		const shift = Math.max(0, Math.round((target.getTime() - today.getTime()) / DAY_MS))
+
+		const runs = await this.prisma.tgWarmupRun.findMany({
+			where: { status: { in: ['SCHEDULED', 'RUNNING'] } },
+			include: { account: true },
+		})
+
+		const accounts: any[] = []
+		const items: any[] = []
+		let lastDay = 0
+
+		for (const run of runs) {
+			const acc = run.account
+			// Какой день прогрева придётся на выбранную дату. dayIndex ноль —
+			// прогон заведён, но первый день ещё не начинался.
+			const dayIndex = Math.max(1, run.dayIndex || 1) + shift
+			if (dayIndex > run.days) continue
+			lastDay = Math.max(lastDay, run.days - Math.max(1, run.dayIndex || 1))
+
+			const ageDays = acc.registeredAt
+				? Math.floor((Date.now() - acc.registeredAt.getTime()) / DAY_MS)
+				: 30
+			const planned: Session[] =
+				shift === 0 && run.planDate === dateKey(target) && Array.isArray(run.plan)
+					? (run.plan as unknown as Session[])
+					: planDay({
+							accountId: acc.id,
+							dayIndex,
+							runIndex: run.days,
+							ageDays,
+							windows: [{ fromHour: run.windowFrom, toHour: run.windowTo }],
+							pace: (run.pace as Pace) ?? 'normal',
+						}).sessions
+
+			const nowMin = now.getHours() * 60 + now.getMinutes()
+			const doneToday = shift === 0 ? run.doneToday : 0
+			planned.forEach((sess, i) => {
+				const end = sess.startMin + sess.minutes
+				items.push({
+					kind: 'warm',
+					accountId: acc.id,
+					at: this.atMinute(target, sess.startMin).toISOString(),
+					minutes: sess.minutes,
+					actions: sess.actions,
+					state: shift > 0 ? 'впереди'
+						: i < doneToday ? 'прошёл'
+							: sess.startMin <= nowMin && nowMin <= end ? 'идёт'
+								: sess.startMin > nowMin ? 'впереди'
+									: 'пропущен',
+				})
+			})
+
+			const allow = await this.allowanceFor(acc, run.dayIndex || 0)
+			accounts.push({
+				id: acc.id,
+				label: acc.label,
+				avatar: acc.avatar,
+				tgUserId: acc.tgUserId,
+				mode: acc.mode,
+				status: acc.status,
+				readiness: allow.readiness,
+				run: {
+					dayIndex: Math.max(1, run.dayIndex || 1),
+					days: run.days,
+					pace: run.pace,
+					paceLabel: PACE[(run.pace as Pace) ?? 'normal']?.label ?? null,
+					windowFrom: run.windowFrom,
+					windowTo: run.windowTo,
+				},
+				// Можно ли уже подключать рассылку и в каком объёме. Считаем по
+				// той же норме, по которой рассылка потом и пойдёт, — обещать
+				// одно, а выдавать другое нельзя.
+				outreach: {
+					canStart: allow.dailyMessages >= 1,
+					perDay: allow.dailyMessages,
+					why: allow.dailyMessages >= 1 ? null : (allow.notes[0] ?? 'исходящие пока закрыты'),
+				},
+			})
+		}
+
+		// Отправки рассылки на тот же день — по аккаунтам, которые здесь есть.
+		const ids = accounts.map(a => a.id)
+		if (ids.length) {
+			const from = new Date(target)
+			const to = new Date(target.getTime() + DAY_MS)
+			const sends = await this.prisma.tgRecipient.findMany({
+				where: { plannedAccountId: { in: ids }, scheduledAt: { gte: from, lt: to }, status: 'QUEUED' },
+				select: {
+					id: true, scheduledAt: true, plannedAccountId: true,
+					firstName: true, lastName: true, company: true, username: true, phone: true,
+					campaign: { select: { name: true } },
+				},
+				orderBy: { scheduledAt: 'asc' },
+			})
+			for (const r of sends) {
+				items.push({
+					kind: 'send',
+					accountId: r.plannedAccountId,
+					at: r.scheduledAt!.toISOString(),
+					who: [r.firstName, r.lastName].filter(Boolean).join(' ')
+						|| r.company
+						|| (r.username ? `@${r.username}` : null)
+						|| r.phone
+						|| 'без имени',
+					campaign: r.campaign.name,
+				})
+			}
+		}
+
+		// Дни: сегодня и столько вперёд, сколько осталось у самого длинного прогона.
+		const days: string[] = []
+		for (let i = 0; i <= Math.min(13, lastDay); i++) {
+			days.push(dateKey(new Date(today.getTime() + i * DAY_MS)))
+		}
+
+		return {
+			date: dateKey(target),
+			days,
+			accounts: accounts.sort((a, b) => b.readiness - a.readiness),
+			items: items.sort((a, b) => (a.at < b.at ? -1 : 1)),
+		}
+	}
+
 	async timeline(accountId: string) {
 		const a = await this.prisma.tgAccount.findUnique({
 			where: { id: accountId },
@@ -1316,10 +1474,40 @@ export class TgWarmupService {
 	 * весь пул просыпался бы одновременно, а синхронный старт сотни аккаунтов
 	 * виден лучше, чем любая отдельная активность.
 	 */
-	async startWarmup(ids: string[], days: number, windowFrom = 9, windowTo = 23) {
+	/**
+	 * Что означает каждый темп — числами, а не словами.
+	 *
+	 * Считается на бэкенде, а не рисуется на фронте: цифры должны браться
+	 * оттуда же, откуда их берёт планировщик, иначе интерфейс однажды начнёт
+	 * обещать одно, а прогрев делать другое.
+	 */
+	paceInfo() {
+		const stages: Array<{ key: 'new' | 'warm' | 'mature'; label: string; note: string }> = [
+			{ key: 'new', label: 'Новый', note: 'моложе недели' },
+			{ key: 'warm', label: 'Обжитой', note: 'от недели до месяца' },
+			{ key: 'mature', label: 'Зрелый', note: 'старше месяца' },
+		]
+		return {
+			stages,
+			paces: PACES.map(p => ({
+				id: p,
+				label: PACE[p].label,
+				hint: PACE[p].hint,
+				sessions: PACE[p].sessions,
+				byStage: stages.map(st => ({
+					stage: st.key,
+					actions: PACE[p].actions[st.key],
+					minutes: paceMinutes(st.key, p),
+				})),
+			})),
+		}
+	}
+
+	async startWarmup(ids: string[], days: number, windowFrom = 9, windowTo = 23, pace: Pace = 'normal') {
 		if (!ids?.length) throw new BadRequestException('Не выбрано ни одного аккаунта')
 		const d = Math.max(1, Math.min(60, Math.round(days || 7)))
 		if (windowTo <= windowFrom) throw new BadRequestException('Окно активности задано наоборот: конец раньше начала')
+		const speed: Pace = PACES.includes(pace) ? pace : 'normal'
 
 		const accounts = await this.prisma.tgAccount.findMany({
 			where: { id: { in: ids } },
@@ -1354,6 +1542,7 @@ export class TgWarmupService {
 					accountId: a.id,
 					days: d,
 					windowFrom, windowTo,
+					pace: speed,
 					status: 'SCHEDULED',
 					nextRunAt: this.nextStart(a.id, new Date(), { fromHour: windowFrom, toHour: windowTo }),
 				},
@@ -1361,7 +1550,7 @@ export class TgWarmupService {
 			await this.prisma.tgAccount.update({ where: { id: a.id }, data: { status: 'WARMING' } })
 			started.push(a.id)
 		}
-		return { started: started.length, skipped }
+		return { started: started.length, skipped, pace: speed }
 	}
 
 	async stopWarmup(ids: string[]) {
@@ -1506,6 +1695,7 @@ export class TgWarmupService {
 				runIndex: run.days,
 				ageDays,
 				windows: [window],
+				pace: (run.pace as Pace) ?? 'normal',
 			})
 			plan = built.sessions
 			doneToday = 0
