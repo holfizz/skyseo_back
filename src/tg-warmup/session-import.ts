@@ -8,6 +8,7 @@ import {
 	serializeGramjsSession,
 } from '@mtcute/convert'
 import { readSqliteTable } from './sqlite-lite'
+import { tdataCrypto } from './tdata-crypto'
 import { accountSeed, makeRng } from './warmup-plan'
 
 /**
@@ -164,7 +165,10 @@ export async function importFromTdataZip(zipFile: Buffer, passcode?: string): Pr
 		files.set('tdata/' + e.entryName.slice(prefix.length), e.getData())
 	}
 
-	const options = { path: 'tdata', fs: memoryFs(files), passcode }
+	// Криптографию передаём свою: по умолчанию библиотека подтягивает её из
+	// @mtcute/node, а тот тянет better-sqlite3 — нативный модуль, который не
+	// собирается на alpine (см. tdata-crypto.ts).
+	const options = { path: 'tdata', fs: memoryFs(files), crypto: tdataCrypto() as any, passcode }
 	let tdata: Tdata
 	try {
 		tdata = await Tdata.open(options)

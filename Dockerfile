@@ -5,7 +5,16 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci
+# --omit=optional обязателен. @mtcute/convert (разбор tdata в модуле прогрева)
+# объявляет @mtcute/node необязательной одноранговой зависимостью, а npm такие
+# ставит сам. Тот тянет better-sqlite3 — нативный модуль без сборок под musl,
+# и npm ci уходил в node-gyp, не находил Python и валил сборку:
+#   gyp ERR! find Python  Could not find any Python installation to use
+# Криптографию для tdata мы делаем сами (src/tg-warmup/tdata-crypto.ts), так что
+# @mtcute/node не нужен. Проверено: ВСЕ необязательные пакеты в проде тянутся
+# из этого же поддерева, ничего другого флаг не отсекает. Если появится новая
+# зависимость с нужной необязательной частью — это условие надо перепроверить.
+RUN npm ci --omit=optional
 
 COPY . .
 
