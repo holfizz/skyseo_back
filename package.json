@@ -19,7 +19,8 @@
 		"seed:crm": "ts-node --transpile-only prisma/seed-crm.ts",
 		"seed:exec-errors": "ts-node --transpile-only prisma/seed-exec-errors.ts",
 		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts",
-		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts"
+		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
+		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
 	},
 	"dependencies": {
 		"@mtcute/convert": "^0.32.1",

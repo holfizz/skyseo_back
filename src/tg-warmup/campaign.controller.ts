@@ -139,6 +139,18 @@ export class CampaignController {
 		return this.svc.removeRecipient(id)
 	}
 
+	/** Что уйдёт этому человеку — оба сообщения с подстановками. */
+	@Get('recipients/:id/preview')
+	preview(@Param('id') id: string) {
+		return this.svc.preview(id)
+	}
+
+	/** Перенести отправку: другое время и/или другой аккаунт. */
+	@Patch('recipients/:id/schedule')
+	reschedule(@Param('id') id: string, @Body() body: { at?: string | null; accountId?: string | null }) {
+		return this.svc.rescheduleRecipient(id, body ?? {})
+	}
+
 	@Get('recipients/:id/dialog')
 	dialog(@Param('id') id: string) {
 		return this.svc.dialog(id)

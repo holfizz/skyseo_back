@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { SprintGuard } from '../sprint/sprint.guard'
 import { CampaignService } from './campaign.service'
@@ -63,6 +63,22 @@ export class CampaignManagerController {
 	@Get('campaigns/:id/recipients')
 	recipients(@Param('id') id: string, @Query('status') status?: string, @Query('limit') limit?: string) {
 		return this.svc.recipients(id, status, limit ? Number(limit) : undefined)
+	}
+
+	/** Что уйдёт этому человеку. Менеджеру нужно так же: он ведёт переписку. */
+	@Get('recipients/:id/preview')
+	preview(@Param('id') id: string) {
+		return this.svc.preview(id)
+	}
+
+	@Patch('recipients/:id/schedule')
+	reschedule(@Param('id') id: string, @Body() body: { at?: string | null; accountId?: string | null }) {
+		return this.svc.rescheduleRecipient(id, body ?? {})
+	}
+
+	@Delete('recipients/:id')
+	removeRecipient(@Param('id') id: string) {
+		return this.svc.removeRecipient(id)
 	}
 
 	@Get('recipients/:id/dialog')

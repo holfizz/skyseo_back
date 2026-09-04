@@ -1185,6 +1185,7 @@ export class TgWarmupService {
 			for (const r of sends) {
 				items.push({
 					kind: 'send',
+					recipientId: r.id,
 					accountId: r.plannedAccountId,
 					at: r.scheduledAt!.toISOString(),
 					who: [r.firstName, r.lastName].filter(Boolean).join(' ')

@@ -860,9 +860,121 @@ export class CampaignService {
 		return rows.sort((a, b) => b.readiness - a.readiness)
 	}
 
+	/**
+	 * Убрать человека из рассылки.
+	 *
+	 * Отправленное не трогаем: удалить адресата, с которым уже идёт переписка,
+	 * значит стереть саму переписку — она уходит по каскаду. Такого просто не
+	 * даём сделать: пусть остаётся в списке клиентов, где ему и место.
+	 */
 	async removeRecipient(id: string) {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id },
+			select: { id: true, sentAt: true, campaignId: true },
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (r.sentAt) {
+			throw new BadRequestException('Этому уже писали — из рассылки его не убрать, переписка сохраняется')
+		}
 		await this.prisma.tgRecipient.delete({ where: { id } })
+		return { ok: true, campaignId: r.campaignId }
+	}
+
+	/**
+	 * Перенести отправку: другое время, другой аккаунт или и то и другое.
+	 *
+	 * Расписание строит планировщик, но оно не приговор: человека можно
+	 * подвинуть руками — например, отложить на вечер или отдать более
+	 * прогретому аккаунту. Пересборка после этого НЕ запускается: иначе
+	 * следующее же изменение окна затёрло бы ручную правку, а смысл её ровно в
+	 * том, чтобы она пережила автоматику.
+	 *
+	 * Единственное, что проверяем, — что аккаунт вообще в этой кампании.
+	 * Время не проверяем: перенести на «вне окна» — осознанное решение, и
+	 * отправщик его исполнит, когда окно откроется.
+	 */
+	async rescheduleRecipient(id: string, body: { at?: string | null; accountId?: string | null }) {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id },
+			select: { id: true, status: true, campaignId: true },
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (r.status !== 'QUEUED') throw new BadRequestException('Переносить можно только тех, кому ещё не писали')
+
+		const data: any = {}
+
+		// Замок снимается вместе со временем: «убрать время» означает вернуть
+		// адресата в общую раскладку, а не подвесить его навсегда.
+		data.scheduleLocked = true
+
+		if (body.at !== undefined) {
+			if (body.at === null || body.at === '') {
+				data.scheduledAt = null
+				data.scheduleLocked = false
+			} else {
+				const at = new Date(body.at)
+				if (Number.isNaN(at.getTime())) throw new BadRequestException('Время не разобрали')
+				data.scheduledAt = at
+			}
+		}
+
+		if (body.accountId !== undefined) {
+			if (!body.accountId) {
+				data.plannedAccountId = null
+			} else {
+				const link = await this.prisma.tgCampaignAccount.findUnique({
+					where: { campaignId_accountId: { campaignId: r.campaignId, accountId: body.accountId } },
+					select: { id: true },
+				})
+				if (!link) throw new BadRequestException('Этого аккаунта нет в рассылке')
+				data.plannedAccountId = body.accountId
+			}
+		}
+
+		if (!Object.keys(data).length) return { ok: true }
+		await this.prisma.tgRecipient.update({ where: { id }, data })
 		return { ok: true }
+	}
+
+	/**
+	 * Что именно уйдёт этому человеку — оба сообщения, уже с подстановками.
+	 *
+	 * Показывать шаблон со скобками бесполезно: вопрос всегда в том, как он
+	 * развернётся на КОНКРЕТНОМ адресате — подставится ли отчество, во что
+	 * превратится домен. Здесь ровно тот текст, что уйдёт в Telegram.
+	 */
+	async preview(id: string) {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id },
+			include: {
+				campaign: { select: { id: true, name: true, firstMessage: true, secondMessage: true, status: true } },
+				plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+				account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+			},
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+
+		const missing = missingPlaceholders(r.campaign.firstMessage, r)
+		return {
+			id: r.id,
+			name: [r.firstName, r.middleName, r.lastName].filter(Boolean).join(' ') || r.company || null,
+			username: r.username,
+			phone: r.phone,
+			domain: r.domain,
+			company: r.company,
+			status: r.status,
+			scheduledAt: r.scheduledAt,
+			scheduleLocked: r.scheduleLocked,
+			sentAt: r.sentAt,
+			campaign: { id: r.campaign.id, name: r.campaign.name, status: r.campaign.status },
+			account: r.account ?? r.plannedAccount,
+			// Чего не хватает для подстановки. Пока не хватает — не уйдёт вовсе.
+			missing,
+			first: missing.length ? null : fillTemplate(r.campaign.firstMessage, r),
+			// Второе не уходит само: его отправляет человек из переписки, после
+			// ответа. Показываем как заготовку, чтобы было видно, что там дальше.
+			second: r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
+		}
 	}
 
 	// ── воронка ──────────────────────────────────────────────────────────────
@@ -1844,18 +1956,30 @@ export class CampaignService {
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
 			orderBy: { createdAt: 'asc' },
-			select: { id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true },
+			select: {
+				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true,
+				scheduleLocked: true, plannedAccountId: true, scheduledAt: true,
+			},
 		})
-		const willWrite = queued.filter(r => missingPlaceholders(c.firstMessage, r).length === 0)
+		// Закреплённых руками не планируем заново — но и не делаем вид, что их
+		// нет: место в дневной норме своего аккаунта они занимают.
+		const locked = queued.filter(r => r.scheduleLocked && r.scheduledAt)
+		const willWrite = queued.filter(r => !r.scheduleLocked && missingPlaceholders(c.firstMessage, r).length === 0)
+
 		const shift = this.dayShiftOf(c, now)
 		const slots = await this.slotsFor(c, now, shift ?? 0)
+		for (const s of slots) {
+			const taken = locked.filter(r => r.plannedAccountId === s.id).length
+			s.left = Math.max(0, s.left - taken)
+			s.quota = Math.max(0, s.quota - taken)
+		}
 		const plan = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null })
 
 		// Сначала снимаем прежний план со всей очереди, потом раскладываем
 		// новый: адресат, выпавший из плана (аккаунт убрали, данных не хватает),
 		// иначе остался бы с прошлым временем и попал в календарь как живой.
 		await this.prisma.tgRecipient.updateMany({
-			where: { campaignId, status: 'QUEUED' },
+			where: { campaignId, status: 'QUEUED', scheduleLocked: false },
 			data: { scheduledAt: null, plannedAccountId: null },
 		})
 
@@ -1874,8 +1998,10 @@ export class CampaignService {
 		}
 
 		return {
-			planned: plan.size,
-			unplanned: queued.length - plan.size,
+			planned: plan.size + locked.length,
+			unplanned: queued.length - plan.size - locked.length,
+			/** Сколько строк переставлено руками и оставлено как есть. */
+			locked: locked.length,
 			accounts: slots.length,
 			// Сколько всего влезает в выбранный день: по этому числу видно, надо
 			// ли поднимать нормы или добавлять аккаунты.
@@ -1902,6 +2028,7 @@ export class CampaignService {
 			id: true, username: true, phone: true, status: true,
 			firstName: true, middleName: true, lastName: true, company: true, domain: true,
 			scheduledAt: true, plannedAccountId: true, sentAt: true, accountId: true, error: true,
+			scheduleLocked: true,
 		}
 		const [queued, done] = await Promise.all([
 			this.prisma.tgRecipient.findMany({
@@ -1972,6 +2099,7 @@ export class CampaignService {
 				accountLabel: acc?.label ?? null,
 				accountAvatar: acc?.avatar ?? null,
 				tgUserId: acc?.tgUserId ?? null,
+				locked: !!r.scheduleLocked,
 			}
 		}
 
