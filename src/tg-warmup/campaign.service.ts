@@ -9,6 +9,7 @@ import { fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { distributeDaily } from './warmup-plan'
 import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
+import { mskAt, mskDayKey, mskHour } from './msk'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -75,16 +76,13 @@ export type PollResult = {
  * прошлое, и оно ушло бы немедленно.
  */
 function randomStart(now: Date, fromHour: number, toHour: number): Date {
-	const dayStart = new Date(now)
-	dayStart.setHours(fromHour, 0, 0, 0)
-	const dayEnd = new Date(now)
-	dayEnd.setHours(toHour, 0, 0, 0)
+	const dayStart = mskAt(now, fromHour, 0)
+	const dayEnd = mskAt(now, toHour, 0)
 
 	// Хвост окна короче получаса — не втискиваемся, начинаем завтра.
 	const earliest = Math.max(dayStart.getTime(), now.getTime())
 	if (earliest > dayEnd.getTime() - 30 * 60_000) {
-		const t = new Date(now.getTime() + 86400000)
-		t.setHours(fromHour, 0, 0, 0)
+		const t = mskAt(now, fromHour, 1)
 		return new Date(t.getTime() + Math.random() * Math.max(1, (toHour - fromHour) * 3600_000) * 0.4)
 	}
 	return new Date(earliest + Math.random() * (dayEnd.getTime() - earliest) * 0.35)
@@ -123,7 +121,10 @@ function recipientFilter(group?: string) {
 function parseDay(value?: string | null): Date | null {
 	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? '').trim())
 	if (!m) return null
-	const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
+	// Полночь ЭТОГО дня по Москве: «шестое» должно значить шестое у владельца,
+	// а не сутки, сдвинутые часовым поясом сервера.
+	const utcMidnight = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) - 180 * 60_000
+	const d = new Date(utcMidnight)
 	return Number.isNaN(d.getTime()) ? null : d
 }
 
@@ -135,14 +136,17 @@ function dayString(d: Date | null | undefined): string | null {
 
 /** Полночь указанных суток. */
 function startOfDay(d: Date): Date {
-	const t = new Date(d)
-	t.setHours(0, 0, 0, 0)
-	return t
+	return mskAt(d, 0, 0)
 }
 
-/** Ключ суток для дневных счётчиков. */
+/**
+ * Ключ суток для дневных счётчиков — по Москве.
+ *
+ * Иначе норма аккаунта обнулялась бы в три часа ночи по московскому времени,
+ * посреди окна отправки.
+ */
 function dayKey(d: Date): string {
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+	return mskDayKey(d)
 }
 
 /**
@@ -947,7 +951,12 @@ export class CampaignService {
 		const r = await this.prisma.tgRecipient.findUnique({
 			where: { id },
 			include: {
-				campaign: { select: { id: true, name: true, firstMessage: true, secondMessage: true, status: true } },
+				campaign: {
+					select: {
+						id: true, name: true, firstMessage: true, secondMessage: true,
+						status: true, windowFrom: true, windowTo: true,
+					},
+				},
 				plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
 				account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
 			},
@@ -955,7 +964,45 @@ export class CampaignService {
 		if (!r) throw new NotFoundException('Адресат не найден')
 
 		const missing = missingPlaceholders(r.campaign.firstMessage, r)
+
+		/*
+		 * Почему до сих пор не ушло, если время прошло.
+		 *
+		 * Раньше панель просто печатала «уйдёт сегодня 16:43» и после
+		 * наступления этого времени — и человек ждал отправки, которой не
+		 * будет. Причина почти всегда в аккаунте: прогрев урезал ему дневную
+		 * норму, аккаунт отключили или он вылетел из кампании. Считаем это
+		 * здесь, где данные под рукой, и говорим прямо.
+		 */
+		let overdue: string | null = null
+		if (r.status === 'QUEUED' && r.scheduledAt && r.scheduledAt < new Date()) {
+			overdue = 'время прошло, но сообщение ещё не ушло'
+			if (missing.length) {
+				overdue = `не уйдёт: не хватает данных для текста (${missing.join(', ')})`
+			} else if (r.campaign.status !== 'RUNNING') {
+				overdue = `рассылка ${r.campaign.status === 'PAUSED' ? 'на паузе' : 'не запущена'} — отправка стоит`
+			} else if (r.plannedAccountId) {
+				const quota = await this.dailyQuota(
+					await this.prisma.tgCampaign.findUniqueOrThrow({
+						where: { id: r.campaignId },
+						include: { accounts: { include: { account: true } } },
+					}),
+					dayKey(new Date()),
+				)
+				const norm = quota.get(r.plannedAccountId) ?? 0
+				if (norm <= 0) {
+					overdue = 'аккаунту, за которым он закреплён, прогрев не выдал сегодня нормы — уйдёт с другого или завтра'
+				} else {
+					const hour = mskHour(new Date())
+					overdue = hour < r.campaign.windowFrom || hour >= r.campaign.windowTo
+						? `сейчас вне окна ${r.campaign.windowFrom}:00–${r.campaign.windowTo}:00 по МСК — уйдёт, когда откроется`
+						: 'аккаунт в очереди на отправку, уйдёт в ближайшие минуты'
+				}
+			}
+		}
+
 		return {
+			overdue,
 			id: r.id,
 			name: [r.firstName, r.middleName, r.lastName].filter(Boolean).join(' ') || r.company || null,
 			username: r.username,
@@ -1068,9 +1115,9 @@ export class CampaignService {
 	 */
 	async stats(days = 14) {
 		const span = Math.max(7, Math.min(90, days))
-		const since = new Date()
-		since.setHours(0, 0, 0, 0)
-		since.setDate(since.getDate() - (span - 1))
+		// Отсчёт от московской полуночи: столбцы графика группируются тем же
+		// dayKey, и без этого крайние сутки съезжали бы на три часа.
+		const since = mskAt(new Date(), 0, -(span - 1))
 
 		const rows = await this.prisma.tgRecipient.findMany({
 			where: { OR: [{ sentAt: { gte: since } }, { readAt: { gte: since } }, { repliedAt: { gte: since } }] },
@@ -1128,13 +1175,26 @@ export class CampaignService {
 		let sent = 0
 		for (const c of campaigns) {
 			// Вне окна отправки не пишем: сообщение в четыре утра само по себе метка.
-			const hour = now.getHours()
+			// Час московский: окна задаются и подписаны по Москве.
+			const hour = mskHour(now)
 			if (hour < c.windowFrom || hour >= c.windowTo) continue
 
 			const today = dayKey(now)
 			// Норма каждого аккаунта на сегодня. Если задана цель дня, она
 			// раскладывается по готовности; иначе у каждого свой общий потолок.
 			const quota = await this.dailyQuota(c, today)
+
+			/*
+			 * Кто сегодня вообще способен писать. Нужно, чтобы подобрать
+			 * брошенных: адресат, закреплённый за аккаунтом с нулевой нормой
+			 * или выбывшим из кампании, иначе висит вечно — по плану он «чужой»,
+			 * и никто, кроме этого аккаунта, его не берёт. У нас так и вышло:
+			 * норму аккаунтам урезал прогрев уже ПОСЛЕ того, как расписание
+			 * было построено, и трое суток провисели непонятно почему.
+			 */
+			const working = c.accounts
+				.filter(l => (quota.get(l.accountId) ?? 0) > 0)
+				.map(l => l.accountId)
 
 			for (const link of c.accounts) {
 				if (link.pausedUntil && link.pausedUntil > now) continue
@@ -1183,12 +1243,32 @@ export class CampaignService {
 					})
 					planned = !!recipient
 					if (!recipient) {
-						// Адресаты без расписания: кампании, заведённые до него, и
-						// добавленные руками уже после сборки плана. Их разбирает
-						// любой свободный аккаунт, как было раньше.
+						/*
+						 * Свободные адресаты. Два случая:
+						 *
+						 * Без расписания — кампании, заведённые до него, и
+						 * добавленные руками уже после сборки плана.
+						 *
+						 * Брошенные — просроченные больше чем на полчаса и
+						 * закреплённые за аккаунтом, который сегодня не работает.
+						 * Полчаса запаса нужны, чтобы не выхватывать чужое у
+						 * аккаунта, который просто немного отстал от плана.
+						 * Закреплённых вручную не трогаем: смысл закрепления в
+						 * том, чтобы отправка ушла именно с этого аккаунта.
+						 */
 						recipient = await this.prisma.tgRecipient.findFirst({
-							where: { campaignId: c.id, status: 'QUEUED', plannedAccountId: null },
-							orderBy: { createdAt: 'asc' },
+							where: {
+								campaignId: c.id, status: 'QUEUED',
+								OR: [
+									{ plannedAccountId: null },
+									{
+										scheduleLocked: false,
+										scheduledAt: { lt: new Date(now.getTime() - 30 * 60_000) },
+										plannedAccountId: { notIn: working.length ? working : ['-'] },
+									},
+								],
+							},
+							orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'asc' }],
 						})
 					}
 					if (!recipient) {
@@ -2498,7 +2578,7 @@ export class CampaignService {
 			})
 		}
 
-		const hour = now.getHours()
+		const hour = mskHour(now)
 		return {
 			// Идёт ли отправка прямо сейчас: мало быть запущенной, надо ещё
 			// попасть в окно. Вне окна кампания «запущена, но молчит», и это

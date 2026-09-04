@@ -16,6 +16,7 @@ import {
 	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, PACE, PACES, paceMinutes, planDay,
 	type Allowance, type Pace, type Session, type Window,
 } from './warmup-plan'
+import { mskAt, mskDayKey, mskMinuteOfDay } from './msk'
 import { scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
 import { estimateRegistration } from './account-age'
 
@@ -66,21 +67,22 @@ function displayName(self: { firstName?: string | null; lastName?: string | null
 /** Ключ дня в местной шкале сервера: планы строятся по календарным суткам. */
 /** Полночь указанных суток по местному времени. */
 function startOfDayLocal(d: Date): Date {
-	const t = new Date(d)
-	t.setHours(0, 0, 0, 0)
-	return t
+	return mskAt(d, 0, 0)
 }
 
 /** «ГГГГ-ММ-ДД» → полночь этого дня. Местная, а не UTC: день выбирают глазами. */
 function parseDayLocal(value?: string | null): Date | null {
 	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? '').trim())
 	if (!m) return null
-	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
+	// Полночь этого дня ПО МОСКВЕ: календарь показывает московские сутки.
+	return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) - 180 * 60_000)
 }
 
+/** Ключ суток по Москве: по нему считаются дневные нормы и планы. */
 function dateKey(d: Date): string {
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+	return mskDayKey(d)
 }
+
 
 @Injectable()
 export class TgWarmupService {
@@ -381,6 +383,28 @@ export class TgWarmupService {
 			},
 		})
 		const scores = await this.scoreMany(rows, rows)
+
+		/*
+		 * Сколько у аккаунта переписок и сколько из них с ответом.
+		 *
+		 * Одним запросом на весь список, а не по одному на строку: у пула из
+		 * полусотни аккаунтов это была бы сотня лишних обращений к базе на
+		 * каждое открытие страницы. Без этих чисел «есть ли с кем разговаривать»
+		 * приходилось выяснять, открывая каждый аккаунт по очереди.
+		 */
+		const chats = await this.prisma.tgRecipient.groupBy({
+			by: ['accountId'],
+			where: { accountId: { not: null }, sentAt: { not: null } },
+			_count: { _all: true },
+		})
+		const replied = await this.prisma.tgRecipient.groupBy({
+			by: ['accountId'],
+			where: { accountId: { not: null }, repliedAt: { not: null } },
+			_count: { _all: true },
+		})
+		const chatsBy = new Map(chats.map(r => [r.accountId!, r._count._all]))
+		const repliedBy = new Map(replied.map(r => [r.accountId!, r._count._all]))
+
 		return rows.map(a => {
 			const run = a.runs[0]
 			const live = scores.get(a.id)
@@ -404,6 +428,9 @@ export class TgWarmupService {
 				registeredAt: a.registeredAt,
 				ageDays: a.registeredAt ? Math.floor((Date.now() - a.registeredAt.getTime()) / DAY_MS) : null,
 				actionsTotal: a.actionsTotal,
+				// Переписки: скольким этот аккаунт написал и сколько ответили.
+				chats: chatsBy.get(a.id) ?? 0,
+				chatsReplied: repliedBy.get(a.id) ?? 0,
 				warmupDaysDone: a.warmupDaysDone,
 				lastCheckAt: a.lastCheckAt,
 				lastError: a.lastError,
@@ -1122,7 +1149,7 @@ export class TgWarmupService {
 							pace: (run.pace as Pace) ?? 'normal',
 						}).sessions
 
-			const nowMin = now.getHours() * 60 + now.getMinutes()
+			const nowMin = mskMinuteOfDay(now)
 			const doneToday = shift === 0 ? run.doneToday : 0
 			planned.forEach((sess, i) => {
 				const end = sess.startMin + sess.minutes
@@ -1225,12 +1252,12 @@ export class TgWarmupService {
 		})
 
 		const now = new Date()
-		const nowMin = now.getHours() * 60 + now.getMinutes()
+		const nowMin = mskMinuteOfDay(now)
 		const sessions: Session[] = Array.isArray(run?.plan) ? (run!.plan as unknown as Session[]) : []
 		const doneToday = run?.doneToday ?? 0
 
-		const today = new Date()
-		today.setHours(0, 0, 0, 0)
+		// Начало московских суток: по ним же считаются дневные нормы.
+		const today = mskAt(new Date(), 0, 0)
 		const actions = await this.prisma.tgWarmupAction.findMany({
 			where: { accountId, createdAt: { gte: today } },
 			orderBy: { createdAt: 'desc' },
@@ -1566,17 +1593,20 @@ export class TgWarmupService {
 		return { ok: true }
 	}
 
-	/** Минуты от начала суток для момента времени. */
+	/**
+	 * Минуты от начала МОСКОВСКИХ суток.
+	 *
+	 * Окна активности прогрева подписаны «по МСК», а контейнер работает в UTC:
+	 * без пересчёта аккаунт, которому положено просыпаться в 9 утра, выходил
+	 * бы в сеть в полдень.
+	 */
 	private minuteOfDay(d: Date): number {
-		return d.getHours() * 60 + d.getMinutes()
+		return mskMinuteOfDay(d)
 	}
 
-	/** Момент времени по минуте суток указанного дня. */
+	/** Момент времени по минуте московских суток указанного дня. */
 	private atMinute(day: Date, minute: number): Date {
-		const at = new Date(day)
-		at.setHours(0, 0, 0, 0)
-		at.setMinutes(minute)
-		return at
+		return mskAt(day, 0, 0, minute)
 	}
 
 	// ── исполнение ───────────────────────────────────────────────────────────
@@ -1895,8 +1925,7 @@ export class TgWarmupService {
 		// делает и то и другое, бюджет у него общий: иначе прогрев отсчитывал
 		// бы свою норму, рассылка свою, и в сумме выходило бы вдвое больше, чем
 		// считает безопасным любой из них.
-		const midnight = new Date()
-		midnight.setHours(0, 0, 0, 0)
+		const midnight = mskAt(new Date(), 0, 0)
 		const [firstTouches, secondTouches] = await Promise.all([
 			this.prisma.tgRecipient.count({ where: { accountId: account.id, sentAt: { gte: midnight } } }),
 			this.prisma.tgRecipient.count({ where: { accountId: account.id, secondSentAt: { gte: midnight } } }),
@@ -1936,8 +1965,7 @@ export class TgWarmupService {
 
 	/** Сколько вступлений и исходящих уже сделано сегодня — для дневных квот. */
 	private async usedToday(accountId: string): Promise<{ joins: number; messages: number }> {
-		const from = new Date()
-		from.setHours(0, 0, 0, 0)
+		const from = mskAt(new Date(), 0, 0)
 		const rows = await this.prisma.tgWarmupAction.findMany({
 			where: { accountId, createdAt: { gte: from }, ok: true },
 			select: { kind: true },
@@ -1976,9 +2004,7 @@ export class TgWarmupService {
 		for (let dayShift = 0; dayShift < 2; dayShift++) {
 			const day = new Date(from.getTime() + dayShift * DAY_MS)
 			const minute = dailyStartMinute(accountId, dateKey(day), [w])
-			const at = new Date(day)
-			at.setHours(0, 0, 0, 0)
-			at.setMinutes(minute)
+			const at = mskAt(day, 0, 0, minute)
 			if (at > from) return at
 		}
 		return new Date(from.getTime() + DAY_MS)
