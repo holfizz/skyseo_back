@@ -151,6 +151,23 @@ export class CampaignController {
 		return this.svc.rescheduleRecipient(id, body ?? {})
 	}
 
+	/** Все переписки одного аккаунта, порциями. */
+	@Get('accounts/:id/dialogs')
+	accountDialogs(
+		@Param('id') id: string,
+		@Query('limit') limit?: string,
+		@Query('cursor') cursor?: string,
+		@Query('stage') stage?: string,
+	) {
+		return this.svc.accountDialogs(id, { limit: limit ? Number(limit) : undefined, cursor, stage })
+	}
+
+	/** Закрыть вопрос по отправке с неизвестным исходом. */
+	@Post('recipients/:id/delivery')
+	resolveDelivery(@Param('id') id: string, @Body() body: { delivered: boolean }) {
+		return this.svc.resolveDelivery(id, body?.delivered !== false)
+	}
+
 	@Get('recipients/:id/dialog')
 	dialog(@Param('id') id: string) {
 		return this.svc.dialog(id)

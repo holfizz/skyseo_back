@@ -966,6 +966,10 @@ export class CampaignService {
 			scheduledAt: r.scheduledAt,
 			scheduleLocked: r.scheduleLocked,
 			sentAt: r.sentAt,
+			readAt: r.readAt,
+			repliedAt: r.repliedAt,
+			deliveryUnknown: r.deliveryUnknown,
+			error: r.error,
 			campaign: { id: r.campaign.id, name: r.campaign.name, status: r.campaign.status },
 			account: r.account ?? r.plannedAccount,
 			// Чего не хватает для подстановки. Пока не хватает — не уйдёт вовсе.
@@ -1438,9 +1442,23 @@ export class CampaignService {
 		}
 
 		const opts = this.warmup.clientOptions(account)
+
+		/*
+		 * С этого момента исход перестаёт быть однозначным.
+		 *
+		 * Пока идёт поиск собеседника, любая ошибка означает «не отправляли» —
+		 * адресата можно спокойно вернуть в очередь. Но как только запрос на
+		 * отправку ушёл, обрыв связи или таймаут больше НЕ означают, что
+		 * сообщение не дошло: сервер мог его принять, а ответ до нас не
+		 * добрался. Вернуть такого в очередь — значит написать человеку второй
+		 * раз одно и то же, а это худшее, что можно сделать в холодной рассылке.
+		 */
+		let attempted = false
+
 		try {
 			const { result, session } = await withClient(opts, async client => {
 				const peer = await this.resolvePeer(client, recipient)
+				attempted = true
 				const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: text }))
 				return { msgId: Number(msg?.id ?? 0), userId: peer.userId }
 			})
@@ -1481,6 +1499,32 @@ export class CampaignService {
 				})
 				// Сеть тронули, но виноват адресат, а не аккаунт: паузу не ставим.
 				return 'skipped'
+			}
+
+			/*
+			 * Исход неизвестен: запрос на отправку уже ушёл, а чем кончился —
+			 * не знаем. Оставляем адресата отправленным и помечаем: пусть
+			 * лучше сообщение не дойдёт, чем придёт дважды.
+			 *
+			 * Отказы сервера сюда не попадают: FLOOD_WAIT, PEER_FLOOD, бан и
+			 * приватность — это ОТВЕТ Telegram, то есть он запрос обработал и
+			 * отклонил. Сообщение при них не уходило, и адресат честно
+			 * возвращается в очередь ниже.
+			 */
+			const ambiguous = attempted && (failure.kind === 'timeout' || failure.kind === 'proxy' || failure.kind === 'other')
+
+			if (ambiguous) {
+				await this.prisma.tgRecipient.update({
+					where: { id: recipient.id },
+					data: {
+						status: 'SENT', sentAt: new Date(), deliveryUnknown: true, sentMsgId: null,
+						error: `Связь оборвалась при отправке: ${failure.message.slice(0, 200)}. Повторно НЕ отправляем — проверьте переписку`,
+					},
+				})
+				await this.warmup.applyFailure(account.id, failure)
+				await this.pauseAccount(link.id, 1800, failure.message)
+				this.logger.warn(`Отправка с неизвестным исходом: адресат ${recipient.id}, ${failure.message}`)
+				return 'failed'
 			}
 
 			// Общая беда аккаунта: возвращаем адресата в очередь, аккаунт паузим.
@@ -1726,6 +1770,25 @@ export class CampaignService {
 		// границы прочитанного исходящего.
 		if (!r.readAt && r.sentMsgId && item.readTo >= r.sentMsgId) patch.readAt = new Date()
 
+		/*
+		 * Разрешаем сомнение в ПОЛОЖИТЕЛЬНУЮ сторону и только в неё.
+		 *
+		 * Если в переписке нашлось наше исходящее — значит отправка всё-таки
+		 * прошла: снимаем пометку и восстанавливаем id сообщения, по которому
+		 * дальше считается прочтение. Обратный вывод («в диалогах не нашли,
+		 * значит не дошло») здесь делать нельзя: getDialogs берёт сотню
+		 * последних, и отсутствие в ней — не доказательство. Такие остаются
+		 * помеченными, и решение принимает человек.
+		 */
+		if (r.deliveryUnknown) {
+			const ours = messages.filter(m => m?.out && m?.id).map(m => Number(m.id))
+			if (ours.length) {
+				patch.deliveryUnknown = false
+				patch.sentMsgId = Math.min(...ours)
+				patch.error = null
+			}
+		}
+
 		let incoming: any[] = []
 		if (messages.length) {
 			const rows = messages
@@ -1803,6 +1866,7 @@ export class CampaignService {
 			status: r.status,
 			sentAt: r.sentAt, readAt: r.readAt, repliedAt: r.repliedAt,
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
+			deliveryUnknown: r.deliveryUnknown,
 			campaign: r.campaign, account: r.account,
 			secondPreview: r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
 			messages: r.messages.map(m => ({ id: m.id, out: m.out, text: m.text, date: m.date })),
@@ -2296,7 +2360,7 @@ export class CampaignService {
 					id: true, username: true, phone: true, status: true,
 					firstName: true, middleName: true, lastName: true, company: true, domain: true,
 					scheduledAt: true, sentAt: true, readAt: true, repliedAt: true, secondSentAt: true,
-					blockedAt: true, error: true,
+					blockedAt: true, error: true, deliveryUnknown: true,
 					campaign: { select: { id: true, name: true } },
 					account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
 					plannedAccountId: true,
@@ -2336,6 +2400,7 @@ export class CampaignService {
 				readAt: r.readAt,
 				repliedAt: r.repliedAt,
 				secondSentAt: r.secondSentAt,
+				deliveryUnknown: r.deliveryUnknown,
 				error: r.error,
 				account: r.account,
 			})),
@@ -2476,6 +2541,127 @@ export class CampaignService {
 			data: { status: 'DONE', finishedAt: new Date() },
 		})
 		return { ok: true, released: released.count }
+	}
+
+	/**
+	 * Все переписки одного аккаунта, порциями.
+	 *
+	 * Раньше «с кем этот аккаунт общался» можно было узнать только перебором:
+	 * открыть каждую кампанию, найти в списке адресатов тех, у кого стоит этот
+	 * аккаунт. А вопрос обычный — особенно когда решаешь, не пора ли аккаунт
+	 * менять: сколько ответили, сколько заблокировали.
+	 *
+	 * Порциями, а не целиком: у рабочего аккаунта переписок сотни, и грузить
+	 * их разом незачем — смотрят первые два десятка.
+	 */
+	async accountDialogs(accountId: string, opts?: { limit?: number; cursor?: string; stage?: string }) {
+		const take = Math.max(5, Math.min(100, opts?.limit ?? 25))
+
+		const where: any = { accountId }
+		if (STAGE_STATUS[opts?.stage ?? '']) where.status = { in: STAGE_STATUS[opts!.stage!] }
+
+		/*
+		 * Курсор по id, а не по времени отправки.
+		 *
+		 * По времени казалось естественнее — список им и отсортирован, — но
+		 * у части строк `sentAt` пустой: так помечаются те, кому написать не
+		 * удалось (закрыта приватность, нет такого юзернейма). Условие
+		 * `sentAt < курсор` их не проходит вовсе, и до второй страницы они не
+		 * доезжали никогда. Порядок сортировки дополнен id, чтобы он был
+		 * однозначным и курсор не перескакивал через одинаковые времена.
+		 */
+		const rows = await this.prisma.tgRecipient.findMany({
+			where,
+			orderBy: [{ sentAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+			...(opts?.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
+			take: take + 1,
+			select: {
+				id: true, username: true, phone: true, status: true,
+				firstName: true, lastName: true, company: true, domain: true,
+				sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true,
+				deliveryUnknown: true, error: true,
+				campaign: { select: { id: true, name: true } },
+				// Последняя реплика: по ней видно, о чём разговор, без открытия.
+				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, text: true, date: true } },
+				_count: { select: { messages: true } },
+			},
+		})
+
+		const more = rows.length > take
+		const page = more ? rows.slice(0, take) : rows
+
+		const counts = await this.prisma.tgRecipient.groupBy({
+			by: ['status'],
+			where: { accountId },
+			_count: { _all: true },
+		})
+		const byStatus = new Map(counts.map(c => [String(c.status), c._count._all]))
+		const sum = (list: string[]) => list.reduce((n, st) => n + (byStatus.get(st) ?? 0), 0)
+
+		return {
+			total: [...byStatus.values()].reduce((a, b) => a + b, 0),
+			counts: {
+				first: sum(STAGE_STATUS.first),
+				second: sum(STAGE_STATUS.second),
+				problem: sum(STAGE_STATUS.problem),
+				queued: sum(STAGE_STATUS.queued),
+				// Отдельно то, ради чего сюда чаще всего и заходят.
+				replied: (byStatus.get('REPLIED') ?? 0) + (byStatus.get('SECOND_SENT') ?? 0),
+				blocked: byStatus.get('BLOCKED') ?? 0,
+			},
+			rows: page.map(r => ({
+				id: r.id,
+				name: [r.firstName, r.lastName].filter(Boolean).join(' ')
+					|| r.company
+					|| (r.username ? `@${r.username}` : null)
+					|| r.phone
+					|| 'без имени',
+				username: r.username,
+				domain: r.domain,
+				status: r.status,
+				stage: stageOf(r.status),
+				campaign: r.campaign,
+				sentAt: r.sentAt,
+				readAt: r.readAt,
+				repliedAt: r.repliedAt,
+				secondSentAt: r.secondSentAt,
+				blockedAt: r.blockedAt,
+				deliveryUnknown: r.deliveryUnknown,
+				error: r.error,
+				messages: r._count.messages,
+				last: r.messages[0] ?? null,
+			})),
+			// Курсор следующей порции: id последней строки. null — дальше пусто.
+			cursor: more ? page[page.length - 1].id : null,
+		}
+	}
+
+	/**
+	 * Закрыть вопрос по отправке с неизвестным исходом — руками.
+	 *
+	 * Автоматика решает только в положительную сторону: нашли наше сообщение в
+	 * переписке — сомнение снято. Обратное («в диалогах не нашли, значит не
+	 * дошло») она утверждать не может: getDialogs отдаёт сотню последних, и
+	 * отсутствие там ничего не доказывает. Поэтому «всё-таки не дошло» —
+	 * решение человека, который открыл Telegram и посмотрел.
+	 */
+	async resolveDelivery(id: string, delivered: boolean) {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id },
+			select: { id: true, deliveryUnknown: true },
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (!r.deliveryUnknown) return { ok: true }
+
+		await this.prisma.tgRecipient.update({
+			where: { id },
+			data: delivered
+				? { deliveryUnknown: false, error: null }
+				// Не дошло — возвращаем в очередь, теперь это безопасно:
+				// доставку проверил человек.
+				: { deliveryUnknown: false, status: 'QUEUED', sentAt: null, sentMsgId: null, accountId: null, error: null },
+		})
+		return { ok: true, requeued: !delivered }
 	}
 
 	/** Кампания целиком: настройки, аккаунты, воронка. */
