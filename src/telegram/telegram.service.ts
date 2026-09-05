@@ -1109,8 +1109,58 @@ export class TelegramService implements OnModuleDestroy {
 			message += '\n'
 		}
 
+		message += await this.outreachDailyBlock()
+
 		message += `🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 		return message
+	}
+
+	/**
+	 * Блок про рассылку в Telegram для дневного отчёта.
+	 *
+	 * Главный вопрос по рассылке за сутки один: сколько ушло из скольких
+	 * запланированных. Раньше в отчёте её не было вовсе, и «почему вчера ушло
+	 * шесть» приходилось выяснять руками по базе.
+	 *
+	 * Сутки считаем ПО МОСКВЕ, а не по часам сервера: окно отправки задаётся
+	 * по Москве, и цифры должны сходиться с тем, что показывает раздел. Все
+	 * остальные блоки отчёта живут по серверным суткам — разойтись они могут
+	 * только между полуночью и тремя ночи, когда рассылка всё равно не идёт.
+	 *
+	 * Считаем прямыми запросами, а не через CampaignService: тот сам зависит от
+	 * этого сервиса ради уведомлений, и внедрять его обратно значит замкнуть
+	 * зависимость ради четырёх счётчиков.
+	 */
+	private async outreachDailyBlock(): Promise<string> {
+		const MSK = 180 * 60_000
+		const shifted = new Date(Date.now() + MSK)
+		const from = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - MSK)
+		const to = new Date(from.getTime() + 86400000)
+
+		const [sent, read, replied, scheduled, queued, goals] = await Promise.all([
+			this.prisma.tgRecipient.count({ where: { sentAt: { gte: from, lt: to } } }),
+			this.prisma.tgRecipient.count({ where: { readAt: { gte: from, lt: to } } }),
+			this.prisma.tgRecipient.count({ where: { repliedAt: { gte: from, lt: to } } }),
+			this.prisma.tgRecipient.count({ where: { scheduledAt: { gte: from, lt: to } } }),
+			this.prisma.tgRecipient.count({ where: { status: 'QUEUED' } }),
+			this.prisma.tgCampaign.findMany({
+				where: { status: 'RUNNING', archivedAt: null, sendDate: { gte: from, lt: to } },
+				select: { dailyGoal: true },
+			}),
+		])
+
+		// План на день — то, что стояло в календаре. Если расписание не строили,
+		// берём цель дня запущенных кампаний: это и есть обещание на сутки.
+		const planned = scheduled || goals.reduce((n, c) => n + (c.dailyGoal ?? 0), 0)
+		if (!planned && !sent) return ''
+
+		const short = planned > 0 && sent < planned
+		let out = `📨 <b>Рассылка ТГ:</b>\n`
+		out += `├ Отправлено: <b>${sent}</b>${planned ? ` из <b>${planned}</b> запланированных` : ''}`
+		out += short ? ` ⚠️\n` : `\n`
+		if (read > 0 || replied > 0) out += `├ 👀 Прочитали: <b>${read}</b> · 💬 Ответили: <b>${replied}</b>\n`
+		out += `└ В очереди: <b>${queued}</b>\n\n`
+		return out
 	}
 
 	async sendDailyTelegramReport() {
@@ -1202,6 +1252,8 @@ export class TelegramService implements OnModuleDestroy {
 			if (revenue > 0)       message += `└ Выручка: <b>${revenue.toLocaleString('ru-RU')} ₽</b>\n`
 			message += '\n'
 		}
+
+		message += await this.outreachDailyBlock()
 
 		message += `🕐 ${now.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
 
