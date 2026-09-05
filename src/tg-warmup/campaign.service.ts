@@ -7,9 +7,14 @@ import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
 import { fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
+import {
+	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
+	type MessageCompetitor, type MessageKeyword,
+} from '../outreach/outreach-message'
 import { distributeDaily } from './warmup-plan'
 import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
+import { mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -1023,8 +1028,12 @@ export class CampaignService {
 			missing,
 			first: missing.length ? null : fillTemplate(r.campaign.firstMessage, r),
 			// Второе не уходит само: его отправляет человек из переписки, после
-			// ответа. Показываем как заготовку, чтобы было видно, что там дальше.
-			second: r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
+			// ответа. Показываем целиком — с позициями и конкурентами, ровно
+			// так, как оно уйдёт.
+			second: await this.fullSecondMessage(
+				r,
+				r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
+			),
 		}
 	}
 
@@ -1780,22 +1789,50 @@ export class CampaignService {
 						})
 					}
 					// История тянется только там, где что-то изменилось.
-					const fetched: Array<{ id: string; messages: any[] }> = []
+					const fetched: Array<{ id: string; messages: any[]; media: Map<number, { data: string | null; mime: string }> }> = []
 					for (const item of out) {
 						if (item.top <= item.recipient.lastSeenMsgId) continue
 						const msgs: any = await call(client, 'getMessages', () =>
 							client.getMessages(item.entity, { limit: 40, minId: item.recipient.lastSeenMsgId }),
 						)
-						fetched.push({ id: item.recipient.id, messages: msgs ?? [] })
+
+						/*
+						 * Вложения забираем здесь же, пока подключение открыто и
+						 * сообщение под рукой. Отдельным заходом позже это стоило
+						 * бы нового коннекта на каждую картинку.
+						 *
+						 * Только входящие и только мелкие: свои картинки мы и так
+						 * знаем, а чужое видео на мобильном прокси — оплаченный
+						 * трафик ради превью, которое всё равно не покажем.
+						 */
+						const media = new Map<number, { data: string | null; mime: string }>()
+						for (const m of (msgs ?? []) as any[]) {
+							if (!m?.id || m.out) continue
+							const info = mediaOf(m)
+							if (!info || !worthDownloading(info)) continue
+							try {
+								const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
+								if (buf?.length) {
+									media.set(Number(m.id), {
+										data: Buffer.from(buf).toString('base64'),
+										mime: mimeFor(info),
+									})
+								}
+							} catch {
+								// Не скачалось — не беда: вид и размер всё равно запишем.
+							}
+						}
+						fetched.push({ id: item.recipient.id, messages: msgs ?? [], media })
 					}
 					return { out, fetched }
 				})
 				await this.warmup.persistSession(account.id, opts.session, session)
 
 				const history = new Map(result.fetched.map(f => [f.id, f.messages]))
+				const media = new Map(result.fetched.map(f => [f.id, f.media]))
 				for (const item of result.out) {
 					const before = !!item.recipient.repliedAt
-					if (await this.applyDialogState(item, history.get(item.recipient.id) ?? [], account)) {
+					if (await this.applyDialogState(item, history.get(item.recipient.id) ?? [], account, media.get(item.recipient.id))) {
 						changed++
 						if (!before) {
 							const after = await this.prisma.tgRecipient.findUnique({
@@ -1842,6 +1879,8 @@ export class CampaignService {
 		item: { recipient: any; readTo: number; top: number },
 		messages: any[],
 		account: any,
+		/** Скачанные вложения входящих: id сообщения → содержимое. */
+		media?: Map<number, { data: string | null; mime: string }>,
 	): Promise<boolean> {
 		const r = item.recipient
 		const patch: any = {}
@@ -1873,13 +1912,23 @@ export class CampaignService {
 		if (messages.length) {
 			const rows = messages
 				.filter(m => m?.id && (m.message || m.out !== undefined))
-				.map(m => ({
-					recipientId: r.id,
-					tgId: Number(m.id),
-					out: !!m.out,
-					text: String(m.message ?? '[вложение без текста]'),
-					date: m.date ? new Date(Number(m.date) * 1000) : new Date(),
-				}))
+				.map(m => {
+					const info = mediaOf(m)
+					const got = media?.get(Number(m.id))
+					return {
+						recipientId: r.id,
+						tgId: Number(m.id),
+						out: !!m.out,
+						// Подпись к вложению — это и есть текст сообщения. Пустую
+						// строку не пишем: в ленте она выглядела бы как пропажа.
+						text: String(m.message ?? '') || (info ? mediaCaption(info) : '[пустое сообщение]'),
+						date: m.date ? new Date(Number(m.date) * 1000) : new Date(),
+						mediaKind: info?.kind ?? null,
+						mediaName: info?.name ?? null,
+						mediaSize: info?.size ?? null,
+						mediaData: got?.data ? `data:${got.mime};base64,${got.data}` : null,
+					}
+				})
 			if (rows.length) {
 				// skipDuplicates: одно и то же сообщение может прийти в двух опросах.
 				await this.prisma.tgDialogMessage.createMany({ data: rows, skipDuplicates: true })
@@ -1948,9 +1997,77 @@ export class CampaignService {
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
 			deliveryUnknown: r.deliveryUnknown,
 			campaign: r.campaign, account: r.account,
-			secondPreview: r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
-			messages: r.messages.map(m => ({ id: m.id, out: m.out, text: m.text, date: m.date })),
+			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
+			// кода остаётся хвостом, а начало собирается по его выдаче.
+			secondPreview: await this.fullSecondMessage(
+				r,
+				r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
+			),
+			messages: r.messages.map(m => ({
+				id: m.id, out: m.out, text: m.text, date: m.date,
+				// Вложение: вид нужен всегда, содержимое — только если мелкое
+				// и мы его забрали.
+				mediaKind: m.mediaKind, mediaData: m.mediaData,
+				mediaName: m.mediaName, mediaSize: m.mediaSize,
+			})),
 		}
+	}
+
+	/**
+	 * Второе сообщение целиком: с позициями лида и теми, кто выше него.
+	 *
+	 * Заготовка в campaign-preset.ts — это только хвост письма, рассказ о нас.
+	 * Начало у каждого своё: по каким запросам он в выдаче, на каких местах и
+	 * кто стоит над ним. Ради этих двух абзацев письмо и читают — без них оно
+	 * превращается в обычное «мы занимаемся продвижением».
+	 *
+	 * Данные берём у лида, из которого адресат заведён: ключи — из выдачи того
+	 * же прогона парсера, конкурентов — из карточки. Если адресат добавлен
+	 * руками и лида за ним нет, остаётся заготовка: сочинять позиции нельзя.
+	 */
+	private async fullSecondMessage(r: {
+		leadId: string | null
+		domain: string | null
+		firstName: string | null
+		middleName: string | null
+	}, fallback: string | null): Promise<string | null> {
+		if (!r.leadId) return fallback
+
+		const lead = await this.prisma.outreachLead.findUnique({
+			where: { id: r.leadId },
+			select: { domain: true, importId: true, competitors: true },
+		})
+		if (!lead) return fallback
+
+		let keywords: MessageKeyword[] = []
+		if (lead.importId) {
+			const rows = await this.prisma.serpRow.findMany({
+				where: { importId: lead.importId, domain: lead.domain },
+				orderBy: { position: 'asc' },
+				select: { keyword: true, position: true },
+			})
+			// Берём ЛУЧШУЮ позицию по каждому запросу и только те, где есть что
+			// улучшать: писать «вы на первом месте, давайте поднимем» нелепо.
+			// Логика та же, что в кабинете менеджера, — см. leadKeywords.
+			const best = new Map<string, MessageKeyword>()
+			for (const row of rows) if (!best.has(row.keyword)) best.set(row.keyword, row)
+			keywords = [...best.values()].filter(
+				k => k.position >= MESSAGE_POSITION_MIN && k.position <= MESSAGE_POSITION_MAX,
+			)
+		}
+
+		const competitors = (Array.isArray(lead.competitors) ? lead.competitors : []) as MessageCompetitor[]
+		// Ни позиций, ни конкурентов — значит рассказать нечего, и полный текст
+		// выродится в ту же заготовку. Тогда честнее её и оставить.
+		if (!keywords.length && !competitors.length) return fallback
+
+		return buildOutreachMessage({
+			domain: r.domain ?? lead.domain,
+			firstName: r.firstName,
+			middleName: r.middleName,
+			keywords,
+			competitors,
+		})
 	}
 
 	/**
@@ -2662,7 +2779,7 @@ export class CampaignService {
 				deliveryUnknown: true, error: true,
 				campaign: { select: { id: true, name: true } },
 				// Последняя реплика: по ней видно, о чём разговор, без открытия.
-				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, text: true, date: true } },
+				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, text: true, date: true, mediaKind: true } },
 				_count: { select: { messages: true } },
 			},
 		})

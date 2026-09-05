@@ -1508,6 +1508,19 @@ model TgDialogMessage {
   text String
   date DateTime // время сообщения в Telegram, а не время записи
 
+  // Вложение. Человек присылает фото, стикер или гифку вместо слов, и без
+  // этого в переписке оставалась пустая строка «[вложение без текста]» —
+  // видно, что что-то прислали, но не видно что.
+  //
+  // Что именно: photo | sticker | gif | video | voice | audio | document | other
+  mediaKind String?
+  // Само вложение как data-URI. Только мелкое: картинки и стикеры весят
+  // десятки килобайт, а видео на несколько мегабайт в базе не место —
+  // у такого остаются только вид, имя и размер.
+  mediaData String?
+  mediaName String?
+  mediaSize Int?
+
   createdAt DateTime @default(now())
 
   recipient TgRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
