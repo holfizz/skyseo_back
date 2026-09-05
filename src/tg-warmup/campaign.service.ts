@@ -230,6 +230,8 @@ function stageOf(status: string): string {
 }
 
 /** Причины, по которым писать этому человеку нельзя и повторять бессмысленно. */
+const KEY_DAY_REPORT = 'tg_outreach_day_report'
+
 const HOPELESS = new Set([
 	'USER_PRIVACY_RESTRICTED', 'USER_IS_BLOCKED', 'YOU_BLOCKED_USER',
 	'INPUT_USER_DEACTIVATED', 'USER_DEACTIVATED', 'USERNAME_NOT_OCCUPIED',
@@ -1235,12 +1237,29 @@ export class CampaignService {
 					continue
 				}
 
+				/*
+				 * Аккаунт занимаем один раз на весь тик.
+				 *
+				 * Раньше это делалось внутри sendOne, на каждого адресата. Когда
+				 * аккаунт был занят прогревом или опросом — а он в среднем занят
+				 * заметную часть времени, — захват не удавался, sendOne возвращал
+				 * «пропустить», и цикл ниже брал ТОГО ЖЕ адресата снова, до
+				 * двадцати пяти раз за тик. Каждую минуту. На проде это накрутило
+				 * одному адресату две тысячи попыток и ни одной отправки, молча:
+				 * ни ошибки, ни паузы, ни строки в журнале.
+				 *
+				 * Занято — значит просто не наша очередь. Уходим до следующего
+				 * тика, ничего не трогая.
+				 */
+				if (!(await this.warmup.claimAccount(acc.id, 'send', 120))) continue
+
 				// Отсев тех, кому писать нечем, сетью не оплачивается, поэтому
 				// пропускать их можно пачкой, не растягивая на сутки по одному.
 				const SKIP_LIMIT = 25
 				let verdict: SendVerdict = 'skipped'
 				let done = false
 				let planned = false
+				try {
 				for (let skipped = 0; skipped <= SKIP_LIMIT; skipped++) {
 					// Сначала — тот, кому этому аккаунту пора писать по плану.
 					let recipient = await this.prisma.tgRecipient.findFirst({
@@ -1307,6 +1326,12 @@ export class CampaignService {
 					verdict = await this.sendOne(c, link, acc, recipient)
 					if (verdict !== 'skipped') break
 				}
+				} finally {
+					// Освобождаем в любом случае: иначе неожиданная ошибка
+					// оставила бы аккаунт занятым до истечения захвата.
+					await this.warmup.releaseAccount(acc.id)
+				}
+
 				if (done) break
 				if (verdict === 'sent') sent++
 
@@ -1520,16 +1545,7 @@ export class CampaignService {
 		}
 		const text = fillTemplate(campaign.firstMessage, recipient)
 
-		// Захват на время отправки: прогрев не должен подключиться тем же
-		// аккаунтом, пока мы пишем.
-		if (!(await this.warmup.claimAccount(account.id, 'send', 120))) {
-			await this.prisma.tgRecipient.update({
-				where: { id: recipient.id },
-				data: { status: 'QUEUED', sentAt: null, accountId: null },
-			})
-			return 'skipped'
-		}
-
+		// Аккаунт уже занят вызывающим на весь тик — здесь его не трогаем.
 		const opts = this.warmup.clientOptions(account)
 
 		/*
@@ -1636,8 +1652,6 @@ export class CampaignService {
 				await this.pauseAccount(link.id, 1800, failure.message)
 			}
 			return 'failed'
-		} finally {
-			await this.warmup.releaseAccount(account.id)
 		}
 	}
 
@@ -1788,9 +1802,65 @@ export class CampaignService {
 							entity: d.entity,
 						})
 					}
+					/*
+					 * Вложения, записанные до того, как мы научились их разбирать.
+					 *
+					 * Такие строки лежат в базе как «[вложение без текста]» — при
+					 * записи мы не сохранили ни вида, ни содержимого, а обычный
+					 * опрос до них уже не дойдёт: он берёт сообщения новее
+					 * lastSeenMsgId. Спрашиваем их отдельно, по конкретным id, и
+					 * только один раз: заполнили — больше не попадают в выборку.
+					 */
+					const legacy = await this.prisma.tgDialogMessage.findMany({
+						where: {
+							recipientId: { in: list.map(r => r.id) },
+							out: false,
+							mediaKind: null,
+							text: { startsWith: '[вложение' },
+						},
+						select: { id: true, recipientId: true, tgId: true },
+					})
+					const legacyBy = new Map<string, Array<{ id: string; tgId: number }>>()
+					for (const m of legacy) {
+						const arr = legacyBy.get(m.recipientId)
+						if (arr) arr.push({ id: m.id, tgId: m.tgId })
+						else legacyBy.set(m.recipientId, [{ id: m.id, tgId: m.tgId }])
+					}
+
 					// История тянется только там, где что-то изменилось.
 					const fetched: Array<{ id: string; messages: any[]; media: Map<number, { data: string | null; mime: string }> }> = []
+					const backfill: Array<{ rowId: string; kind: string; name: string | null; size: number | null; text: string; data: string | null }> = []
+
 					for (const item of out) {
+						const old = legacyBy.get(item.recipient.id)
+						if (old?.length) {
+							try {
+								const msgs: any = await call(client, 'getMessages', () =>
+									client.getMessages(item.entity, { ids: old.map(x => x.tgId) }),
+								)
+								for (const m of (msgs ?? []) as any[]) {
+									if (!m?.id) continue
+									const row = old.find(x => x.tgId === Number(m.id))
+									const info = mediaOf(m)
+									if (!row || !info) continue
+									let data: string | null = null
+									if (worthDownloading(info)) {
+										try {
+											const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
+											if (buf?.length) data = `data:${mimeFor(info)};base64,${Buffer.from(buf).toString('base64')}`
+										} catch { /* не скачалось — вид всё равно запишем */ }
+									}
+									backfill.push({
+										rowId: row.id, kind: info.kind, name: info.name, size: info.size,
+										text: String(m.message ?? '') || mediaCaption(info), data,
+									})
+								}
+							} catch {
+								// Переписку могли удалить с той стороны — тогда этих
+								// сообщений больше нет ни у кого, и это не наша ошибка.
+							}
+						}
+
 						if (item.top <= item.recipient.lastSeenMsgId) continue
 						const msgs: any = await call(client, 'getMessages', () =>
 							client.getMessages(item.entity, { limit: 40, minId: item.recipient.lastSeenMsgId }),
@@ -1824,9 +1894,18 @@ export class CampaignService {
 						}
 						fetched.push({ id: item.recipient.id, messages: msgs ?? [], media })
 					}
-					return { out, fetched }
+					return { out, fetched, backfill }
 				})
 				await this.warmup.persistSession(account.id, opts.session, session)
+
+				// Дозаполняем то, что раньше записалось безымянным вложением.
+				for (const b of result.backfill) {
+					await this.prisma.tgDialogMessage.update({
+						where: { id: b.rowId },
+						data: { mediaKind: b.kind, mediaName: b.name, mediaSize: b.size, mediaData: b.data, text: b.text },
+					}).catch(() => undefined)
+				}
+				if (result.backfill.length) changed += result.backfill.length
 
 				const history = new Map(result.fetched.map(f => [f.id, f.messages]))
 				const media = new Map(result.fetched.map(f => [f.id, f.media]))
@@ -2709,6 +2788,148 @@ export class CampaignService {
 				queued: rows.reduce((n, r) => n + r.queued, 0),
 			},
 		}
+	}
+
+	/**
+	 * Итог дня: сколько ушло против плана и почему меньше.
+	 *
+	 * Вопрос «почему вчера ушло шесть, а не двадцать» до этого нельзя было
+	 * задать вовсе: в интерфейсе видно только текущее «сегодня», а разбор
+	 * причин каждый раз приходилось делать руками по базе. Причины при этом
+	 * всегда одни и те же и все считаются здесь же.
+	 *
+	 * День — московский: рассылка живёт по московскому окну.
+	 */
+	async daySummary(date?: string): Promise<{
+		date: string
+		planned: number
+		sent: number
+		campaigns: Array<{ id: string; name: string; planned: number; sent: number; reasons: string[] }>
+		reasons: string[]
+	}> {
+		const day = parseDay(date) ?? startOfDay(new Date())
+		const from = day
+		const to = new Date(day.getTime() + 86400000)
+		const key = dayKey(day)
+
+		const campaigns = await this.prisma.tgCampaign.findMany({
+			where: { archivedAt: null, status: { in: ['RUNNING', 'PAUSED', 'DONE'] } },
+			include: { accounts: { include: { account: { include: { proxy: true } } } } },
+		})
+
+		const rows = []
+		for (const c of campaigns) {
+			const [sent, scheduled] = await Promise.all([
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { gte: from, lt: to } } }),
+				this.prisma.tgRecipient.count({
+					where: { campaignId: c.id, scheduledAt: { gte: from, lt: to } },
+				}),
+			])
+			// План на день — то, что стояло в календаре, а если календаря нет,
+			// то цель дня. Ноль и ноль означает, что кампания в этот день просто
+			// не работала, и разбирать нечего.
+			const planned = scheduled || (c.sendDate && dayKey(c.sendDate) === key ? (c.dailyGoal ?? 0) : 0)
+			if (!planned && !sent) continue
+
+			const reasons: string[] = []
+			if (sent < planned) {
+				const quota = await this.dailyQuota(c, key)
+
+				// Кто в этот день реально отправлял. Аккаунт, с которого письма
+				// ушли, не может быть причиной недобора — что бы ни говорили о
+				// нём флаги. Флаг живости прокси, например, показывает результат
+				// последней проверки, а не то, работает ли он сейчас.
+				const worked = new Set(
+					(await this.prisma.tgRecipient.groupBy({
+						by: ['accountId'],
+						where: { campaignId: c.id, sentAt: { gte: from, lt: to }, accountId: { not: null } },
+						_count: { _all: true },
+					})).map(g => g.accountId!),
+				)
+
+				let working = 0
+				for (const l of c.accounts) {
+					const a = l.account
+					const norm = quota.get(a.id) ?? 0
+					if (norm > 0 || worked.has(a.id)) { working++; continue }
+					const dead = a.status === 'BANNED' || a.status === 'ERROR' || a.status === 'PAUSED'
+					reasons.push(
+						dead ? `«${a.label ?? a.id}» — ${a.status === 'PAUSED' ? 'отключён' : 'не в строю'}`
+							: a.mode === 'WARM' ? `«${a.label ?? a.id}» — отведён только под прогрев`
+								: !a.proxyId ? `«${a.label ?? a.id}» — без прокси`
+									: a.proxy && !a.proxy.alive ? `«${a.label ?? a.id}» — по последней проверке прокси не отвечал`
+										: `«${a.label ?? a.id}» — прогрев не выдал дневной нормы, и разрешение «без прогрева» не включено`,
+					)
+				}
+				if (!working) reasons.unshift('ни один аккаунт кампании в этот день не мог отправлять')
+				else if (working < c.accounts.length) {
+					reasons.unshift(`работал ${working} аккаунт из ${c.accounts.length} — весь дневной объём лёг на него`)
+				}
+				if (c.status === 'PAUSED') reasons.unshift('рассылка стояла на паузе')
+			}
+
+			rows.push({ id: c.id, name: c.name, planned, sent, reasons })
+		}
+
+		// Общие причины — те, что повторяются у всех кампаний: их и стоит чинить.
+		const all = rows.flatMap(r => r.reasons)
+		const common = [...new Set(all)]
+
+		return {
+			date: key,
+			planned: rows.reduce((n, r) => n + r.planned, 0),
+			sent: rows.reduce((n, r) => n + r.sent, 0),
+			campaigns: rows,
+			reasons: common,
+		}
+	}
+
+	/**
+	 * Сообщить в бот, если день закрылся с недобором.
+	 *
+	 * Раз в сутки и только когда окно уже закрылось: пока оно открыто, отставание
+	 * — это не итог, а середина работы. Отметку о том, что за этот день уже
+	 * писали, держим в настройках: перезапуск сервиса не должен рождать второе
+	 * письмо про те же сутки.
+	 */
+	async reportDayIfNeeded(): Promise<boolean> {
+		const now = new Date()
+		const today = dayKey(now)
+
+		const running = await this.prisma.tgCampaign.findMany({
+			where: { archivedAt: null, status: { in: ['RUNNING', 'PAUSED'] } },
+			select: { windowTo: true },
+		})
+		if (!running.length) return false
+		// Пока хоть у одной кампании окно ещё открыто — день не кончился.
+		if (mskHour(now) < Math.max(...running.map(c => c.windowTo))) return false
+
+		const flag = await this.prisma.appConfig.findUnique({ where: { key: KEY_DAY_REPORT } })
+		if (flag?.value === today) return false
+
+		const sum = await this.daySummary(today)
+		await this.prisma.appConfig.upsert({
+			where: { key: KEY_DAY_REPORT },
+			create: { key: KEY_DAY_REPORT, value: today },
+			update: { value: today },
+		})
+
+		// Всё ушло — писать не о чем. Отметку всё равно ставим выше, чтобы не
+		// пересчитывать это каждую минуту до полуночи.
+		if (!sum.planned || sum.sent >= sum.planned) return false
+
+		const lines = sum.campaigns
+			.filter(c => c.sent < c.planned)
+			.map(c => `• «${esc(c.name)}» — ушло ${c.sent} из ${c.planned}`)
+			.join('\n')
+
+		await this.notifyAdmin(
+			`⚠️ <b>Рассылка за день не добрала</b>\n\n` +
+				`Ушло <b>${sum.sent}</b> из <b>${sum.planned}</b> запланированных.\n\n` +
+				`${lines}\n\n` +
+				(sum.reasons.length ? `<b>Почему:</b>\n${sum.reasons.map(r => '— ' + esc(r)).join('\n')}` : ''),
+		)
+		return true
 	}
 
 	/**

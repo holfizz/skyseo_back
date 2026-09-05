@@ -38,6 +38,12 @@ export class CampaignManagerController {
 		return this.svc.today()
 	}
 
+	/** Итог дня: сколько ушло против плана и почему меньше. */
+	@Get('day')
+	day(@Query('date') date?: string) {
+		return this.svc.daySummary(date)
+	}
+
 	/** Клиенты по всем рассылкам, разложенные по стадии разговора. */
 	@Get('clients')
 	clients(@Query('stage') stage?: string, @Query('limit') limit?: string, @Query('q') q?: string) {
