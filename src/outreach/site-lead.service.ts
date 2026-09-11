@@ -27,6 +27,8 @@ export class SiteLeadService {
 		if (!telegram && !phone)
 			throw new BadRequestException('Оставьте телеграм или телефон, чтобы мы могли ответить')
 
+		const auto = !!dto.auto
+
 		await this.prisma.outreachLead.create({
 			data: {
 				domain,
@@ -34,28 +36,35 @@ export class SiteLeadService {
 				phone: phone || null,
 				// Есть телеграм — сразу в очередь менеджеру; иначе просто лид с телефоном.
 				telegramManual: !!telegram,
-				channel: 'Заявка с сайта',
+				channel: auto ? 'Автосохранение с сайта' : 'Заявка с сайта',
 				status: 'NEW',
-				message: 'Заявка с сайта: бесплатный тест сайта',
-				notes: 'Оставил заявку через форму на сайте',
+				message: auto
+					? 'Автосохранение: форму заполнили, но не отправили'
+					: 'Заявка с сайта: бесплатный тест сайта',
+				notes: auto
+					? 'Автосохранение: данные заполнены на сайте, но кнопку «Отправить» не нажали'
+					: 'Оставил заявку через форму на сайте',
 			},
 		})
 
 		// Пинг владельцу — не роняем заявку, если телега молчит.
-		this.notifyAdmin({ domain, telegram, phone }).catch(e =>
+		this.notifyAdmin({ domain, telegram, phone, auto }).catch(e =>
 			this.log.warn(`Не отправил уведомление о заявке: ${e}`),
 		)
 
 		return { ok: true }
 	}
 
-	private async notifyAdmin(l: { domain: string; telegram: string | null; phone: string | null }) {
+	private async notifyAdmin(l: { domain: string; telegram: string | null; phone: string | null; auto: boolean }) {
 		const token = this.config.get<string>('TELEGRAM_BOT_TOKEN')
 		const chatId = this.config.get<string>('TELEGRAM_ADMIN_ID')
 		if (!token || token.length < 20 || token === 'dummy-token' || !chatId) return
 
+		const head = l.auto
+			? '🟡 <b>Автосохранение</b> — форму заполнили, но не отправили'
+			: '🆕 <b>Заявка с сайта</b> — бесплатный тест'
 		const text =
-			`🆕 <b>Заявка с сайта</b> — бесплатный тест\n` +
+			`${head}\n` +
 			`🌐 https://${l.domain}\n` +
 			`✈️ Telegram: ${l.telegram ?? '—'}\n` +
 			`📞 Телефон: ${l.phone ?? '—'}`
