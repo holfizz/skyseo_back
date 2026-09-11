@@ -7,11 +7,13 @@ import { OutreachController } from './outreach.controller'
 import { OutreachImportService } from './outreach-import.service'
 import { OutreachService } from './outreach.service'
 import { ReportController } from './report.controller'
+import { SiteLeadController } from './site-lead.controller'
+import { SiteLeadService } from './site-lead.service'
 
 @Module({
 	imports: [MulterModule.register({ limits: { fileSize: 20 * 1024 * 1024 } }), NotificationsModule, ReportModule],
-	controllers: [OutreachController, AdminOutreachController, ReportController],
-	providers: [OutreachService, OutreachImportService],
+	controllers: [OutreachController, AdminOutreachController, ReportController, SiteLeadController],
+	providers: [OutreachService, OutreachImportService, SiteLeadService],
 	exports: [OutreachService], // нужен кабинету менеджера для текстов сообщений
 })
 export class OutreachModule {}

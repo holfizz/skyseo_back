@@ -96,6 +96,15 @@ export class CampaignController {
 		return this.svc.clients(stage, limit ? Number(limit) : undefined, q)
 	}
 
+	@Get('conversations')
+	conversations(@Query('limit') limit?: string, @Query('q') q?: string, @Query('replied') replied?: string) {
+		return this.svc.conversations({
+			limit: limit ? Number(limit) : undefined,
+			q,
+			onlyReplied: replied === '1' || replied === 'true',
+		})
+	}
+
 	/** Остановить совсем: адресаты остаются, расписание снимается. */
 	@Post('campaigns/:id/cancel')
 	cancel(@Param('id') id: string) {

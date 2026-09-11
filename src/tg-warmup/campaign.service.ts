@@ -2701,6 +2701,104 @@ export class CampaignService {
 	}
 
 	/**
+	 * Все переписки одним списком — для мессенджер-вкладки: слева этот список,
+	 * справа открытый диалог.
+	 *
+	 * Переписка — это тот, кому уже написали хотя бы первое касание, или тот,
+	 * от кого есть входящее. Свежие сверху: считаем «последнюю активность» как
+	 * максимум из времени отправки, второго касания, ответа и последнего
+	 * сообщения в ленте, и по нему сортируем. Ответившие всплывают наверх сами
+	 * — их repliedAt свежее любого нашего исходящего.
+	 */
+	async conversations(opts: { limit?: number; q?: string; onlyReplied?: boolean } = {}) {
+		const take = Math.max(1, Math.min(300, Math.round(opts.limit ?? 30)))
+		const q = String(opts.q ?? '').trim()
+
+		// База: написали первое ИЛИ есть хоть одно сообщение в ленте.
+		const base: any = { OR: [{ sentAt: { not: null } }, { messages: { some: {} } }] }
+		const where: any = { ...base }
+		if (opts.onlyReplied) where.repliedAt = { not: null }
+		if (q) {
+			where.AND = [{
+				OR: [
+					{ username: { contains: q, mode: 'insensitive' } },
+					{ phone: { contains: q } },
+					{ firstName: { contains: q, mode: 'insensitive' } },
+					{ lastName: { contains: q, mode: 'insensitive' } },
+					{ company: { contains: q, mode: 'insensitive' } },
+					{ domain: { contains: q, mode: 'insensitive' } },
+				],
+			}]
+		}
+
+		const rows = await this.prisma.tgRecipient.findMany({
+			where,
+			// Порядок в БД — сильный прокси свежести (ответ важнее нашего
+			// исходящего). Точную сортировку по «последней активности» доводим
+			// в JS ниже, уже на выбранной странице.
+			orderBy: [
+				{ repliedAt: { sort: 'desc', nulls: 'last' } },
+				{ secondSentAt: { sort: 'desc', nulls: 'last' } },
+				{ sentAt: { sort: 'desc', nulls: 'last' } },
+				{ id: 'desc' },
+			],
+			take: take + 1,
+			select: {
+				id: true, username: true, phone: true, status: true,
+				firstName: true, lastName: true, company: true, domain: true,
+				sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true,
+				deliveryUnknown: true, error: true,
+				campaign: { select: { id: true, name: true } },
+				account: { select: { id: true, label: true, avatar: true, tgUserId: true, status: true } },
+				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, text: true, date: true, mediaKind: true } },
+			},
+		})
+
+		const more = rows.length > take
+		const page = (more ? rows.slice(0, take) : rows).map(r => {
+			const last = r.messages[0] ?? null
+			const ms = [r.sentAt, r.secondSentAt, r.repliedAt, last?.date]
+				.filter(Boolean)
+				.map(d => new Date(d as any).getTime())
+			const lastActivity = ms.length ? new Date(Math.max(...ms)).toISOString() : null
+			return {
+				id: r.id,
+				name: [r.firstName, r.lastName].filter(Boolean).join(' ')
+					|| r.company
+					|| (r.username ? `@${r.username}` : null)
+					|| r.phone
+					|| 'без имени',
+				username: r.username,
+				phone: r.phone,
+				domain: r.domain,
+				status: r.status,
+				stage: stageOf(r.status),
+				campaignName: r.campaign.name,
+				sentAt: r.sentAt,
+				readAt: r.readAt,
+				repliedAt: r.repliedAt,
+				secondSentAt: r.secondSentAt,
+				blockedAt: r.blockedAt,
+				deliveryUnknown: r.deliveryUnknown,
+				error: r.error,
+				account: r.account,
+				last,
+				lastActivity,
+			}
+		})
+		page.sort((a, b) =>
+			(b.lastActivity ? Date.parse(b.lastActivity) : 0) -
+			(a.lastActivity ? Date.parse(a.lastActivity) : 0))
+
+		const [all, replied] = await Promise.all([
+			this.prisma.tgRecipient.count({ where: base }),
+			this.prisma.tgRecipient.count({ where: { ...base, repliedAt: { not: null } } }),
+		])
+
+		return { counts: { all, replied }, rows: page, more }
+	}
+
+	/**
 	 * Что происходит с рассылкой сегодня.
 	 *
 	 * Отдельная сводка, а не выжимка из списка кампаний: главный вопрос к
