@@ -84,13 +84,21 @@ function randomStart(now: Date, fromHour: number, toHour: number): Date {
 	const dayStart = mskAt(now, fromHour, 0)
 	const dayEnd = mskAt(now, toHour, 0)
 
+	// Первый выход всех аккаунтов раскидываем УЗКОЙ полосой (до ~30 мин), а не
+	// по трети окна. Иначе аккаунты стартуют за часы друг от друга, и planQueue
+	// разгоняет каждого в свой временной блок — в календаре это «аккаунт 1 шлёт
+	// пять подряд, потом второй пять». С близким стартом курсоры аккаунтов
+	// перекрываются, и сообщения идут вперемешку. 30 минут хватает, чтобы пул
+	// не выходил в одну минуту, но не растягивает старты на полдня.
+	const BAND = 30 * 60_000
+
 	// Хвост окна короче получаса — не втискиваемся, начинаем завтра.
 	const earliest = Math.max(dayStart.getTime(), now.getTime())
 	if (earliest > dayEnd.getTime() - 30 * 60_000) {
 		const t = mskAt(now, fromHour, 1)
-		return new Date(t.getTime() + Math.random() * Math.max(1, (toHour - fromHour) * 3600_000) * 0.4)
+		return new Date(t.getTime() + Math.random() * Math.min(BAND, (toHour - fromHour) * 3600_000 * 0.4))
 	}
-	return new Date(earliest + Math.random() * (dayEnd.getTime() - earliest) * 0.35)
+	return new Date(earliest + Math.random() * Math.min(BAND, (dayEnd.getTime() - earliest) * 0.35))
 }
 
 /**

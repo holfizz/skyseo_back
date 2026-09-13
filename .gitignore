@@ -13,3 +13,5 @@ releases/latest-mac.yml
 releases/latest.yml
 latest-mac.yml
 latest.yml
+.env.prodclean
+prisma/_prod_leads_backup.json
