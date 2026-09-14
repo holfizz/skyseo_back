@@ -423,7 +423,11 @@ export class TgWarmupService {
 				warmness: live ? live.warmness.total : a.warmness,
 				// Мешает ли что-то работать прямо сейчас — например, отвалившийся
 				// прокси. В отличие от вето, балл при этом не обнуляется.
-				blocked: live?.blocked ?? null,
+				// Свежий PEER_FLOOD показываем помехой рядом со статусом «В строю»:
+				// аккаунт жив, но писать новым людям не может, пока спам-лимит не
+				// снят. lastError самоочищается первой удачной отправкой, поэтому
+				// помеха исчезает сама, без ручной перепроверки.
+				blocked: a.lastError?.startsWith('PEER_FLOOD') ? 'заблокирован за флуд' : (live?.blocked ?? null),
 				scoredAt: a.scoredAt,
 				registeredAt: a.registeredAt,
 				ageDays: a.registeredAt ? Math.floor((Date.now() - a.registeredAt.getTime()) / DAY_MS) : null,
@@ -780,7 +784,14 @@ export class TgWarmupService {
 		if (failure.kind === 'banned' || failure.kind === 'frozen') patch.status = 'BANNED'
 		else if (failure.kind === 'unauthorized') patch.status = 'ERROR'
 		if (failure.kind === 'flood') patch.floodWaits = { increment: 1 }
-		if (failure.kind === 'peerFlood') patch.peerFloods = { increment: 1 }
+		if (failure.kind === 'peerFlood') {
+			patch.peerFloods = { increment: 1 }
+			// Стабильный, узнаваемый текст: по нему список рисует помеху
+			// «заблокирован за флуд». Сырое сообщение Telegram при PEER_FLOOD
+			// это чаще всего просто «PEER_FLOOD» и ни о чём не говорит. Полную
+			// строку ошибки при этом не теряем — она уходит в журнал ниже.
+			patch.lastError = 'PEER_FLOOD — спам-лимит, аккаунт не пишет новым людям'
+		}
 		await this.prisma.tgAccount.update({ where: { id: accountId }, data: patch })
 
 		// О смерти аккаунта сообщаем сразу и один раз: он мог быть куплен, мог
@@ -805,7 +816,21 @@ export class TgWarmupService {
 					`Рассылка и прогрев с него остановлены.`,
 			)
 		}
-		if (failure.kind === 'peerFlood') await this.logEvent(accountId, 'peer-flood', failure.message)
+		if (failure.kind === 'peerFlood') {
+			await this.logEvent(accountId, 'peer-flood', failure.message)
+			// Рейтинг обязан упасть сразу, а не после следующей ручной проверки:
+			// PEER_FLOOD — поведенческий вердикт, и в карточке он должен быть виден
+			// тут же. Список считает балл на лету из счётчика, а карточка берёт
+			// сохранённый — пересчитываем и сохраняем, чтобы они не расходились.
+			const fresh = await this.prisma.tgAccount.findUnique({ where: { id: accountId }, include: { proxy: true } })
+			const scored = fresh?.probe ? (await this.scoreMany([fresh])).get(accountId) : null
+			if (scored) {
+				await this.prisma.tgAccount.update({
+					where: { id: accountId },
+					data: { score: scored.score, warmness: scored.warmness.total, advice: scored.advice as any, scoredAt: new Date() },
+				})
+			}
+		}
 
 		// Мёртвый прокси — не то же самое, что мёртвый аккаунт. Помечаем негодным
 		// именно прокси (иначе на него повесятся следующие аккаунты), а статус

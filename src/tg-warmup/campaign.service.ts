@@ -1671,7 +1671,8 @@ export class CampaignService {
 				await this.pauseAccount(link.id, 24 * 3600, 'PEER_FLOOD — отправка остановлена на сутки')
 				await this.notifyAdmin(
 					`⚠️ <b>PEER_FLOOD</b>\n\nАккаунт <b>${esc(account.label ?? account.id)}</b> получил спам-лимит ` +
-						`в кампании «${esc(campaign.name)}». Отправка с него остановлена на сутки.`,
+						`в кампании «${esc(campaign.name)}». Отправка с него остановлена на сутки, рейтинг снижен.\n\n` +
+						`Снять ограничение: откройте карточку аккаунта и нажмите «Спросить @SpamBot».`,
 				)
 			} else {
 				await this.pauseAccount(link.id, 1800, failure.message)
