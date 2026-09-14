@@ -1114,6 +1114,61 @@ export class TgWarmupService {
 	}
 
 	/**
+	 * Снять спам-флуд одной кнопкой: пишем /start и, если аккаунт под
+	 * ограничением и бот дал кнопку обжалования, жмём первую нажимаемую.
+	 *
+	 * Это best-effort поверх spam-bot.ts, а не жёсткий сценарий: подписи кнопок
+	 * у @SpamBot локализованы и меняются. Поэтому не угадываем нужную наперёд, а
+	 * жмём первую callback/text-кнопку и возвращаем реальный ответ бота — если он
+	 * попросит ещё шаг, владелец доводит вручную в карточке аккаунта.
+	 */
+	async spamAppeal(id: string) {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
+		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (a.status === 'BANNED') {
+			throw new BadRequestException('Аккаунт заблокирован — со SpamBot он уже не поговорит')
+		}
+		if (!(await this.claimAccount(a.id, 'check', 120))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту')
+		}
+		const opts = this.clientOptions(a)
+		try {
+			const { result, session } = await withClient(opts, async client => {
+				const status = await askStatus(client)
+				// Чисто — снимать нечего.
+				if (status.state === 'clean') return { answer: status, pressed: null as string | null }
+				// Нажимаемая кнопка обжалования: callback жмётся запросом, text —
+				// отправкой того же текста; внешние ссылки пропускаем.
+				const btn = status.buttons.find(b => b.kind === 'callback' || b.kind === 'text')
+				if (!btn) return { answer: status, pressed: null as string | null }
+				const after = await pressButton(client, btn.index)
+				return { answer: after, pressed: btn.text }
+			})
+			await this.persistSession(a.id, opts.session, session)
+
+			if (result.answer.state !== 'unknown') {
+				await this.prisma.tgAccount.update({
+					where: { id: a.id },
+					data: { probe: { ...((a.probe as any) ?? {}), spamBlock: result.answer.state } as any },
+				})
+			}
+			await this.logEvent(
+				a.id,
+				'spam-appeal',
+				`${result.pressed ? `обжалование: нажата «${result.pressed}»` : 'запрошен статус'}\n` +
+					`Ответ бота (${result.answer.state}): ${result.answer.text || '— пусто —'}`,
+			)
+			return { pressed: result.pressed, ...result.answer }
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.applyFailure(a.id, failure)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.releaseAccount(a.id)
+		}
+	}
+
+	/**
 	 * Лента прогрева: что сейчас, что уже было и что запланировано.
 	 *
 	 * Собирается из трёх источников — плана на сегодня, журнала действий и

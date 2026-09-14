@@ -126,11 +126,13 @@ export class TgWarmupController {
 	}
 
 	/**
-	 * Разговор со @SpamBot. Одна ручка на три шага: спросить статус, нажать
-	 * кнопку из его ответа, отправить произвольный текст в обращении.
+	 * Разговор со @SpamBot. Одна ручка на четыре шага: спросить статус, нажать
+	 * кнопку из его ответа, отправить произвольный текст в обращении, а также
+	 * appeal — снять спам-флуд одной кнопкой (статус + нажать кнопку обжалования).
 	 */
 	@Post('accounts/:id/spam')
-	spam(@Param('id') id: string, @Body() body: { action?: 'status' | 'press' | 'text'; index?: number; text?: string }) {
+	spam(@Param('id') id: string, @Body() body: { action?: 'status' | 'press' | 'text' | 'appeal'; index?: number; text?: string }) {
+		if (body?.action === 'appeal') return this.svc.spamAppeal(id)
 		if (body?.action === 'press') return this.svc.spamBot(id, { kind: 'press', index: Number(body.index ?? 0) })
 		if (body?.action === 'text') return this.svc.spamBot(id, { kind: 'text', text: String(body.text ?? '') })
 		return this.svc.spamBot(id, { kind: 'status' })
