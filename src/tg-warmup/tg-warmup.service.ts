@@ -10,7 +10,7 @@ import {
 import { parseProxyPool } from './proxy-pool'
 import { detectOrigin } from './proxy-geo'
 import { classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
-import { askStatus, pressButton, sendText } from './spam-bot'
+import { askStatus, parseRestrictedUntil, pressButton, sendText } from './spam-bot'
 import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
 import {
 	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, PACE, PACES, paceMinutes, planDay,
@@ -408,6 +408,16 @@ export class TgWarmupService {
 		return rows.map(a => {
 			const run = a.runs[0]
 			const live = scores.get(a.id)
+			// Помеха «спам-блок» рядом со статусом. Приоритет — у вердикта @SpamBot
+			// (в нём есть срок снятия), а до проверки бота показываем свежий
+			// PEER_FLOOD с отправки. Плашка исчезает, когда бот скажет «чисто».
+			const probe = (a.probe as any) ?? {}
+			const spamBadge =
+				probe.spamBlock === 'permanent' ? 'вечный спамблок, заменить'
+					: probe.spamBlock === 'temporary'
+						? (probe.spamBlockUntil ? `флуд до ${probe.spamBlockUntil}` : 'спам-блок')
+						: a.lastError?.startsWith('PEER_FLOOD') ? 'заблокирован за флуд'
+							: null
 			return {
 				id: a.id,
 				label: a.label,
@@ -421,13 +431,10 @@ export class TgWarmupService {
 				status: a.status,
 				score: live ? live.score : a.score,
 				warmness: live ? live.warmness.total : a.warmness,
-				// Мешает ли что-то работать прямо сейчас — например, отвалившийся
-				// прокси. В отличие от вето, балл при этом не обнуляется.
-				// Свежий PEER_FLOOD показываем помехой рядом со статусом «В строю»:
-				// аккаунт жив, но писать новым людям не может, пока спам-лимит не
-				// снят. lastError самоочищается первой удачной отправкой, поэтому
-				// помеха исчезает сама, без ручной перепроверки.
-				blocked: a.lastError?.startsWith('PEER_FLOOD') ? 'заблокирован за флуд' : (live?.blocked ?? null),
+				// Мешает ли что-то работать прямо сейчас — спам-блок (см. spamBadge
+				// выше) или, например, отвалившийся прокси. В отличие от вето, балл
+				// при этом не обнуляется.
+				blocked: spamBadge ?? live?.blocked ?? null,
 				scoredAt: a.scoredAt,
 				registeredAt: a.registeredAt,
 				ageDays: a.registeredAt ? Math.floor((Date.now() - a.registeredAt.getTime()) / DAY_MS) : null,
@@ -882,8 +889,10 @@ export class TgWarmupService {
 				...result.probe,
 				outgoingTotal: telemetry.outgoing,
 				// Значение спамблока живёт между проверками: узнать его можно
-				// только отдельной ручной проверкой, и терять её незачем.
+				// только отдельной ручной проверкой, и терять её незачем. Вместе с
+				// ним храним и срок снятия, который назвал @SpamBot.
 				spamBlock: ((a.probe as any)?.spamBlock ?? 'unknown') as any,
+				spamBlockUntil: ((a.probe as any)?.spamBlockUntil ?? null) as any,
 			}
 			const origin = await this.originFor(a)
 			const score = scoreAccount({ probe, telemetry: telemetry.value, origin })
@@ -1087,11 +1096,14 @@ export class TgWarmupService {
 			// После нажатия кнопки он отвечает вежливостью вроде «Всегда
 			// пожалуйста», и разбор честно даёт unknown — затирать этим прежний
 			// ответ нельзя, иначе результат проверки теряется следующим же шагом.
+			const until = result.state === 'temporary' ? parseRestrictedUntil(result.text) : null
 			if (result.state !== 'unknown') {
-				await this.prisma.tgAccount.update({
-					where: { id: a.id },
-					data: { probe: { ...((a.probe as any) ?? {}), spamBlock: result.state } as any },
-				})
+				const patch: any = {
+					probe: { ...((a.probe as any) ?? {}), spamBlock: result.state, spamBlockUntil: until } as any,
+				}
+				// Бот сказал «чисто» — снимаем и плашку «заблокирован за флуд».
+				if (result.state === 'clean') patch.lastError = null
+				await this.prisma.tgAccount.update({ where: { id: a.id }, data: patch })
 			}
 
 			const what =
@@ -1101,9 +1113,9 @@ export class TgWarmupService {
 			await this.logEvent(
 				a.id,
 				action.kind === 'status' ? 'spam-check' : action.kind === 'press' ? 'spam-press' : 'spam-appeal',
-				`${what}\nОтвет бота (${result.state}): ${result.text || '— пусто —'}`,
+				`${what}\nОтвет бота (${result.state}${until ? `, до ${until}` : ''}): ${result.text || '— пусто —'}`,
 			)
-			return result
+			return { until, ...result }
 		} catch (e: any) {
 			const failure = e instanceof TgError ? e.failure : classifyError(e)
 			await this.applyFailure(a.id, failure)
@@ -1146,19 +1158,24 @@ export class TgWarmupService {
 			})
 			await this.persistSession(a.id, opts.session, session)
 
+			const until = result.answer.state === 'temporary' ? parseRestrictedUntil(result.answer.text) : null
 			if (result.answer.state !== 'unknown') {
-				await this.prisma.tgAccount.update({
-					where: { id: a.id },
-					data: { probe: { ...((a.probe as any) ?? {}), spamBlock: result.answer.state } as any },
-				})
+				const patch: any = {
+					probe: { ...((a.probe as any) ?? {}), spamBlock: result.answer.state, spamBlockUntil: until } as any,
+				}
+				// Ограничение снято — убираем и плашку «заблокирован за флуд»: её
+				// рисует lastError с меткой PEER_FLOOD, а бот только что сказал, что
+				// аккаунт чист. Иначе плашка висела бы до первой удачной отправки.
+				if (result.answer.state === 'clean') patch.lastError = null
+				await this.prisma.tgAccount.update({ where: { id: a.id }, data: patch })
 			}
 			await this.logEvent(
 				a.id,
 				'spam-appeal',
 				`${result.pressed ? `обжалование: нажата «${result.pressed}»` : 'запрошен статус'}\n` +
-					`Ответ бота (${result.answer.state}): ${result.answer.text || '— пусто —'}`,
+					`Ответ бота (${result.answer.state}${until ? `, до ${until}` : ''}): ${result.answer.text || '— пусто —'}`,
 			)
-			return { pressed: result.pressed, ...result.answer }
+			return { pressed: result.pressed, until, ...result.answer }
 		} catch (e: any) {
 			const failure = e instanceof TgError ? e.failure : classifyError(e)
 			await this.applyFailure(a.id, failure)

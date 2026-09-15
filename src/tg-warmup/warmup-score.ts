@@ -266,8 +266,8 @@ function buildAdvice(i: ScoreInput, blocks: Record<BlockKey, number>, w: Warmnes
 	if (p.spamBlock === 'permanent') out.push({ level: 'стоп', text: 'Вечный спамблок. Аккаунт не восстановится, замените' })
 	if (!o.proxyAlive) out.push({ level: 'стоп', text: 'Прокси не отвечает. Прогрев без прокси запускать нельзя' })
 
-	if (p.spamBlock === 'temporary') out.push({ level: 'важно', text: 'Временный спамблок. Остановите исходящие, оставьте только чтение, дайте отлежаться' })
-	if (t.peerFloods > 0) out.push({ level: 'важно', text: 'Был PEER_FLOOD. Это не лимит скорости, а вердикт по поведению: снизьте исходящие вдвое' })
+	if (p.spamBlock === 'temporary') out.push({ level: 'важно', text: `Временный спамблок${(p as any).spamBlockUntil ? ` до ${(p as any).spamBlockUntil}` : ''}. Остановите рассылку и догрейте аккаунт: только чтение, пока ограничение не снимут` })
+	if (t.peerFloods > 0) out.push({ level: 'важно', text: 'Был PEER_FLOOD. Это вердикт по поведению, а не лимит скорости: снизьте исходящие вдвое и дайте аккаунту догреться' })
 	if (p.fingerprintChanges > 1) out.push({ level: 'важно', text: 'Фингерпринт устройства плавает. Закрепите device_model, версию ОС и приложения за аккаунтом навсегда' })
 	if (o.proxyType === 'datacenter') out.push({ level: 'важно', text: 'Датацентровый прокси палится. Переведите на мобильный или резидентный' })
 	if (o.numberGeo && o.proxyGeo && o.numberGeo !== o.proxyGeo) out.push({ level: 'важно', text: `Гео не совпадает: номер ${o.numberGeo}, прокси ${o.proxyGeo}. Поставьте прокси страны номера` })

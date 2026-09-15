@@ -54,10 +54,40 @@ export function readState(text: string): SpamAnswer['state'] {
 	if (/навсегда|permanently|forever|will not be lifted/.test(t)) return 'permanent'
 	if (/свободен от|нет ограничени|без ограничени|no limits|free as a bird|good news/.test(t)) return 'clean'
 	// Ограничение бот всегда называет вместе со сроком или прямым «ограничен».
-	if (/ограничен\s+(до|на)|limited until|restricted until|заблокирован\s+до/.test(t)) return 'temporary'
+	// Срок он даёт по-разному: «limited until …», а ещё «will be lifted/freed/
+	// released on …» — это тоже действующее временное ограничение с датой конца.
+	if (/ограничен\s+(до|на)|limited until|restricted until|заблокирован\s+до|(lifted|freed|released)\s+on|снят[оа]?\s+\d/.test(t)) return 'temporary'
 	// Отдельный случай: «аккаунт ограничен» без срока.
 	if (/(аккаунт|account)[^.!?]{0,40}(ограничен|limited|restricted)/.test(t)) return 'temporary'
 	return 'unknown'
+}
+
+/**
+ * Дата снятия ограничения из ответа @SpamBot, если бот её назвал.
+ *
+ * Формат ответа локализован и меняется, поэтому это best-effort: ищем первую
+ * дату в тексте и возвращаем как есть, для показа человеку («флуд до …»). Не
+ * нашли — null, тогда наверху остаётся общая формулировка, а полный текст бота
+ * всё равно виден в тосте и карточке. Строку возвращаем как написал бот, а не
+ * разбираем в Date: у него свой формат и часовой пояс, врать датой хуже, чем
+ * показать её словами.
+ */
+export function parseRestrictedUntil(text: string): string | null {
+	const t = String(text ?? '')
+	const EN = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec'
+	const RU = 'янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек'
+	const time = '(?:[ ,]+\\d{1,2}:\\d{2}(?:\\s*(?:UTC|МСК|MSK))?)?'
+	const patterns = [
+		new RegExp(`\\d{1,2}\\s+(?:${EN}|${RU})[а-яёa-z.]*\\s+\\d{4}${time}`, 'i'), // 5 Oct 2026 / 5 октября 2026
+		new RegExp(`(?:${EN})[a-z.]*\\s+\\d{1,2},?\\s+\\d{4}${time}`, 'i'), // October 5, 2026
+		new RegExp(`\\d{4}-\\d{2}-\\d{2}${time}`), // 2026-10-05
+		new RegExp(`\\d{1,2}\\.\\d{2}\\.\\d{4}${time}`), // 05.10.2026
+	]
+	for (const re of patterns) {
+		const m = t.match(re)
+		if (m) return m[0].replace(/\s+/g, ' ').trim()
+	}
+	return null
 }
 
 /** Кнопки последнего сообщения бота — в том виде, в каком он их прислал. */
