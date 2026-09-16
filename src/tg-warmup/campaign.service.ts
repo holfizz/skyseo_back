@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Api } from 'teleproto'
 import bigInt from 'big-integer'
 import { PrismaService } from '../prisma/prisma.service'
+import { normalizeName } from '../common/normalize-name'
 import { TelegramService } from '../telegram/telegram.service'
 import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
@@ -624,7 +625,15 @@ export class CampaignService {
 			seen.add(key)
 			return true
 		})
-		const chosen = take ? fresh.slice(0, take) : fresh
+		// ФИО из списков часто приходит капсом — приводим к обычному виду при
+		// сохранении, чтобы и в карточке рассылки, и в тексте было «Ксения
+		// Владимировна», а не «КСЕНИЯ ВЛАДИМИРОВНА».
+		const chosen = (take ? fresh.slice(0, take) : fresh).map(r => ({
+			...r,
+			firstName: normalizeName(r.firstName) || null,
+			middleName: normalizeName(r.middleName) || null,
+			lastName: normalizeName(r.lastName) || null,
+		}))
 		if (chosen.length) {
 			await this.prisma.tgRecipient.createMany({ data: chosen })
 			// Добавили — сразу раскладываем по времени. Иначе новый адресат
@@ -1658,9 +1667,21 @@ export class CampaignService {
 			}
 
 			// Общая беда аккаунта: возвращаем адресата в очередь, аккаунт паузим.
+			//
+			// При спам-лимите (PEER_FLOOD) снимаем и привязку к аккаунту: контакт
+			// возвращается в ОБЩИЙ стакан «как будто его никто не брал», и его берёт
+			// другой аккаунт уже на следующем тике. Если спам-блок висит на всех —
+			// контакт просто ждёт свободным в очереди, пока кто-нибудь снова сможет
+			// писать. При FLOOD_WAIT привязку не трогаем: это не спам, а темп, и
+			// аккаунт сам вернётся к работе через положенную паузу.
+			const repool = failure.kind === 'peerFlood'
 			await this.prisma.tgRecipient.update({
 				where: { id: recipient.id },
-				data: { status: 'QUEUED', sentAt: null, accountId: null, error: failure.message.slice(0, 300) },
+				data: {
+					status: 'QUEUED', sentAt: null, accountId: null,
+					error: failure.message.slice(0, 300),
+					...(repool ? { plannedAccountId: null, scheduleLocked: false } : {}),
+				},
 			})
 			await this.warmup.applyFailure(account.id, failure)
 
@@ -1671,7 +1692,8 @@ export class CampaignService {
 				await this.pauseAccount(link.id, 24 * 3600, 'PEER_FLOOD — отправка остановлена на сутки')
 				await this.notifyAdmin(
 					`⚠️ <b>PEER_FLOOD</b>\n\nАккаунт <b>${esc(account.label ?? account.id)}</b> получил спам-лимит ` +
-						`в кампании «${esc(campaign.name)}». Отправка с него остановлена на сутки, рейтинг снижен.\n\n` +
+						`в кампании «${esc(campaign.name)}». Отправка с него остановлена на сутки, рейтинг снижен.\n` +
+						`Контакт возвращён в общий стакан — его возьмёт другой аккаунт.\n\n` +
 						`Снять ограничение: откройте карточку аккаунта и нажмите «Спросить @SpamBot».`,
 				)
 			} else {

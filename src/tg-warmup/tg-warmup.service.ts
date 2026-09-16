@@ -215,21 +215,27 @@ export class TgWarmupService {
 
 		let alive = false
 		let lastError: string | null = null
-		try {
-			const { socket } = await SocksClient.createConnection({
-				proxy: {
-					host: p.host, port: p.port,
-					type: p.kind === 'socks4' ? 4 : 5,
-					userId: p.username ?? undefined, password: p.password ?? undefined,
-				},
-				command: 'connect',
-				destination: DC_PROBE,
-				timeout: 12_000,
-			})
-			socket.destroy()
-			alive = true
-		} catch (e: any) {
-			lastError = String(e?.message ?? e).slice(0, 300)
+		// Прокси (особенно мобильные) часто отвечают не с первой попытки: одна
+		// неудача — не повод объявлять его мёртвым. Пробуем до трёх раз с короткой
+		// паузой, и только если все провалились — считаем недоступным.
+		for (let attempt = 1; attempt <= 3 && !alive; attempt++) {
+			if (attempt > 1) await new Promise(r => setTimeout(r, 1500))
+			try {
+				const { socket } = await SocksClient.createConnection({
+					proxy: {
+						host: p.host, port: p.port,
+						type: p.kind === 'socks4' ? 4 : 5,
+						userId: p.username ?? undefined, password: p.password ?? undefined,
+					},
+					command: 'connect',
+					destination: DC_PROBE,
+					timeout: 12_000,
+				})
+				socket.destroy()
+				alive = true
+			} catch (e: any) {
+				lastError = String(e?.message ?? e).slice(0, 300)
+			}
 		}
 
 		// Страну и тип канала выясняем сами, запросом ЧЕРЕЗ прокси. У мобильных
@@ -278,6 +284,29 @@ export class TgWarmupService {
 		}
 		await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker))
 		return { checked: rows.length, alive }
+	}
+
+	/**
+	 * Оживление прокси. Перепроверяем только те, что помечены мёртвыми: прокси
+	 * часто отвечает не с первого раза и залипает в «не отвечает» до ручного
+	 * пинга. Планировщик зовёт это периодически — живые оживают сами.
+	 * Проверяем только dead, чтобы не гонять origin-запросы по всему пулу зря.
+	 */
+	async recheckDeadProxies() {
+		const rows = await this.prisma.tgProxy.findMany({ where: { alive: false }, select: { id: true } })
+		if (!rows.length) return { checked: 0, revived: 0 }
+		let revived = 0
+		const queue = [...rows]
+		const worker = async () => {
+			for (;;) {
+				const r = queue.shift()
+				if (!r) return
+				const res = await this.checkProxy(r.id).catch(() => ({ alive: false }))
+				if (res.alive) revived++
+			}
+		}
+		await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker))
+		return { checked: rows.length, revived }
 	}
 
 	/**

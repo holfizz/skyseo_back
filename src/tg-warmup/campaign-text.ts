@@ -14,6 +14,8 @@
  * чем ненаписанное сообщение, и такой адресат сгорает навсегда.
  */
 
+import { normalizeName } from '../common/normalize-name'
+
 export type Placeholders = {
 	firstName?: string | null
 	middleName?: string | null
@@ -43,10 +45,11 @@ function values(p: Placeholders, now: Date): Record<string, string> {
 		// веером; в субботу «ждал будние» этот смысл переворачивает. Поэтому
 		// подставляется при отправке, а не при сохранении текста.
 		'ждал': weekend ? 'ждал выходные, чтобы вам написать' : 'ждал будние, чтобы вам написать',
-		'имя': (p.firstName ?? '').trim(),
-		'отчество': (p.middleName ?? '').trim(),
-		'фамилия': (p.lastName ?? '').trim(),
-		'фио': [p.firstName, p.middleName].map(v => (v ?? '').trim()).filter(Boolean).join(' '),
+		// ФИО капсом приводим к обычному виду; каждое поле отдельно (см. normalizeName).
+		'имя': normalizeName(p.firstName),
+		'отчество': normalizeName(p.middleName),
+		'фамилия': normalizeName(p.lastName),
+		'фио': [p.firstName, p.middleName].map(normalizeName).filter(Boolean).join(' '),
 		'сайт': siteName(p.domain),
 		'компания': (p.company ?? '').trim(),
 	}

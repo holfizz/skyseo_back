@@ -5,6 +5,8 @@
 // что они выдают машинный набор. Отчёт лид получает файлом от менеджера,
 // поэтому ссылки в сообщении нет.
 
+import { normalizeName } from '../common/normalize-name'
+
 export type MessageKeyword = { keyword: string; position: number }
 export type MessageCompetitor = { domain: string; position: number }
 
@@ -99,12 +101,12 @@ export function buildOutreachMessage(input: MessageInput): string {
 
 	blocks.push(
 		'Занимаюсь продвижением сайтов - в Яндексе и в ответах нейросетей, чтобы ChatGPT ' +
-			'и Алиса рекомендовали вас, когда у них спрашивают вашу услугу. Первые 10 дней ' +
-			'работаю бесплатно, сначала показываю рост позиций, потом договор.',
+			'и Алиса рекомендовали вас, когда у них спрашивают про ваши услуги. Первые 10 дней ' +
+			'работаю бесплатно сначала показываю рост позиций, потом договор.',
 	)
 
 	blocks.push(
-		'Могу прислать отчет, где вы сейчас, кто выше и сколько людей в месяц ищет эти ' +
+		'Могу прислать отчет где вы сейчас, кто выше и сколько людей в месяц ищет эти ' +
 			'запросы. Прислать?',
 	)
 
@@ -141,9 +143,9 @@ export function siteName(domain: string): string {
  * остаётся прежним.
  */
 export function buildOpeningMessage(input: MessageInput): string {
-	const first = input.firstName?.trim()
-	const middle = input.middleName?.trim()
-	const name = [first, middle].filter(Boolean).join(' ')
+	// ФИО капсом («КСЕНИЯ ВЛАДИМИРОВНА») приводим к обычному виду, каждое поле
+	// отдельно (см. normalizeName).
+	const name = [input.firstName, input.middleName].map(normalizeName).filter(Boolean).join(' ')
 
 	const hello = name ? `${name}, здравствуйте` : 'Здравствуйте'
 

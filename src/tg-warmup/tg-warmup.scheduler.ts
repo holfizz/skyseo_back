@@ -17,6 +17,7 @@ import { TgWarmupService } from './tg-warmup.service'
 export class TgWarmupScheduler implements OnModuleInit {
 	private readonly logger = new Logger(TgWarmupScheduler.name)
 	private running = false
+	private proxyRunning = false
 
 	constructor(private svc: TgWarmupService) {}
 
@@ -24,6 +25,25 @@ export class TgWarmupScheduler implements OnModuleInit {
 		setTimeout(() => this.tick(), 60_000)
 		// unref, чтобы таймер не удерживал процесс при остановке контейнера.
 		setInterval(() => this.tick(), 60_000).unref()
+
+		// Прокси залипают в «не отвечает», хотя живы (отвечают не с первой
+		// попытки). Раз в несколько минут перепроверяем мёртвые — реально живые
+		// оживают сами, без ручного пинга в кабинете.
+		setTimeout(() => this.recheckProxies(), 120_000)
+		setInterval(() => this.recheckProxies(), 4 * 60_000).unref()
+	}
+
+	private async recheckProxies() {
+		if (this.proxyRunning) return
+		this.proxyRunning = true
+		try {
+			const res = await this.svc.recheckDeadProxies()
+			if (res.revived) this.logger.log(`Прокси оживлены: ${res.revived} из ${res.checked}`)
+		} catch (e: any) {
+			this.logger.error(`Перепроверка прокси упала: ${e?.message ?? e}`)
+		} finally {
+			this.proxyRunning = false
+		}
 	}
 
 	private async tick() {
