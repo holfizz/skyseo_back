@@ -113,6 +113,12 @@ export class CampaignManagerController {
 		return this.svc.resolveDelivery(id, body?.delivered !== false)
 	}
 
+	/** Проверить доставку автоматически: читаем переписку и ищем наше исходящее. */
+	@Post('recipients/:id/check-delivery')
+	checkDelivery(@Param('id') id: string) {
+		return this.svc.checkDelivery(id)
+	}
+
 	@Get('recipients/:id/dialog')
 	dialog(@Param('id') id: string) {
 		return this.svc.dialog(id)

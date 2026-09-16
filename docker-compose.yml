@@ -1,16 +1,11 @@
 version: "3.8"
 
 services:
-  imap-tunnel:
-    image: alpine/socat
-    container_name: imap_tunnel
-    restart: always
-    command: tcp-listen:10993,fork,reuseaddr openssl:imap.beget.com:993,verify=0
-    ports:
-      - "10993:10993"
-    networks:
-      - skyseo_network
-
+  # IMAP-тоннель вынесен в systemd-сервис imap-tunnel.service на хосте
+  # (node /home/skyseo/imap-tunnel.js — слушает :10993 и форвардит на
+  # imap.beget.com:993). Бэкенд ходит в него через host.docker.internal:10993
+  # (см. IMAP_HOST/IMAP_PORT в .env). Контейнер-дублёр на socat убран: он бился
+  # за тот же порт 10993 и ронял `docker compose up` (address already in use).
   backend:
     build:
       context: .

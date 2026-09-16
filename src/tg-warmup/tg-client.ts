@@ -82,7 +82,11 @@ export function classifyError(e: any): Failure {
 		const seconds = Number(e.seconds)
 		return { kind: 'flood', message, seconds: Number.isFinite(seconds) ? seconds : undefined }
 	}
-	if (e instanceof Errors.PeerFloodError) return { kind: 'peerFlood', message }
+	// Текстовый фоллбэк обязателен: PEER_FLOOD иногда прилетает не инстансом
+	// PeerFloodError, а обёрнутой RPC-ошибкой с текстом. Без него он падал в
+	// «other» и, раз запрос уже ушёл, помечался «неизвестным исходом» — а это
+	// отказ Telegram, сообщение НЕ уходило, и адресата надо вернуть в очередь.
+	if (e instanceof Errors.PeerFloodError || /PEER_FLOOD/i.test(message)) return { kind: 'peerFlood', message }
 	if (e instanceof Errors.FrozenMethodInvalidError || /FROZEN/i.test(message)) {
 		return { kind: 'frozen', message }
 	}

@@ -42,6 +42,20 @@ import { mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 type SendVerdict = 'sent' | 'skipped' | 'failed'
 
 /**
+ * Разбить текст для правки ради метки «ред.»: отправляем без финального знака
+ * (?/!/…/.), затем дописываем его — выглядит, будто человек отправил и тут же
+ * поправил, и Telegram вешает «ред.». Итог совпадает с исходным текстом.
+ * null — если финального знака нет (тогда трюк не делаем).
+ */
+function draftForEditedMark(text: string): { draft: string; final: string } | null {
+	const m = text.match(/[?!.…]+\s*$/)
+	if (!m || m.index == null) return null
+	const draft = text.slice(0, m.index).replace(/\s+$/, '')
+	if (!draft) return null
+	return { draft, final: text }
+}
+
+/**
  * Чем сузить опрос и сколько на него отведено времени.
  *
  * deadlineMs задаёт ТОЛЬКО ручной вызов: ответ на нажатие кнопки обязан
@@ -1594,12 +1608,32 @@ export class CampaignService {
 		 */
 		let attempted = false
 
+		// «Живая» правка: часть сообщений отправляем без финального знака и через
+		// пару секунд дописываем его — у сообщения появляется метка «ред.», будто
+		// человек отправил и поправил. Не на каждом (иначе правка на всех — сама по
+		// себе след), а примерно на двух из трёх.
+		const edited = draftForEditedMark(text)
+		const doEdit = !!edited && Math.random() < 0.7
+
 		try {
 			const { result, session } = await withClient(opts, async client => {
 				const peer = await this.resolvePeer(client, recipient)
 				attempted = true
-				const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: text }))
-				return { msgId: Number(msg?.id ?? 0), userId: peer.userId }
+				const msg: any = await call(client, 'sendMessage', () =>
+					client.sendMessage(peer.entity, { message: doEdit ? edited!.draft : text }),
+				)
+				const msgId = Number(msg?.id ?? 0)
+				// Дописываем знак чуть позже. Best-effort: не вышло — сообщение уже
+				// ушло, ничего не ломаем и не повторяем (в записи и так финальный текст).
+				if (doEdit && msgId) {
+					try {
+						await new Promise(r => setTimeout(r, 3000 + Math.floor(Math.random() * 5000)))
+						await call(client, 'editMessage', () => client.editMessage(peer.entity, { message: msgId, text: edited!.final }))
+					} catch (e: any) {
+						this.logger.warn(`Правка «ред.» не удалась (адресат ${recipient.id}): ${(e instanceof TgError ? e.failure : classifyError(e)).message}`)
+					}
+				}
+				return { msgId, userId: peer.userId }
 			})
 			await this.warmup.persistSession(account.id, opts.session, session)
 
@@ -3226,6 +3260,61 @@ export class CampaignService {
 				: { deliveryUnknown: false, status: 'QUEUED', sentAt: null, sentMsgId: null, accountId: null, error: null },
 		})
 		return { ok: true, requeued: !delivered }
+	}
+
+	/**
+	 * Проверить доставку за человека: подключаемся тем аккаунтом, с которого шла
+	 * отправка, читаем переписку с адресатом и, если находим хоть одно НАШЕ
+	 * исходящее — снимаем сомнение автоматически.
+	 *
+	 * Надёжнее опросника: тот берёт сотню последних диалогов, и конкретный мог в
+	 * неё не попасть. Здесь резолвим ровно этого собеседника и смотрим его
+	 * историю. Исходящего нет — ничего не меняем: отсутствие в последних
+	 * сообщениях не доказывает, что не дошло, и вывод «вернуть в очередь»
+	 * остаётся за человеком (кнопка «не дошло»).
+	 */
+	async checkDelivery(recipientId: string) {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id: recipientId },
+			include: { account: { include: { proxy: true } } },
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (!r.deliveryUnknown) return { ok: true, found: true, alreadyResolved: true }
+		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла отправка')
+		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — переписку с него уже не прочитать')
+
+		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
+			throw new BadRequestException('Аккаунт сейчас занят, попробуйте через минуту')
+		}
+		const opts = this.warmup.clientOptions(r.account)
+		try {
+			const { result, session } = await withClient(opts, async client => {
+				const peer = await this.resolvePeer(client, r)
+				const msgs: any = await call(client, 'getMessages', () => client.getMessages(peer.entity, { limit: 30 }))
+				return (msgs ?? []).filter((m: any) => m?.out && m?.id).map((m: any) => Number(m.id))
+			})
+			await this.warmup.persistSession(r.account.id, opts.session, session)
+
+			if (result.length) {
+				await this.prisma.tgRecipient.update({
+					where: { id: r.id },
+					data: {
+						deliveryUnknown: false,
+						sentMsgId: Math.min(...result),
+						lastSeenMsgId: Math.max(r.lastSeenMsgId, ...result),
+						error: null,
+					},
+				})
+				return { ok: true, found: true }
+			}
+			return { ok: true, found: false }
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.warmup.applyFailure(r.account.id, failure)
+			throw new BadRequestException(`Не удалось проверить: ${failure.message}`)
+		} finally {
+			await this.warmup.releaseAccount(r.account.id)
+		}
 	}
 
 	/** Кампания целиком: настройки, аккаунты, воронка. */

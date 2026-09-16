@@ -111,10 +111,34 @@ export function planQueue(
 	const out = new Map<string, { at: Date; accountId: string }>()
 	if (!slots.length) return out
 
-	const pause = () => {
-		const min = Math.max(30, c.minIntervalSec)
-		const max = Math.max(min, c.maxIntervalSec)
-		return (min + Math.random() * (max - min)) * 1000
+	/**
+	 * Шаг до следующего сообщения аккаунта — чтобы сообщения растянулись на всё
+	 * окно, а не жались в начало.
+	 *
+	 * Раньше это был случайный интервал min..max: пять сообщений при шаге ~12 мин
+	 * занимали первый час, а остаток дня простаивал. Растягивать по s.left тоже
+	 * неверно — это ДНЕВНАЯ НОРМА (обычно 20), а не сколько аккаунту реально
+	 * достанется (очередь короче нормы), и шаг всё равно выходил мелким.
+	 *
+	 * Считаем от реального числа сообщений: общий темп = остаток окна ÷ сколько
+	 * всего разложим сегодня; на один аккаунт множим на число работающих
+	 * аккаунтов (они пишут параллельно). Ниже минимального интервала не
+	 * опускаемся — это анти-флуд; выше можно, крупные паузы и есть заполнение дня.
+	 * Переполнение на следующие дни (редкий хвост) оставляем на прежнем
+	 * случайном интервале — там равномерность не так важна.
+	 */
+	const toPlace = Math.min(ids.length, slots.reduce((n, s) => n + Math.max(0, s.left), 0))
+	const activeCount = slots.filter(s => s.left > 0).length || 1
+	const day0Beg = Math.max(now.getTime(), windowStart(now, c.windowFrom, 0).getTime())
+	const day0Avail = Math.max(0, windowStart(now, c.windowTo, 0).getTime() - day0Beg)
+	const perAccountStep0 = toPlace > 0 ? (day0Avail / toPlace) * activeCount : 0
+
+	const pause = (s: PlanSlot) => {
+		const minMs = Math.max(30, c.minIntervalSec) * 1000
+		const stepMs = s.day === 0
+			? perAccountStep0
+			: (Math.max(30, c.minIntervalSec) + Math.random() * Math.max(0, c.maxIntervalSec - c.minIntervalSec)) * 1000
+		return Math.max(minMs, stepMs * (0.85 + Math.random() * 0.3))
 	}
 	const usable = () => slots.filter(s => s.left > 0 && s.cursor < windowStart(now, c.windowTo, s.day).getTime())
 
@@ -176,7 +200,7 @@ export function planQueue(
 
 		const s = weighted(ready)
 		out.set(id, { at: new Date(s.cursor), accountId: s.id })
-		s.cursor += pause()
+		s.cursor += pause(s)
 		s.left--
 	}
 	return out
