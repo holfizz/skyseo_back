@@ -827,6 +827,8 @@ export class TgWarmupService {
 			// это чаще всего просто «PEER_FLOOD» и ни о чём не говорит. Полную
 			// строку ошибки при этом не теряем — она уходит в журнал ниже.
 			patch.lastError = 'PEER_FLOOD — спам-лимит, аккаунт не пишет новым людям'
+			// Через сутки планировщик сам напишет @SpamBot и обжалует (autoSpamAppeals).
+			patch.spamRetryAt = new Date(Date.now() + 24 * 3600_000)
 		}
 		await this.prisma.tgAccount.update({ where: { id: accountId }, data: patch })
 
@@ -1195,7 +1197,7 @@ export class TgWarmupService {
 				// Ограничение снято — убираем и плашку «заблокирован за флуд»: её
 				// рисует lastError с меткой PEER_FLOOD, а бот только что сказал, что
 				// аккаунт чист. Иначе плашка висела бы до первой удачной отправки.
-				if (result.answer.state === 'clean') patch.lastError = null
+				if (result.answer.state === 'clean') { patch.lastError = null; patch.spamRetryAt = null }
 				await this.prisma.tgAccount.update({ where: { id: a.id }, data: patch })
 			}
 			await this.logEvent(
@@ -1212,6 +1214,80 @@ export class TgWarmupService {
 		} finally {
 			await this.releaseAccount(a.id)
 		}
+	}
+
+	/**
+	 * Автоснятие спам-лимита. Через сутки после PEER_FLOOD (spamRetryAt) сами
+	 * пишем @SpamBot и обжалуем — то же, что кнопка «Снять спам-флуд», только без
+	 * человека. По итогу шлём уведомление: сняли или нет и с каким рейтингом
+	 * аккаунт вернулся.
+	 *
+	 * За тик берём немного (по одному подключаемся к Telegram — это не быстро) и
+	 * идём по очереди. Временный блок ещё держится — тихо переносим попытку на
+	 * несколько часов; уведомляем только по итогу (сняли / под замену), чтобы не
+	 * сыпать «пока держится» каждый раз.
+	 */
+	async autoSpamAppeals(): Promise<{ tried: number; cleared: number }> {
+		const now = new Date()
+		const due = await this.prisma.tgAccount.findMany({
+			where: {
+				spamRetryAt: { lte: now },
+				status: { notIn: ['BANNED', 'ERROR', 'PAUSED'] },
+				lastError: { startsWith: 'PEER_FLOOD' },
+			},
+			select: { id: true, label: true },
+			take: 5,
+		})
+
+		let cleared = 0
+		for (const acc of due) {
+			let state: string
+			try {
+				const res = await this.spamAppeal(acc.id)
+				state = res.state
+			} catch {
+				// Занят прогревом/связь оборвалась — не насилуем @SpamBot, пробуем позже.
+				await this.prisma.tgAccount
+					.update({ where: { id: acc.id }, data: { spamRetryAt: new Date(Date.now() + 3 * 3600_000) } })
+					.catch(() => {})
+				continue
+			}
+
+			if (state === 'clean') {
+				// Ограничение снято (spamAppeal уже вычистил метку и spamRetryAt).
+				// Пересчитываем рейтинг с учётом снятого блока и сообщаем итог.
+				const fresh = await this.prisma.tgAccount.findUnique({ where: { id: acc.id }, include: { proxy: true } })
+				const scored = fresh?.probe ? (await this.scoreMany([fresh])).get(acc.id) : null
+				if (scored) {
+					await this.prisma.tgAccount.update({
+						where: { id: acc.id },
+						data: { score: scored.score, warmness: scored.warmness.total, advice: scored.advice as any, scoredAt: new Date() },
+					})
+				}
+				cleared++
+				const rating = scored
+					? `\nРейтинг: <b>${scored.score.toFixed(1)}/10</b> (${scored.category}), прогрет на ${Math.round(scored.warmness.total)}%.`
+					: ''
+				await this.notifyAdmin(
+					`✅ <b>Спам-лимит снят</b>\n\n` +
+						`Аккаунт <b>${escapeHtml(acc.label ?? acc.id)}</b> — @SpamBot снял ограничение автоматически (через сутки). ` +
+						`Снова в рассылке.${rating}`,
+				)
+			} else if (state === 'permanent') {
+				await this.prisma.tgAccount.update({ where: { id: acc.id }, data: { spamRetryAt: null } })
+				await this.notifyAdmin(
+					`🚫 <b>Вечный спам-блок</b>\n\n` +
+						`Аккаунт <b>${escapeHtml(acc.label ?? acc.id)}</b> — @SpamBot ограничение не снимает. Аккаунт под замену.`,
+				)
+			} else {
+				// temporary/unknown — ещё держится. Тихо переносим попытку на 6 часов.
+				await this.prisma.tgAccount.update({
+					where: { id: acc.id },
+					data: { spamRetryAt: new Date(Date.now() + 6 * 3600_000) },
+				})
+			}
+		}
+		return { tried: due.length, cleared }
 	}
 
 	/**

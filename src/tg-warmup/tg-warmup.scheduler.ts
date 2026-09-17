@@ -18,6 +18,7 @@ export class TgWarmupScheduler implements OnModuleInit {
 	private readonly logger = new Logger(TgWarmupScheduler.name)
 	private running = false
 	private proxyRunning = false
+	private spamRunning = false
 
 	constructor(private svc: TgWarmupService) {}
 
@@ -31,6 +32,24 @@ export class TgWarmupScheduler implements OnModuleInit {
 		// оживают сами, без ручного пинга в кабинете.
 		setTimeout(() => this.recheckProxies(), 120_000)
 		setInterval(() => this.recheckProxies(), 4 * 60_000).unref()
+
+		// Через сутки после PEER_FLOOD сами пишем @SpamBot и снимаем спам-лимит,
+		// по итогу шлём уведомление. Раз в полчаса проверяем, кому пора.
+		setTimeout(() => this.autoSpam(), 180_000)
+		setInterval(() => this.autoSpam(), 30 * 60_000).unref()
+	}
+
+	private async autoSpam() {
+		if (this.spamRunning) return
+		this.spamRunning = true
+		try {
+			const res = await this.svc.autoSpamAppeals()
+			if (res.tried) this.logger.log(`Автоснятие спама: снято ${res.cleared} из ${res.tried}`)
+		} catch (e: any) {
+			this.logger.error(`Автоснятие спама упало: ${e?.message ?? e}`)
+		} finally {
+			this.spamRunning = false
+		}
 	}
 
 	private async recheckProxies() {

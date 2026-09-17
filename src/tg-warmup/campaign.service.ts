@@ -591,7 +591,10 @@ export class CampaignService {
 
 		// scanned и unusable нужны на том конце: «добавлено 0» без них читается
 		// как «в базе никого нет», хотя причина может быть ровно обратной.
-		return { ...(await this.insertRecipients(campaignId, rows, want)), scanned: leads.length, unusable }
+		// sendBlock — если писать сейчас некому (спам-стоп): чтобы «Взять из базы
+		// лидов» не читалось как «контакты закончились», когда дело в аккаунтах.
+		const inserted = await this.insertRecipients(campaignId, rows, want)
+		return { ...inserted, scanned: leads.length, unusable, sendBlock: await this.sendBlockReason(campaignId) }
 	}
 
 	/**
@@ -809,6 +812,48 @@ export class CampaignService {
 			bottleneck: await this.bottleneck(target, queued, plan.planned),
 			windowFrom: target.windowFrom, windowTo: target.windowTo,
 		}
+	}
+
+	/**
+	 * Почему добавленные контакты сейчас не уйдут — и уйдут ли вообще прямо
+	 * сейчас. Нужно, чтобы «Взять из базы лидов» не читалось как «контакты
+	 * закончились», когда на самом деле все аккаунты в спам-стопе (PEER_FLOOD) или
+	 * на паузе. Возвращаем текст, только если писать реально некому; иначе null.
+	 */
+	private async sendBlockReason(campaignId: string): Promise<string | null> {
+		const now = new Date()
+		const links = await this.prisma.tgCampaignAccount.findMany({
+			where: { campaignId },
+			include: { account: true },
+		})
+		if (!links.length) return 'К рассылке не привязан ни один аккаунт.'
+
+		let canSend = 0
+		let spamPaused = 0
+		let earliest: Date | null = null
+		for (const l of links) {
+			const a = l.account
+			const dead = a.status === 'BANNED' || a.status === 'ERROR' || a.status === 'PAUSED'
+			const linkPaused = !!(l.pausedUntil && l.pausedUntil > now)
+			const allow = dead ? null : await this.warmup.allowanceFor(a, 0)
+			if (!dead && !linkPaused && allow?.allowOutgoing) { canSend++; continue }
+			const spam = String(a.lastError ?? '').startsWith('PEER_FLOOD')
+				|| ['temporary', 'permanent'].includes(String((a.probe as any)?.spamBlock ?? ''))
+			if (spam || linkPaused) {
+				spamPaused++
+				if (l.pausedUntil && (!earliest || l.pausedUntil < earliest)) earliest = l.pausedUntil
+			}
+		}
+		if (canSend > 0) return null
+
+		if (spamPaused > 0) {
+			const when = earliest
+				? ` Ближайшая разморозка ~${new Date(earliest.getTime() + 3 * 3600_000).toISOString().slice(11, 16)} МСК.`
+				: ''
+			return `Все аккаунты под спам-лимитом (PEER_FLOOD). Контакты добавлены в очередь, но уйдут, ` +
+				`когда снимете ограничение (карточка аккаунта → «Снять спам-флуд») или закончится пауза.${when}`
+		}
+		return 'Сейчас ни один аккаунт рассылки не может отправлять — проверьте статусы и спам-блок.'
 	}
 
 	/**

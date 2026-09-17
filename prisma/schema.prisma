@@ -1254,6 +1254,9 @@ model TgAccount {
   reauths        Int       @default(0)
   lastCheckAt    DateTime?
   lastError      String?
+  // Когда планировщику пробовать автоматически снять спам-лимит через @SpamBot.
+  // Ставится на +24ч при PEER_FLOOD; по нему сам обжалует и присылает итог.
+  spamRetryAt    DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
