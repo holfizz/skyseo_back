@@ -570,7 +570,9 @@ export class CampaignService {
 				companyName: true, domain: true,
 			},
 			orderBy: { createdAt: 'desc' },
-			take: want * 5,
+			// Смотрим всю базу, а не «последние want × 5»: иначе при «взять 20»
+			// старые свободные лиды вообще не попадали в выборку, и кнопка
+			// отвечала «все разобраны», хотя писать ещё было кому.
 		})
 
 		let unusable = 0
@@ -623,9 +625,25 @@ export class CampaignService {
 				campaignId: { not: campaignId },
 				OR: [{ username: { in: keys } }, { phone: { in: keys } }],
 			},
-			select: { username: true, phone: true },
+			select: {
+				id: true, username: true, phone: true, status: true, sentAt: true, accountId: true,
+				deliveryUnknown: true, campaign: { select: { status: true } },
+			},
 		})
-		const written = new Set(contacted.flatMap(e => [e.username, e.phone].filter(Boolean) as string[]))
+		// Исключение — брошенные: остались в очереди завершённой рассылки, и им
+		// ничего не отправлялось. Эту рассылку уже никто не запустит, так что
+		// считать их «разобранными» нельзя — такой контакт переносим сюда.
+		const written = new Set<string>()
+		const abandoned = new Map<string, string>()
+		for (const e of contacted) {
+			const keysOf = [e.username, e.phone].filter(Boolean) as string[]
+			const isAbandoned = e.campaign.status === 'DONE' && e.status === 'QUEUED'
+				&& !e.sentAt && !e.accountId && !e.deliveryUnknown
+			for (const k of keysOf) {
+				if (isAbandoned) { if (!abandoned.has(k)) abandoned.set(k, e.id) }
+				else written.add(k)
+			}
+		}
 
 		let duplicates = 0
 		let alreadyWritten = 0
@@ -652,7 +670,20 @@ export class CampaignService {
 			lastName: normalizeName(r.lastName) || null,
 		}))
 		if (chosen.length) {
-			await this.prisma.tgRecipient.createMany({ data: chosen })
+			const move = chosen.filter(r => abandoned.has(r.username ?? r.phone))
+			const create = chosen.filter(r => !abandoned.has(r.username ?? r.phone))
+			await this.prisma.$transaction([
+				...move.map(r => this.prisma.tgRecipient.update({
+					where: { id: abandoned.get(r.username ?? r.phone)! },
+					data: {
+						campaignId, leadId: r.leadId,
+						firstName: r.firstName, middleName: r.middleName, lastName: r.lastName,
+						company: r.company, domain: r.domain,
+						scheduledAt: null, plannedAccountId: null, scheduleLocked: false, error: null,
+					},
+				})),
+				...(create.length ? [this.prisma.tgRecipient.createMany({ data: create })] : []),
+			])
 			// Добавили — сразу раскладываем по времени. Иначе новый адресат
 			// висел бы в календаре «без времени» до следующего запуска.
 			await this.buildSchedule(campaignId)
