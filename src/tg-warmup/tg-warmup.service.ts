@@ -11,6 +11,7 @@ import { parseProxyPool } from './proxy-pool'
 import { detectOrigin } from './proxy-geo'
 import { classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
 import { askStatus, parseRestrictedUntil, pressButton, sendText } from './spam-bot'
+import { applyProfile, readProfile, type ProfilePatch } from './profile-edit'
 import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
 import {
 	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, PACE, PACES, paceMinutes, planDay,
@@ -56,6 +57,26 @@ function escapeHtml(s: string): string {
 }
 
 /** Как звать аккаунт: имя, иначе юзернейм, иначе телефон. */
+/** Проверка правки профиля до подключения к Telegram — чтобы не тратить заход на заведомый отказ. */
+function validateProfile(p: ProfilePatch): string | null {
+	if (p.firstName !== undefined && !p.firstName.trim()) return 'Имя не может быть пустым'
+	if (p.firstName && p.firstName.length > 64) return 'Имя длиннее 64 символов'
+	if (p.lastName && p.lastName.length > 64) return 'Фамилия длиннее 64 символов'
+	if (p.about && p.about.length > 140) return 'Описание длиннее 140 символов'
+	if (p.username && !/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/.test(p.username)) {
+		return 'Юзернейм: 5–32 символа, латиница, цифры и _, начинается с буквы'
+	}
+	if (p.birthday) {
+		const { day, month, year } = p.birthday
+		if (!(month >= 1 && month <= 12)) return 'Неверный месяц рождения'
+		const days = new Date(year || 2024, month, 0).getDate()
+		if (!(day >= 1 && day <= days)) return 'Неверный день рождения'
+		if (year && (year < 1900 || year > new Date().getFullYear())) return 'Неверный год рождения'
+	}
+	if (p.photo && p.photo.buffer.length > 10 * 1024 * 1024) return 'Фото больше 10 МБ'
+	return null
+}
+
 function displayName(self: { firstName?: string | null; lastName?: string | null; username?: string | null; phone?: string | null }): string | null {
 	const name = [self.firstName, self.lastName].filter(Boolean).join(' ').trim()
 	if (name) return name
@@ -1207,6 +1228,87 @@ export class TgWarmupService {
 					`Ответ бота (${result.answer.state}${until ? `, до ${until}` : ''}): ${result.answer.text || '— пусто —'}`,
 			)
 			return { pressed: result.pressed, until, ...result.answer }
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.applyFailure(a.id, failure)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.releaseAccount(a.id)
+		}
+	}
+
+	// ── профиль в Telegram ───────────────────────────────────────────────────
+
+	/** Текущий профиль прямо из Telegram: «о себе» и день рождения у нас не хранятся. */
+	async getProfile(id: string) {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
+		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (!(await this.claimAccount(a.id, 'check', 90))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту')
+		}
+		const opts = this.clientOptions(a)
+		try {
+			const { result, session } = await withClient(opts, client => readProfile(client))
+			await this.persistSession(a.id, opts.session, session)
+			return { ...result, avatar: a.avatar }
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.applyFailure(a.id, failure)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.releaseAccount(a.id)
+		}
+	}
+
+	/**
+	 * Правка профиля. Меняется только переданное; по каждому шагу — свой итог.
+	 * После правки перечитываем имя, юзернейм и фото, чтобы список и карточка
+	 * сразу показывали новое.
+	 */
+	async updateProfile(id: string, patch: ProfilePatch) {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
+		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (a.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — профиль не поменять')
+
+		const bad = validateProfile(patch)
+		if (bad) throw new BadRequestException(bad)
+		if (!(await this.claimAccount(a.id, 'check', 180))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту')
+		}
+		const opts = this.clientOptions(a)
+		try {
+			const { result, session } = await withClient(opts, async client => {
+				const steps = await applyProfile(client, patch)
+				const now = await readProfile(client)
+				// Маленькое фото, как при проверке: в списке оно кружок 36 пикселей.
+				let avatar: string | null = null
+				try {
+					const photo = await client.downloadProfilePhoto('me', { isBig: false })
+					if (photo && Buffer.isBuffer(photo) && photo.length > 0 && photo.length < 400_000) {
+						avatar = `data:image/jpeg;base64,${photo.toString('base64')}`
+					}
+				} catch {}
+				return { steps, now, avatar }
+			})
+			await this.persistSession(a.id, opts.session, session)
+
+			await this.prisma.tgAccount.update({
+				where: { id: a.id },
+				data: {
+					firstName: result.now.firstName || null,
+					lastName: result.now.lastName || null,
+					username: result.now.username || null,
+					label: displayName(result.now) ?? a.label,
+					// Фото удалили и нового нет — аватар тоже убираем.
+					avatar: result.avatar ?? (patch.removePhoto && !patch.photo ? null : a.avatar),
+				},
+			})
+			await this.logEvent(
+				a.id,
+				'profile',
+				result.steps.map(s => `${s.ok ? '✓' : '✗'} ${s.step}${s.message ? `: ${s.message}` : ''}`).join('\n') || 'нечего менять',
+			)
+			return { steps: result.steps, profile: { ...result.now, avatar: result.avatar ?? a.avatar } }
 		} catch (e: any) {
 			const failure = e instanceof TgError ? e.failure : classifyError(e)
 			await this.applyFailure(a.id, failure)

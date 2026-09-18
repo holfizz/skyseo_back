@@ -1,7 +1,7 @@
 import {
-	Body, Controller, Delete, Get, Param, Post, Put, Query, UploadedFiles, UseGuards, UseInterceptors,
+	Body, Controller, Delete, Get, Param, Post, Put, Query, UploadedFile, UploadedFiles, UseGuards, UseInterceptors,
 } from '@nestjs/common'
-import { FilesInterceptor } from '@nestjs/platform-express'
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { AdminGuard } from '../admin/admin.guard'
 import { TgWarmupService } from './tg-warmup.service'
@@ -136,6 +136,42 @@ export class TgWarmupController {
 		if (body?.action === 'press') return this.svc.spamBot(id, { kind: 'press', index: Number(body.index ?? 0) })
 		if (body?.action === 'text') return this.svc.spamBot(id, { kind: 'text', text: String(body.text ?? '') })
 		return this.svc.spamBot(id, { kind: 'status' })
+	}
+
+	/** Профиль в Telegram прямо сейчас: имя, описание, юзернейм, день рождения. */
+	@Get('accounts/:id/profile')
+	profile(@Param('id') id: string) {
+		return this.svc.getProfile(id)
+	}
+
+	/**
+	 * Правка профиля. multipart: поля — только изменённые (отсутствующее не трогаем),
+	 * photo — новое фото. birthday: «ДД.ММ» или «ДД.ММ.ГГГГ», пустая строка — убрать.
+	 */
+	@Post('accounts/:id/profile')
+	@UseInterceptors(FileInterceptor('photo', { limits: { fileSize: 10 * 1024 * 1024 } }))
+	updateProfile(
+		@Param('id') id: string,
+		@UploadedFile() photo: Express.Multer.File | undefined,
+		@Body() body: {
+			firstName?: string; lastName?: string; about?: string; username?: string
+			birthday?: string; removePhoto?: string
+		},
+	) {
+		let birthday: { day: number; month: number; year?: number } | null | undefined
+		if (body?.birthday !== undefined) {
+			const m = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$/.exec(body.birthday.trim())
+			birthday = body.birthday.trim() === '' ? null : m ? { day: +m[1], month: +m[2], ...(m[3] ? { year: +m[3] } : {}) } : { day: 0, month: 0 }
+		}
+		return this.svc.updateProfile(id, {
+			firstName: body?.firstName,
+			lastName: body?.lastName,
+			about: body?.about,
+			username: body?.username !== undefined ? body.username.trim().replace(/^@/, '') : undefined,
+			birthday,
+			photo: photo ? { buffer: photo.buffer, name: photo.originalname || 'avatar.jpg' } : undefined,
+			removePhoto: body?.removePhoto === 'true',
+		})
 	}
 
 	/** Лента прогрева: план на сегодня, что идёт сейчас, что уже сделано. */
