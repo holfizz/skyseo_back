@@ -41,9 +41,24 @@ export class TgWarmupController {
 		return this.svc.checkAllProxies(!!body?.onlyNew)
 	}
 
+	/** Снять прокси с выбранных аккаунтов — чтобы отдать каналы другим. */
+	@Post('proxies/detach')
+	detachProxies(@Body() body: { ids: string[] }) {
+		return this.svc.detachProxies(body?.ids ?? [])
+	}
+
+	/**
+	 * Выдать прокси. Без тела — всем, у кого его нет. Со списком id — только
+	 * этим аккаунтам.
+	 *
+	 * Список нужен при замене пула: сначала прокси снимают со старых аккаунтов,
+	 * и тогда «выдать всем без прокси» вернуло бы их же старым. Адресная выдача
+	 * отдаёт освободившиеся каналы именно новым.
+	 */
 	@Post('proxies/assign')
-	assignProxies() {
-		return this.svc.assignProxies()
+	assignProxies(@Body() body?: { ids?: string[] }) {
+		const ids = Array.isArray(body?.ids) ? body!.ids!.filter(Boolean) : null
+		return ids?.length ? this.svc.assignFromPool(ids) : this.svc.assignProxies()
 	}
 
 	/**
@@ -182,11 +197,15 @@ export class TgWarmupController {
 	 * Правка профиля. multipart: поля — только изменённые (отсутствующее не трогаем),
 	 * photo — новое фото. birthday: «ДД.ММ» или «ДД.ММ.ГГГГ», пустая строка — убрать.
 	 */
+	/**
+	 * Правка профиля. Фото принимаем пачкой: каждое ДОБАВЛЯЕТСЯ в альбом
+	 * аккаунта, предыдущие остаются, главным становится последнее.
+	 */
 	@Post('accounts/:id/profile')
-	@UseInterceptors(FileInterceptor('photo', { limits: { fileSize: 10 * 1024 * 1024 } }))
+	@UseInterceptors(FilesInterceptor('photos', 10, { limits: { fileSize: 10 * 1024 * 1024 } }))
 	updateProfile(
 		@Param('id') id: string,
-		@UploadedFile() photo: Express.Multer.File | undefined,
+		@UploadedFiles() photos: Express.Multer.File[] | undefined,
 		@Body() body: {
 			firstName?: string; lastName?: string; about?: string; username?: string
 			birthday?: string; removePhoto?: string
@@ -203,7 +222,9 @@ export class TgWarmupController {
 			about: body?.about,
 			username: body?.username !== undefined ? body.username.trim().replace(/^@/, '') : undefined,
 			birthday,
-			photo: photo ? { buffer: photo.buffer, name: photo.originalname || 'avatar.jpg' } : undefined,
+			photos: photos?.length
+				? photos.map((f, i) => ({ buffer: f.buffer, name: f.originalname || `avatar-${i + 1}.jpg` }))
+				: undefined,
 			removePhoto: body?.removePhoto === 'true',
 		})
 	}

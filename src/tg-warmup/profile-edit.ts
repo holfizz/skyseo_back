@@ -1,4 +1,5 @@
 import { Api, type TelegramClient } from 'teleproto'
+import bigInt from 'big-integer'
 import { CustomFile } from 'teleproto/client/uploads'
 import { call, classifyError, TgError } from './tg-client'
 
@@ -19,6 +20,8 @@ export type ProfileNow = {
 	about: string
 	username: string
 	birthday: Birthday | null
+	/** Сколько фото в альбоме профиля сейчас. Новое их не вытесняет. */
+	photoCount: number
 }
 
 export type ProfilePatch = {
@@ -29,7 +32,13 @@ export type ProfilePatch = {
 	username?: string
 	/** null — убрать день рождения. */
 	birthday?: Birthday | null
-	photo?: { buffer: Buffer; name: string }
+	/**
+	 * Фото профиля, по порядку. Telegram их НЕ заменяет: каждое добавляется в
+	 * альбом аккаунта, а главным становится последнее загруженное. Несколько
+	 * фото — сильный признак живого владельца, у заготовок их не бывает.
+	 */
+	photos?: Array<{ buffer: Buffer; name: string }>
+	/** Удалить текущее главное фото. Остальные в альбоме остаются. */
 	removePhoto?: boolean
 }
 
@@ -41,12 +50,18 @@ export async function readProfile(client: TelegramClient): Promise<ProfileNow> {
 		client.invoke(new Api.users.GetFullUser({ id: new Api.InputUserSelf() })),
 	)
 	const b = full?.fullUser?.birthday
+	// Сколько фото уже в альбоме: человеку надо видеть, что новое добавится к
+	// ним, а не затрёт единственное.
+	const photos: any = await call(client, 'getUserPhotos', () =>
+		client.invoke(new Api.photos.GetUserPhotos({ userId: new Api.InputUserSelf(), offset: 0, maxId: bigInt(0), limit: 20 })),
+	).catch(() => null)
 	return {
 		firstName: me?.firstName ?? '',
 		lastName: me?.lastName ?? '',
 		about: full?.fullUser?.about ?? '',
 		username: me?.username ?? '',
 		birthday: b ? { day: b.day, month: b.month, year: b.year ?? null } : null,
+		photoCount: Number(photos?.count ?? photos?.photos?.length ?? 0) || 0,
 	}
 }
 
@@ -138,9 +153,22 @@ export async function applyProfile(client: TelegramClient, patch: ProfilePatch):
 		})
 	}
 
-	if (patch.photo) {
-		const { buffer, name } = patch.photo
-		await step(steps, 'Фото', async () => {
+	/*
+	 * Фото грузим по одному и с паузой между ними.
+	 *
+	 * Каждое добавляется в альбом, предыдущие остаются — Telegram ничего не
+	 * затирает. Главным становится последнее, поэтому порядок в списке = порядок
+	 * загрузки, и самое важное фото надо класть последним.
+	 *
+	 * Пауза не для красоты: три обращения подряд в одну секунду — это не то, как
+	 * человек ставит себе аватарки, а лишний повод для FLOOD_WAIT. Шаг у каждого
+	 * свой, чтобы при отказе на третьем было видно, что первые два прошли.
+	 */
+	for (const [i, item] of (patch.photos ?? []).entries()) {
+		const { buffer, name } = item
+		const label = (patch.photos ?? []).length > 1 ? `Фото ${i + 1} из ${patch.photos!.length}` : 'Фото'
+		await step(steps, label, async () => {
+			if (i > 0) await new Promise(r => setTimeout(r, 1500 + Math.floor(Math.random() * 2000)))
 			const file = await call(client, 'uploadFile', () =>
 				client.uploadFile({ file: new CustomFile(name, buffer.length, '', buffer), workers: 1 }),
 			)

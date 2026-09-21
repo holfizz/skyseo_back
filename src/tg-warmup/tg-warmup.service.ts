@@ -81,7 +81,9 @@ function validateProfile(p: ProfilePatch): string | null {
 		if (!(day >= 1 && day <= days)) return 'Неверный день рождения'
 		if (year && (year < 1900 || year > new Date().getFullYear())) return 'Неверный год рождения'
 	}
-	if (p.photo && p.photo.buffer.length > 10 * 1024 * 1024) return 'Фото больше 10 МБ'
+	const heavy = (p.photos ?? []).find(x => x.buffer.length > 10 * 1024 * 1024)
+	if (heavy) return `Фото «${heavy.name}» больше 10 МБ`
+	if ((p.photos ?? []).length > 10) return 'За раз можно загрузить не больше десяти фото'
 	return null
 }
 
@@ -360,6 +362,26 @@ export class TgWarmupService {
 	 * тем лучше. Если прокси меньше, чем аккаунтов, лишние остаются без него,
 	 * и это видно в списке, а не подменяется общим адресом.
 	 */
+	/**
+	 * Снять прокси с перечисленных аккаунтов.
+	 *
+	 * Нужно при замене пула: каналы освобождают у старых аккаунтов, чтобы отдать
+	 * новым. Поштучно это делается в карточке, но на десятке аккаунтов туда
+	 * пришлось бы заходить десять раз.
+	 *
+	 * Аккаунт без прокси не работает — он пойдёт с адреса сервера, и прогрев
+	 * это увидит как помеху. Так и задумано: снятие осмысленно только парой со
+	 * следующей выдачей.
+	 */
+	async detachProxies(accountIds: string[]) {
+		if (!accountIds?.length) return { detached: 0 }
+		const res = await this.prisma.tgAccount.updateMany({
+			where: { id: { in: accountIds }, proxyId: { not: null } },
+			data: { proxyId: null },
+		})
+		return { detached: res.count }
+	}
+
 	async assignProxies() {
 		const accounts = await this.prisma.tgAccount.findMany({
 			where: { proxyId: null },
@@ -1430,7 +1452,7 @@ export class TgWarmupService {
 					username: result.now.username || null,
 					label: displayName(result.now) ?? a.label,
 					// Фото удалили и нового нет — аватар тоже убираем.
-					avatar: result.avatar ?? (patch.removePhoto && !patch.photo ? null : a.avatar),
+					avatar: result.avatar ?? (patch.removePhoto && !patch.photos?.length ? null : a.avatar),
 				},
 			})
 			await this.logEvent(
