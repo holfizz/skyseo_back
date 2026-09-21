@@ -144,6 +144,107 @@ export const INTENSITY: Record<Stage, Intensity> = {
 // определяется готовностью, а не календарём.
 export const READ_ONLY_DAYS = 2
 
+/**
+ * Автоснижение темпа: во что обошлись последние двое суток.
+ *
+ * Считается из фактов, а не хранится отдельным полем в базе. Окно в 48 часов
+ * само задаёт срок действия: блокировка стареет, выпадает из окна, и норма
+ * возвращается сама. Хранимое состояние пришлось бы гасить по таймеру, а
+ * расходится оно молча — и аккаунт остаётся прижатым неизвестно почему.
+ */
+export type ThrottleInput = {
+	now: Date
+	/** Когда последний раз прилетал PEER_FLOOD. null — не прилетал. */
+	peerFloodAt: Date | null
+	/** Сколько холодных сообщений ушло с аккаунта за последние 48 часов. */
+	sent48h: number
+	/** Когда адресаты за те же 48 часов закрывались: блокировка или приватность. */
+	blockedAt: Date[]
+}
+
+export type Throttle = {
+	/** Множитель дневной нормы исходящих: 1 — полная, 0 — полный стоп. */
+	factor: number
+	/** До какого момента держится снижение. null — ничего не снижено. */
+	until: Date | null
+	reason: string | null
+}
+
+/**
+ * Сколько отправленных нужно, чтобы доля блокировок вообще что-то значила.
+ * На десятке сообщений одна блокировка даёт 10% и не говорит ни о чём —
+ * на таких объёмах работает счёт, а не доля.
+ */
+const RATE_SAMPLE = 100
+const BLOCK_RATE = 0.02
+
+/** Насколько дневная норма может вырасти за сутки: не вдвое, а на треть. */
+export const MAX_DAILY_GROWTH = 0.3
+
+/**
+ * Потолок нормы на сегодня по вчерашней.
+ *
+ * Удвоение за сутки — это и есть та смена поведения, на которую смотрят:
+ * вчера человек написал троим, сегодня восьмерым, завтра двадцати. Ступень
+ * заодно возвращает смысл разгону, который иначе проскакивался за один день,
+ * стоило готовности перевалить порог.
+ *
+ * Вчерашний ноль потолка не задаёт: из полного стопа аккаунт выводит
+ * throttleFor своими шестьюдесятью процентами, а не подъём по единице —
+ * иначе на возврат к норме уходила бы неделя.
+ */
+export function growthCeiling(yesterdayCap: number | null | undefined): number | null {
+	if (yesterdayCap == null || yesterdayCap <= 0) return null
+	return Math.max(1, Math.ceil(yesterdayCap * (1 + MAX_DAILY_GROWTH)))
+}
+
+/**
+ * Нужно ли сегодня сбавить и насколько.
+ *
+ * Правило одно: автоматика умеет только вниз. Наверх норма возвращается сама,
+ * когда повод устареет, и ступенями — это делает outgoingAllowance.
+ */
+export function throttleFor(i: ThrottleInput): Throttle {
+	const hoursAgo = (d: Date) => (i.now.getTime() - d.getTime()) / 3600_000
+
+	// PEER_FLOOD — вердикт о поведении, а не замечание о темпе. Сутки без
+	// единого холодного сообщения, и только потом половина нормы: возврат на
+	// сто процентов сразу после паузы означает повторить то же самое.
+	if (i.peerFloodAt) {
+		const age = hoursAgo(i.peerFloodAt)
+		if (age < 24) {
+			return {
+				factor: 0,
+				until: new Date(i.peerFloodAt.getTime() + 24 * 3600_000),
+				reason: 'PEER_FLOOD: сутки без исходящих сообщений',
+			}
+		}
+		if (age < 72) {
+			return {
+				factor: 0.6,
+				until: new Date(i.peerFloodAt.getTime() + 72 * 3600_000),
+				reason: 'После PEER_FLOOD выходим на 60% нормы, а не сразу на полную',
+			}
+		}
+	}
+
+	const blocked = i.blockedAt.length
+	const tooMany = i.sent48h >= RATE_SAMPLE ? blocked / i.sent48h > BLOCK_RATE : blocked >= 2
+	if (blocked && tooMany) {
+		const last = new Date(Math.max(...i.blockedAt.map(d => d.getTime())))
+		const rate = i.sent48h ? Math.round((blocked / i.sent48h) * 1000) / 10 : 0
+		return {
+			factor: 0.6,
+			until: new Date(last.getTime() + 48 * 3600_000),
+			reason:
+				`Блокировок ${blocked} из ${i.sent48h} за двое суток${rate ? ` — ${rate}%` : ''}: ` +
+				'норма снижена на 40% до конца окна',
+		}
+	}
+
+	return { factor: 1, until: null, reason: null }
+}
+
 export type AllowanceInput = {
 	/** Какой день прогрева идёт, начиная с 1. Ноль — прогрев не запущен. */
 	dayIndex: number
@@ -160,6 +261,36 @@ export type AllowanceInput = {
 	spamBlock: 'clean' | 'temporary' | 'permanent' | 'unknown'
 	floodWaits: number
 	peerFloods: number
+	/** Что насчитал throttleFor по последним двум суткам. */
+	throttle?: Throttle
+	/**
+	 * Потолок нормы на сегодня, если он уже утверждён: ступень роста от
+	 * вчерашней нормы (growthCeiling) либо утверждённое утром число.
+	 * null — потолка нет, аккаунт новый или норму ещё не считали.
+	 */
+	capCeiling?: number | null
+}
+
+/**
+ * Признак готовности с раскрытым счётом.
+ *
+ * Отдельным типом, а не долей, потому что «готовность 46» само по себе не
+ * значит ничего и чинить по нему нечего. Человеку нужно видеть счёт: выдержка
+ * 2 суток из 7, наработка 12 действий из 30 — тогда понятно и что не так, и
+ * сколько осталось ждать.
+ */
+export type ReadinessSignal = {
+	name: string
+	value: number
+	target: number
+	/** Единица для подписи: «суток у нас», «действий». */
+	unit: string
+	/** Доля 0..1, из которой и складывается готовность. */
+	share: number
+	/** Что этот признак означает — словами, для подсказки. */
+	what: string
+	/** Признак, где меньше — лучше: счёт «0 из 0» читается наоборот. */
+	lower?: boolean
 }
 
 export type Allowance = {
@@ -168,6 +299,16 @@ export type Allowance = {
 	maxJoinsPerDay: number
 	maxMessagesPerDay: number
 	/**
+	 * Реакции, голоса, пересылки: видно другим, но это не сообщение.
+	 *
+	 * Отдельно от maxMessagesPerDay намеренно. Автоснижение и пауза после
+	 * PEER_FLOOD закрывают исходящие СООБЩЕНИЯ, а фоновое присутствие обязано
+	 * продолжаться. Аккаунт, который на сутки замолкает целиком и потом снова
+	 * начинает писать незнакомым, выглядит ровно тем, чем не должен, —
+	 * инструментом для отправки, который включают и выключают.
+	 */
+	maxReactionsPerDay: number
+	/**
 	 * Норма исходящих на сутки ЦЕЛИКОМ, до вычета уже потраченного.
 	 *
 	 * maxMessagesPerDay по ходу дня уменьшается — это остаток. Для дневной
@@ -175,8 +316,22 @@ export type Allowance = {
 	 * должен усыхать после каждого отправленного сообщения.
 	 */
 	dailyMessages: number
+	/**
+	 * Норма ДО автоснижения: столько аккаунту полагалось бы, не будь жалоб и
+	 * PEER_FLOOD. Именно её запоминает ступень роста.
+	 *
+	 * Если запоминать итоговое, прижатое число, то завтрашняя ступень меряется
+	 * от прижатого — и возврат к норме растягивается на лишние сутки после
+	 * того, как повод снижать давно прошёл. Снижение и так работает само,
+	 * поверх, и отменяется само.
+	 */
+	baseMessages: number
 	/** Готовность 0-100: та самая совокупная оценка, из которой взяты квоты. */
 	readiness: number
+	/** Из чего сложилась готовность: шесть признаков со счётом. */
+	signals: ReadinessSignal[]
+	/** Что снижено автоматически и до какого момента. null — ничего. */
+	throttle: Throttle | null
 	/** Почему сегодня столько — человеческим языком, для карточки аккаунта. */
 	notes: string[]
 }
@@ -196,6 +351,14 @@ export type Allowance = {
  * исходящие независимо от суммы, потому что это не «слабые места», а прямые
  * сигналы, что делать сейчас ничего нельзя.
  */
+function plural(n: number): string {
+	const m10 = n % 10
+	const m100 = n % 100
+	if (m10 === 1 && m100 !== 11) return 'сообщение'
+	if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 'сообщения'
+	return 'сообщений'
+}
+
 function times(n: number): string {
 	const m10 = n % 10
 	const m100 = n % 100
@@ -207,8 +370,8 @@ function times(n: number): string {
 export function outgoingAllowance(i: AllowanceInput): Allowance {
 	const notes: string[] = []
 	const deny = (why: string): Allowance => ({
-		allowOutgoing: false, maxJoinsPerDay: 0, maxMessagesPerDay: 0, dailyMessages: 0,
-		readiness: 0, notes: [why],
+		allowOutgoing: false, maxJoinsPerDay: 0, maxMessagesPerDay: 0, maxReactionsPerDay: 0,
+		dailyMessages: 0, baseMessages: 0, readiness: 0, signals: [], throttle: i.throttle ?? null, notes: [why],
 	})
 
 	// Спамблок — прямой запрет. Писать под ограничением значит его продлить.
@@ -223,21 +386,44 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 	}
 
 	const share = (value: number, target: number) => Math.max(0, Math.min(1, value / target))
-	const signals = {
-		зрелость: i.ageDays == null ? 0.3 : share(i.ageDays, 30),
-		выдержка: share(i.daysManaged, 7),
-		наработка: share(i.actionsTotal, 30),
-		обжитость: share(i.dialogs + i.channels, 12),
-		профиль: Math.max(0, Math.min(1, i.profileFilled)),
-		чистота: i.floodWaits === 0 ? 1 : Math.max(0, 1 - i.floodWaits / 8),
-	}
-	const values = Object.values(signals)
-	const readiness = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100)
+	const signals: ReadinessSignal[] = [
+		{
+			name: 'зрелость', value: i.ageDays ?? 0, target: 30, unit: 'дней от роду',
+			share: i.ageDays == null ? 0.3 : share(i.ageDays, 30),
+			what: i.ageDays == null
+				? 'возраст оценить не удалось — считаем как средний'
+				: 'сколько аккаунту лет по оценке из его номера в Telegram',
+		},
+		{
+			name: 'выдержка', value: i.daysManaged, target: 7, unit: 'суток у нас',
+			share: share(i.daysManaged, 7),
+			what: 'сколько суток аккаунт под нашим управлением, а не сколько ему лет вообще',
+		},
+		{
+			name: 'наработка', value: i.actionsTotal, target: 30, unit: 'действий',
+			share: share(i.actionsTotal, 30),
+			what: 'сколько действий мы за ним записали за всё время',
+		},
+		{
+			name: 'обжитость', value: i.dialogs + i.channels, target: 12, unit: 'чатов и каналов',
+			share: share(i.dialogs + i.channels, 12),
+			what: 'похож ли он на живого: есть ли у него переписки и подписки',
+		},
+		{
+			name: 'профиль', value: Math.round(i.profileFilled * 5), target: 5, unit: 'полей из пяти',
+			share: Math.max(0, Math.min(1, i.profileFilled)),
+			what: 'заполнены ли имя, фамилия, юзернейм, описание и фото',
+		},
+		{
+			name: 'чистота', value: i.floodWaits, target: 0, unit: 'просьб сбавить', lower: true,
+			share: i.floodWaits === 0 ? 1 : Math.max(0, 1 - i.floodWaits / 8),
+			what: 'сколько раз Telegram просил сбавить темп (FLOOD_WAIT)',
+		},
+	]
+	const readiness = Math.round((signals.reduce((a, s) => a + s.share, 0) / signals.length) * 100)
 
 	// Что тянет вниз — показываем, чтобы было понятно, куда добавить.
-	const weak = Object.entries(signals)
-		.filter(([, v]) => v < 0.5)
-		.map(([k]) => k)
+	const weak = signals.filter(s => s.share < 0.5).map(s => s.name)
 	notes.push(`Готовность ${readiness} из 100`)
 	if (weak.length) notes.push(`Слабые места: ${weak.join(', ')}`)
 
@@ -245,6 +431,10 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 	// и «тремя» нет непрерывной величины, а ступени видно в журнале.
 	let joins = readiness < 25 ? 1 : readiness < 50 ? 2 : readiness < 75 ? 3 : 4
 	let messages = readiness < 30 ? 0 : readiness < 50 ? 1 : readiness < 70 ? 3 : readiness < 85 ? 5 : 8
+	// Реакции щедрее сообщений и по другой причине: жалуются на сообщение, а не
+	// на сердечко под постом. Это и есть тот фон, который отличает живой аккаунт
+	// от спящего между рассылками.
+	let reactions = readiness < 25 ? 3 : readiness < 50 ? 6 : readiness < 75 ? 10 : 15
 
 	// Разгон не заканчивается вместе с чтением: с третьего дня даём половину,
 	// с седьмого — всё. Иначе выход из режима чтения выглядит как рубильник.
@@ -253,6 +443,7 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 	if (dayFactor < 1) {
 		joins = Math.max(1, Math.round(joins * dayFactor))
 		messages = Math.floor(messages * dayFactor)
+		reactions = Math.max(1, Math.round(reactions * dayFactor))
 		notes.push(`День ${i.dayIndex}: пока ${Math.round(dayFactor * 100)}% от нормы, разгон до седьмого дня`)
 	}
 
@@ -281,12 +472,34 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 		notes.push('Был PEER_FLOOD: норма исходящих урезана вдвое')
 	}
 
+	// Ступень роста: выше утверждённого на сегодня потолка норма не поднимается.
+	// Применяется ДО автоснижения — ступень про то, как быстро аккаунт растёт,
+	// а не про то, насколько его сейчас прижали.
+	if (i.capCeiling != null && messages > i.capCeiling) {
+		notes.push(`Ступень роста: сегодня не больше ${i.capCeiling} ${plural(i.capCeiling)}`)
+		messages = i.capCeiling
+	}
+	const baseMessages = messages
+
+	// Автоснижение за последние двое суток. Режет только СООБЩЕНИЯ: вступления
+	// и реакции остаются, иначе прижатый аккаунт перестаёт существовать для
+	// Telegram до самого возврата нормы.
+	const throttle = i.throttle ?? null
+	if (throttle && throttle.factor < 1) {
+		messages = Math.floor(messages * throttle.factor)
+		if (throttle.reason) notes.push(throttle.reason)
+	}
+
 	return {
-		allowOutgoing: joins > 0 || messages > 0,
+		allowOutgoing: joins > 0 || messages > 0 || reactions > 0,
 		maxJoinsPerDay: joins,
 		maxMessagesPerDay: messages,
+		maxReactionsPerDay: reactions,
 		dailyMessages: messages,
+		baseMessages,
 		readiness,
+		signals,
+		throttle,
 		notes,
 	}
 }
@@ -365,6 +578,22 @@ export function actionsForDay(intensity: Intensity, dayIndex: number): number {
 	return Math.max(1, Math.round(intensity.actionsPerDay * rampFactor(dayIndex)))
 }
 
+/**
+ * Пропустить ли сегодня фоновый заход.
+ *
+ * Живой человек не заходит в мессенджер ровно каждый день без единого
+ * пропуска — сплошная цепочка без разрывов сама по себе узор. Пропускаем
+ * только у аккаунтов, которым фон уже не нужен как работа: у прижатых и
+ * недогретых он идёт каждый день.
+ *
+ * Решение детерминированное: один и тот же аккаунт в один и тот же день
+ * получает один и тот же ответ, сколько бы раз планировщик ни спросил.
+ */
+export function upkeepIdle(accountId: string, dateKey: string, green: boolean): boolean {
+	if (!green) return false
+	return makeRng(accountSeed(`${accountId}:upkeep:${dateKey}`))() < 0.3
+}
+
 export type Window = { fromHour: number; toHour: number }
 
 /**
@@ -422,12 +651,19 @@ export function planDay(opts: {
 	windows: Window[]
 	timezoneOffsetMin?: number
 	pace?: Pace
+	/**
+	 * День для разгона, если он не совпадает со счётчиком дней прогона.
+	 * Нужен фону: он идёт годами и разгоняться ему неоткуда и незачем, а
+	 * счётчик дней всё равно обязан расти — от него зависит жребий, иначе
+	 * заходы каждый день пришлись бы на одни и те же минуты.
+	 */
+	rampDayIndex?: number
 }): DayPlan {
 	const stage = stageFor(opts.ageDays)
 	const intensity = intensityFor(stage, opts.pace ?? 'normal')
 	const seed = accountSeed(opts.accountId)
 	const rnd = makeRng(seed + opts.dayIndex * 104729 + opts.runIndex * 31)
-	const actions = actionsForDay(intensity, opts.dayIndex)
+	const actions = actionsForDay(intensity, opts.rampDayIndex ?? opts.dayIndex)
 
 	const windows = opts.windows.length ? opts.windows : [{ fromHour: 9, toHour: 23 }]
 	const slots = windows.map(w => ({ start: w.fromHour * 60, len: Math.max(0, (w.toHour - w.fromHour) * 60) }))

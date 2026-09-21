@@ -324,6 +324,7 @@ export async function probeAccount(client: TelegramClient): Promise<ProbeResult>
 
 	const probe: AccountProbe = {
 		ageDays: est ? est.ageDays : null,
+		ageKind: est ? est.kind : null,
 		oldestSessionDays: oldest ? Math.floor((Date.now() - oldest) / DAY) : null,
 		hasFirstName: !!me?.firstName,
 		hasLastName: !!me?.lastName,

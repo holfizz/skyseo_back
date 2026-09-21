@@ -50,12 +50,19 @@ export class CampaignManagerController {
 		return this.svc.clients(stage, limit ? Number(limit) : undefined, q)
 	}
 
+	/** waiting=1 — только те, где последнее сообщение входящее: ждут нас. */
 	@Get('conversations')
-	conversations(@Query('limit') limit?: string, @Query('q') q?: string, @Query('replied') replied?: string) {
+	conversations(
+		@Query('limit') limit?: string,
+		@Query('q') q?: string,
+		@Query('replied') replied?: string,
+		@Query('waiting') waiting?: string,
+	) {
 		return this.svc.conversations({
 			limit: limit ? Number(limit) : undefined,
 			q,
 			onlyReplied: replied === '1' || replied === 'true',
+			waiting: waiting === '1' || waiting === 'true',
 		})
 	}
 

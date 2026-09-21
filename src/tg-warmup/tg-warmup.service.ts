@@ -9,19 +9,27 @@ import {
 } from './session-import'
 import { parseProxyPool } from './proxy-pool'
 import { detectOrigin } from './proxy-geo'
-import { classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
+import { Api } from 'teleproto'
+import bigInt from 'big-integer'
+import { call, classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
 import { askStatus, parseRestrictedUntil, pressButton, sendText } from './spam-bot'
 import { applyProfile, readProfile, type ProfilePatch } from './profile-edit'
-import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, runAction, type ActionKind } from './warmup-actions'
+import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, REACTION_ACTIONS, runAction, type ActionKind } from './warmup-actions'
 import {
-	accountSeed, dailyStartMinute, makeRng, outgoingAllowance, PACE, PACES, paceMinutes, planDay,
-	type Allowance, type Pace, type Session, type Window,
+	accountSeed, dailyStartMinute, growthCeiling, makeRng, outgoingAllowance, PACE, PACES, paceMinutes,
+	planDay, throttleFor, upkeepIdle, type Allowance, type Pace, type Session, type Window,
 } from './warmup-plan'
 import { mskAt, mskDayKey, mskMinuteOfDay } from './msk'
-import { scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
+import { GEO_SURVIVAL, scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
 import { estimateRegistration } from './account-age'
 
 const DAY_MS = 86400000
+
+/** Как часто сами спрашиваем у @SpamBot, не ограничен ли аккаунт. */
+const SPAM_CHECK_EVERY_DAYS = 7
+
+/** Реакции, голоса и пересылки — быстрая проверка по виду действия. */
+const REACTION_KINDS = new Set<string>(REACTION_ACTIONS)
 const KEY_CHANNELS = 'tg_warmup_channels'
 const KEY_API_ID = 'tg_warmup_api_id'
 const KEY_API_HASH = 'tg_warmup_api_hash'
@@ -102,6 +110,22 @@ function parseDayLocal(value?: string | null): Date | null {
 /** Ключ суток по Москве: по нему считаются дневные нормы и планы. */
 function dateKey(d: Date): string {
 	return mskDayKey(d)
+}
+
+/**
+ * Всё, что для расчёта разрешения берётся из базы. Отдельным типом, потому что
+ * счётчики снимаются и на один аккаунт, и на весь список сразу, а расчёт по ним
+ * обязан быть один и тот же.
+ */
+type AllowanceCounters = {
+	/** Вступлений в журнале: подписки, о которых анкета может ещё не знать. */
+	joined: number
+	/** Исходящих, ушедших сегодня на рассылку: первые касания плюс вторые. */
+	spentOnOutreach: number
+	sent48h: number
+	/** Когда именно закрывались — throttleFor смотрит на давность каждого. */
+	blockedAt: Date[]
+	peerFloodAt: Date | null
 }
 
 
@@ -350,13 +374,22 @@ export class TgWarmupService {
 	 * наименее загруженных.
 	 *
 	 * Соседи по адресу — прямой минус в оценке, поэтому раскладываем ровно, а не
-	 * вешаем всех на первый попавшийся. Если прокси меньше, чем аккаунтов,
-	 * лишние остаются без него, и это видно в списке — молча сажать двоих на
-	 * один канал хуже, чем оставить одного без.
+	 * вешаем всех на первый попавшийся.
+	 *
+	 * maxPerProxy — мягкий потолок, а не запрет. Посадить аккаунт на людный
+	 * канал плохо, но оставить его на мёртвом — хуже: он тогда не работает
+	 * вовсе. Поэтому сверх потолка мы всё равно сажаем, но считаем такие случаи
+	 * отдельно и возвращаем числом: пусть человек видит, что пул прокси надо
+	 * расширять, а не гадает, почему просела оценка у всех разом.
+	 *
+	 * По умолчанию потолка нет — так эта раздача работала всегда, и менять её
+	 * для новичков задним числом значило бы разом оставить половину пула без
+	 * канала.
 	 */
-	async assignFromPool(accountIds: string[]) {
-		if (!accountIds.length) return { assigned: 0, left: 0 }
+	async assignFromPool(accountIds: string[], opts?: { maxPerProxy?: number }) {
+		if (!accountIds.length) return { assigned: 0, left: 0, crowded: 0 }
 
+		const max = opts?.maxPerProxy ?? Infinity
 		const pool = (
 			await this.prisma.tgProxy.findMany({
 				where: { alive: true },
@@ -366,14 +399,71 @@ export class TgWarmupService {
 		).map(p => ({ id: p.id, load: p._count.accounts }))
 
 		let assigned = 0
+		let crowded = 0
 		for (const id of accountIds) {
 			const target = pool.sort((a, b) => a.load - b.load)[0]
 			if (!target) break
+			if (target.load >= max) crowded++
 			await this.prisma.tgAccount.update({ where: { id }, data: { proxyId: target.id } })
 			target.load++
 			assigned++
 		}
-		return { assigned, left: accountIds.length - assigned }
+		return { assigned, left: accountIds.length - assigned, crowded }
+	}
+
+	/**
+	 * Заменить мёртвые каналы.
+	 *
+	 * Сначала даём прокси шанс ожить и только тем аккаунтам, у кого он так и не
+	 * ответил, меняем канал: смена прокси — это смена IP у обжитого аккаунта, и
+	 * делать её из-за одного неудачного пинга дороже, чем подождать проверку.
+	 *
+	 * Раздаёт assignFromPool — тот же расклад по наименее загруженным, что и при
+	 * выдаче новичкам: соседи по адресу вредны одинаково, первый это прокси
+	 * аккаунта или второй. assignProxies сюда не годится — он по построению
+	 * смотрит только на аккаунты без прокси вовсе.
+	 */
+	async replaceDeadProxies() {
+		const recheck = await this.recheckDeadProxies()
+
+		const stranded = await this.prisma.tgAccount.findMany({
+			where: { proxy: { alive: false } },
+			select: { id: true, proxyId: true },
+			orderBy: { createdAt: 'asc' },
+		})
+		// crowded нужен и здесь: форма ответа у одной ручки не должна плавать,
+		// иначе на самом частом пути (мёртвых нет) поле придёт пустым.
+		if (!stranded.length) return { ...recheck, moved: 0, left: 0, crowded: 0 }
+
+		const before = new Map(stranded.map(a => [a.id, a.proxyId]))
+		/*
+		 * Потолок в четыре аккаунта на канал. Оценка считает соседей по адресу
+		 * ступенями (см. blockNetwork в warmup-score.ts): до трёх соседей это
+		 * ещё терпимо, от десяти — ноль за весь блок «Сеть».
+		 *
+		 * Без потолка типовая авария «лёг поставщик, из двадцати прокси живы
+		 * два» пересаживала весь пул на два адреса и отвечала «всё хорошо».
+		 * Аккаунты после такого связаны между собой: прикроют один — под
+		 * подозрением все.
+		 */
+		const { left, crowded } = await this.assignFromPool(stranded.map(a => a.id), { maxPerProxy: 4 })
+
+		// Кому что досталось, спрашиваем у базы: assignFromPool отдаёт только
+		// количество, а в журнале должен стоять адрес — иначе потом не понять,
+		// откуда у аккаунта взялся новый IP и когда именно он сменился.
+		const after = await this.prisma.tgAccount.findMany({
+			where: { id: { in: stranded.map(a => a.id) } },
+			select: { id: true, proxyId: true, proxy: { select: { host: true, port: true } } },
+		})
+		let moved = 0
+		for (const a of after) {
+			if (!a.proxyId || a.proxyId === before.get(a.id)) continue
+			moved++
+			await this.logEvent(a.id, 'proxy-replaced', `Прокси не отвечал, выдан ${a.proxy?.host}:${a.proxy?.port}`)
+		}
+		// crowded наружу отдаём отдельно: «пересадили десятерых» и «пересадили
+		// десятерых на один адрес» — разные новости, и вторая требует действия.
+		return { ...recheck, moved, left, crowded }
 	}
 
 	// ── аккаунты ─────────────────────────────────────────────────────────────
@@ -498,7 +588,7 @@ export class TgWarmupService {
 				proxy: a.proxy,
 				run: run
 					? {
-							id: run.id, days: run.days, dayIndex: run.dayIndex, status: run.status,
+							id: run.id, kind: run.kind, days: run.days, dayIndex: run.dayIndex, status: run.status,
 							nextRunAt: run.nextRunAt, doneToday: run.doneToday,
 							pace: run.pace,
 							paceLabel: PACE[(run.pace as Pace) ?? 'normal']?.label ?? null,
@@ -527,18 +617,58 @@ export class TgWarmupService {
 		// а в карточке другое.
 		const score = (await this.scoreMany([a])).get(a.id) ?? null
 
-		const activeRun = a.runs.find(r => r.status === 'SCHEDULED' || r.status === 'RUNNING')
+		// Именно прогрев: у фона дня прогрева нет, и брать его счётчик за день
+		// разгона нельзя — карточка показала бы «день 1, только чтение» готовому
+		// аккаунту, который давно рассылает.
+		const activeRun = a.runs.find(
+			r => (r.status === 'SCHEDULED' || r.status === 'RUNNING') && r.kind === 'WARMUP',
+		)
 		// Сразу после запуска dayIndex ещё нулевой: первый день начнётся, когда
 		// планировщик разбудит аккаунт. Для карточки это уже первый день, иначе
 		// у аккаунта со статусом «Греется» было бы написано «прогрев не запущен».
-		const allowance = await this.allowanceFor(a, activeRun ? Math.max(1, activeRun.dayIndex) : 0)
+		/*
+		 * Норма на сегодня — ровно та, которую видят рассылка и экран здоровья.
+		 * Считается при dayIndex 0: именно она утверждается раз в сутки и по ней
+		 * работает отправка. Раньше карточка считала свою, с поправкой на день
+		 * разгона, и один и тот же аккаунт показывал на двух экранах разные
+		 * числа — а объяснить расхождение было нечем.
+		 */
+		const allowance = await this.allowanceFor(a, 0)
+		// Отдельно — что прогрев разрешает САМОМУ СЕБЕ сегодня. В первые двое
+		// суток он только читает, и это надо показать, не выдавая за норму
+		// аккаунта: рассылке эти ограничения не мешают.
+		const warmupAllowance = activeRun ? await this.allowanceFor(a, Math.max(1, activeRun.dayIndex)) : null
 		const spent = await this.usedToday(a.id)
+		// Происхождение: страна номера, тип и страна канала, соседи по IP,
+		// размер закупочной пачки. Всё это уже считается для блока «Сеть» и
+		// «Происхождение» в оценке — и до сих пор наружу не выходило, так что
+		// объяснить балл этих блоков на экране было нечем.
+		const origin = await this.originFor(a)
 
 		return {
 			// Полный разбор оценки: баллы по блокам, вето, прогретость, советы.
 			breakdown: score,
 			// Что аккаунту можно СЕГОДНЯ и почему именно столько.
-			allowance: { ...allowance, spentJoins: spent.joins, spentMessages: spent.messages },
+			allowance: { ...allowance, spentJoins: spent.joins, spentMessages: spent.messages, spentReactions: spent.reactions },
+			// Идущий прогрев: какой день и что он разрешает себе сегодня.
+			warmup: activeRun
+				? {
+						runId: activeRun.id,
+						dayIndex: Math.max(1, activeRun.dayIndex),
+						days: activeRun.days,
+						pace: activeRun.pace,
+						paceLabel: PACE[(activeRun.pace as Pace) ?? 'normal']?.label ?? null,
+						windowFrom: activeRun.windowFrom,
+						windowTo: activeRun.windowTo,
+						nextRunAt: activeRun.nextRunAt,
+						allowance: warmupAllowance,
+					}
+				: null,
+			// Откуда аккаунт: страна номера, канал выхода, соседи по IP, пачка.
+			origin,
+			// Выживаемость по стране номера — приор, из которого считается
+			// блок «Происхождение». Без него балл блока необъясним.
+			geoSurvival: origin.numberGeo ? (GEO_SURVIVAL[origin.numberGeo] ?? null) : null,
 			id: a.id, label: a.label, avatar: a.avatar, mode: a.mode, phone: a.phone, username: a.username,
 			firstName: a.firstName, lastName: a.lastName, tgUserId: a.tgUserId,
 			status: a.status, score: a.score, warmness: a.warmness, scoredAt: a.scoredAt,
@@ -1393,6 +1523,238 @@ export class TgWarmupService {
 	}
 
 	/**
+	 * Активные сессии аккаунта: кто ещё в него заходит.
+	 *
+	 * У купленного аккаунта почти всегда остаётся сессия продавца, и это не
+	 * «след», а открытая дверь: с неё аккаунт в любой момент уводят вместе со
+	 * всей перепиской.
+	 *
+	 * Завершение вынесено в отдельную ручку и делается человеком. Автомат тут
+	 * опасен: «не наша сессия» иногда оказывается телефоном владельца, а
+	 * отменить сброс нельзя. Флаг «двухфакторка выключена» точно так же
+	 * показывается, а не чинится сам.
+	 */
+	async listSessions(id: string) {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
+		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (!(await this.claimAccount(a.id, 'check', 120))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту')
+		}
+		const opts = this.clientOptions(a)
+		try {
+			const { result, session } = await withClient(opts, async client => {
+				const res: any = await call(client, 'getAuthorizations', () =>
+					client.invoke(new Api.account.GetAuthorizations()),
+				)
+				return (res?.authorizations ?? []).map((x: any) => ({
+					hash: String(x.hash ?? '0'),
+					current: !!x.current,
+					device: [x.deviceModel, x.platform, x.systemVersion].filter(Boolean).join(' · ') || 'неизвестно',
+					app: [x.appName, x.appVersion].filter(Boolean).join(' ') || null,
+					ip: x.ip ?? null,
+					country: x.country ?? null,
+					createdAt: x.dateCreated ? new Date(Number(x.dateCreated) * 1000).toISOString() : null,
+					activeAt: x.dateActive ? new Date(Number(x.dateActive) * 1000).toISOString() : null,
+				}))
+			})
+			await this.persistSession(a.id, opts.session, session)
+			return result
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.applyFailure(a.id, failure)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.releaseAccount(a.id)
+		}
+	}
+
+	/** Завершить одну чужую сессию. Свою Telegram завершить не даст. */
+	async resetSession(id: string, hash: string) {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
+		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (!/^\d+$/.test(String(hash))) throw new BadRequestException('Неверный идентификатор сессии')
+		if (!(await this.claimAccount(a.id, 'check', 120))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту')
+		}
+		const opts = this.clientOptions(a)
+		try {
+			const { session } = await withClient(opts, async client =>
+				call(client, 'resetAuthorization', () =>
+					client.invoke(new Api.account.ResetAuthorization({ hash: bigInt(String(hash)) })),
+				),
+			)
+			await this.persistSession(a.id, opts.session, session)
+			await this.logEvent(a.id, 'session-reset', `завершена чужая сессия (${hash})`)
+			return { ok: true }
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			await this.applyFailure(a.id, failure)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.releaseAccount(a.id)
+		}
+	}
+
+	/**
+	 * Плановая проверка у @SpamBot.
+	 *
+	 * Раньше статус ограничения узнавался только двумя путями: человек нажал
+	 * кнопку или прилетел PEER_FLOOD. То есть поле «спам-блок», от которого
+	 * зависят и оценка, и дневная норма, месяцами стояло тем, чем его оставила
+	 * последняя ручная проверка.
+	 *
+	 * Раз в неделю и по три аккаунта за заход: /start боту — обычное действие
+	 * живого пользователя, но полсотни таких запросов подряд с одного пула —
+	 * уже нет.
+	 */
+	async routineSpamChecks(): Promise<{ checked: number }> {
+		const since = new Date(Date.now() - SPAM_CHECK_EVERY_DAYS * DAY_MS)
+		const fresh = await this.prisma.tgAccountEvent.findMany({
+			where: { kind: 'spam-check', createdAt: { gte: since } },
+			select: { accountId: true },
+			distinct: ['accountId'],
+		})
+		const due = await this.prisma.tgAccount.findMany({
+			where: {
+				status: { in: ['READY', 'WARMING'] },
+				id: { notIn: fresh.map(e => e.accountId) },
+			},
+			select: { id: true },
+			take: 3,
+		})
+		let checked = 0
+		for (const a of due) {
+			try {
+				await this.spamBot(a.id, { kind: 'status' })
+				checked++
+			} catch {
+				// Занят, связь оборвалась, прокси лёг — не беда: следующий заход
+				// возьмёт его снова, аккаунт всё равно останется просроченным.
+			}
+		}
+		return { checked }
+	}
+
+	/**
+	 * Карточка здоровья пула: одна строка на аккаунт.
+	 *
+	 * Состояние аккаунта собиралось по трём экранам — список, карточка,
+	 * журнал, — и вопрос «почему этот перестал рассылать» каждый раз решался
+	 * раскопками. Здесь ровно то, что нужно для этого вопроса, и ничего больше.
+	 */
+	async accountsHealth() {
+		const now = new Date()
+		const from7 = new Date(now.getTime() - 7 * DAY_MS)
+
+		const accounts = await this.prisma.tgAccount.findMany({
+			orderBy: { createdAt: 'desc' },
+			include: {
+				proxy: { select: { alive: true, type: true } },
+				runs: {
+					where: { status: { in: ['SCHEDULED', 'RUNNING'] } },
+					orderBy: { startedAt: 'desc' },
+					take: 1,
+					select: { kind: true, dayIndex: true, days: true, nextRunAt: true },
+				},
+			},
+		})
+
+		const [allowances, sent, replied, refusals, checks] = await Promise.all([
+			// Нормы считаем пачкой: поштучно это пять запросов на аккаунт, а
+			// экран стал основным списком пула, а не редкой вкладкой.
+			this.allowancesFor(accounts, 0, { settle: false }),
+			this.prisma.tgRecipient.groupBy({
+				by: ['accountId'],
+				where: { accountId: { not: null }, sentAt: { gte: from7 } },
+				_count: { _all: true },
+			}),
+			this.prisma.tgRecipient.groupBy({
+				by: ['accountId'],
+				where: { accountId: { not: null }, repliedAt: { gte: from7 } },
+				_count: { _all: true },
+			}),
+			// Отказы считаем по стоп-листу — тем же способом, каким их считает
+			// автоснижение темпа. Иначе на экране была бы одна доля, а решение
+			// принималось бы по другой.
+			this.prisma.tgStopList.groupBy({
+				by: ['accountId'],
+				where: { accountId: { not: null }, createdAt: { gte: from7 }, source: { in: ['blocked', 'opt-out'] } },
+				_count: { _all: true },
+			}),
+			this.prisma.tgAccountEvent.findMany({
+				where: { kind: 'spam-check' },
+				orderBy: { createdAt: 'desc' },
+				select: { accountId: true, createdAt: true, text: true },
+				take: 500,
+			}),
+		])
+
+		const sentBy = new Map(sent.map(r => [r.accountId!, r._count._all]))
+		const repliedBy = new Map(replied.map(r => [r.accountId!, r._count._all]))
+		const refusedBy = new Map(refusals.map(r => [r.accountId!, r._count._all]))
+		const lastCheck = new Map<string, { at: Date; text: string }>()
+		for (const e of checks) {
+			if (!lastCheck.has(e.accountId)) lastCheck.set(e.accountId, { at: e.createdAt, text: e.text })
+		}
+
+		const rows = []
+		for (const a of accounts) {
+			const allow = allowances.get(a.id)!
+			const probe: any = a.probe ?? {}
+			const run = a.runs[0] ?? null
+			const sent7 = sentBy.get(a.id) ?? 0
+			const refused7 = refusedBy.get(a.id) ?? 0
+			const check = lastCheck.get(a.id) ?? null
+
+			// Состояние — ОДНА причина, самая тяжёлая. Список из пяти пометок
+			// рядом с аккаунтом читается хуже, чем одна строка «что с ним».
+			const state =
+				a.status === 'BANNED' ? 'не в строю'
+					: a.status === 'ERROR' ? 'сессия не поднялась'
+						: a.status === 'PAUSED' ? 'ручная пауза'
+							: probe.spamBlock === 'permanent' ? 'вечный спам-блок'
+								: probe.spamBlock === 'temporary' ? 'спам-блок'
+									: allow.throttle?.factor === 0 ? 'стоп после PEER_FLOOD'
+										: (allow.throttle?.factor ?? 1) < 1 ? 'темп снижен'
+											: !a.proxy?.alive ? 'прокси не отвечает'
+												: 'ОК'
+
+			rows.push({
+				id: a.id,
+				label: a.label ?? a.phone ?? a.id,
+				avatar: a.avatar,
+				mode: a.mode,
+				status: a.status,
+				state,
+				// Чем занят прямо сейчас: срочный прогрев, фон или ничем.
+				run: run ? { kind: run.kind, dayIndex: run.dayIndex, days: run.days, nextRunAt: run.nextRunAt } : null,
+				sent7,
+				replied7: repliedBy.get(a.id) ?? 0,
+				refused7,
+				// Доля отказов за неделю. Считается от отправленных: на нуле
+				// отправленных доли нет вовсе, а не ноль процентов.
+				refusalRate: sent7 ? Math.round((refused7 / sent7) * 1000) / 10 : null,
+				dailyCap: allow.dailyMessages,
+				readiness: allow.readiness,
+				throttle: allow.throttle?.factor === 1 ? null : allow.throttle,
+				why: allow.notes[0] ?? null,
+				twoFactor: probe.twoFactor ?? null,
+				activeSessions: probe.activeSessions ?? null,
+				spamBlock: probe.spamBlock ?? 'unknown',
+				spamCheckAt: check?.at ?? null,
+				spamCheckText: check ? check.text.slice(0, 300) : null,
+				// Когда бот сам спросит статус: либо плановая неделя, либо
+				// назначенное обжалование после PEER_FLOOD — что раньше.
+				spamCheckNextAt: a.spamRetryAt ?? (check ? new Date(check.at.getTime() + SPAM_CHECK_EVERY_DAYS * DAY_MS) : null),
+				peerFloods: a.peerFloods,
+				floodWaits: a.floodWaits,
+				lastError: a.lastError,
+			})
+		}
+		return rows
+	}
+
+	/**
 	 * Лента прогрева: что сейчас, что уже было и что запланировано.
 	 *
 	 * Собирается из трёх источников — плана на сегодня, журнала действий и
@@ -1432,16 +1794,18 @@ export class TgWarmupService {
 
 		for (const run of runs) {
 			const acc = run.account
+			const upkeep = run.kind === 'UPKEEP'
 			// Какой день прогрева придётся на выбранную дату. dayIndex ноль —
 			// прогон заведён, но первый день ещё не начинался.
 			const dayIndex = Math.max(1, run.dayIndex || 1) + shift
-			if (dayIndex > run.days) continue
-			lastDay = Math.max(lastDay, run.days - Math.max(1, run.dayIndex || 1))
+			// У фона срока нет, он идёт, пока аккаунт в пуле.
+			if (!upkeep && dayIndex > run.days) continue
+			if (!upkeep) lastDay = Math.max(lastDay, run.days - Math.max(1, run.dayIndex || 1))
 
 			const ageDays = acc.registeredAt
 				? Math.floor((Date.now() - acc.registeredAt.getTime()) / DAY_MS)
 				: 30
-			const planned: Session[] =
+			let planned: Session[] =
 				shift === 0 && run.planDate === dateKey(target) && Array.isArray(run.plan)
 					? (run.plan as unknown as Session[])
 					: planDay({
@@ -1450,8 +1814,12 @@ export class TgWarmupService {
 							runIndex: run.days,
 							ageDays,
 							windows: [{ fromHour: run.windowFrom, toHour: run.windowTo }],
-							pace: (run.pace as Pace) ?? 'normal',
+							pace: upkeep ? 'calm' : ((run.pace as Pace) ?? 'normal'),
+							rampDayIndex: upkeep ? 7 : undefined,
 						}).sessions
+			// На будущие дни пропуск фона считаем той же функцией, что и воркер:
+			// календарь обязан показывать то, что действительно произойдёт.
+			if (upkeep && shift > 0 && upkeepIdle(acc.id, dateKey(target), this.isGreen(acc))) planned = []
 
 			const nowMin = mskMinuteOfDay(now)
 			const doneToday = shift === 0 ? run.doneToday : 0
@@ -1471,7 +1839,7 @@ export class TgWarmupService {
 				})
 			})
 
-			const allow = await this.allowanceFor(acc, run.dayIndex || 0)
+			const allow = await this.allowanceFor(acc, upkeep ? 0 : run.dayIndex || 0)
 			accounts.push({
 				id: acc.id,
 				label: acc.label,
@@ -1481,6 +1849,7 @@ export class TgWarmupService {
 				status: acc.status,
 				readiness: allow.readiness,
 				run: {
+					kind: run.kind,
 					dayIndex: Math.max(1, run.dayIndex || 1),
 					days: run.days,
 					pace: run.pace,
@@ -1862,13 +2231,20 @@ export class TgWarmupService {
 				continue
 			}
 			const active = await this.prisma.tgWarmupRun.findFirst({
-				where: { accountId: a.id, status: { in: ['SCHEDULED', 'RUNNING'] } },
+				where: { accountId: a.id, kind: 'WARMUP', status: { in: ['SCHEDULED', 'RUNNING'] } },
 				select: { id: true },
 			})
 			if (active) {
 				skipped.push({ id: a.id, reason: 'прогрев уже идёт' })
 				continue
 			}
+			// Фон уступает место прогреву. Два прогона на один аккаунт — это и
+			// двойная норма действий за сутки, и две попытки захватить одну
+			// сессию: Telegram видит два одновременных подключения.
+			await this.prisma.tgWarmupRun.updateMany({
+				where: { accountId: a.id, kind: 'UPKEEP', status: { in: ['SCHEDULED', 'RUNNING'] } },
+				data: { status: 'STOPPED', finishedAt: new Date() },
+			})
 			await this.prisma.tgWarmupRun.create({
 				data: {
 					accountId: a.id,
@@ -1885,9 +2261,71 @@ export class TgWarmupService {
 		return { started: started.length, skipped, pace: speed }
 	}
 
+	/**
+	 * Аккаунт «в зелёной зоне»: Telegram к нему не придирался и он прогрет.
+	 * Считается по сохранённым полям, без единого запроса, — решение о пропуске
+	 * фонового дня не стоит похода в базу.
+	 */
+	private isGreen(a: any): boolean {
+		const probe: any = a.probe ?? {}
+		return (
+			(a.warmness ?? 0) >= 70 &&
+			(a.floodWaits ?? 0) === 0 &&
+			(a.peerFloods ?? 0) === 0 &&
+			(probe.spamBlock ?? 'unknown') === 'clean'
+		)
+	}
+
+	/**
+	 * Завести фон там, где его ещё нет.
+	 *
+	 * Берутся только готовые аккаунты без активного прогона: у тех, кто сейчас
+	 * греется, фон уже есть — это сам прогрев. Аккаунт на ручной паузе не
+	 * трогаем: пауза для того и нужна, чтобы к нему никто не ходил.
+	 *
+	 * Прогрев, доведённый до конца, попадает сюда сам: он ставит аккаунту
+	 * READY и снимает прогон, а дальше фон подхватывается ближайшим тиком.
+	 * Отдельной ветки в finishRun для этого не нужно — одно место вместо двух.
+	 */
+	async ensureUpkeep(): Promise<number> {
+		const accounts = await this.prisma.tgAccount.findMany({
+			where: {
+				status: 'READY',
+				runs: { none: { status: { in: ['SCHEDULED', 'RUNNING'] } } },
+			},
+			select: {
+				id: true,
+				// Окно берём то, в котором аккаунт грелся: человек выставил его
+				// под свой часовой пояс и легенду, и менять это молча нельзя.
+				runs: { orderBy: { startedAt: 'desc' }, take: 1, select: { windowFrom: true, windowTo: true } },
+			},
+		})
+		for (const a of accounts) {
+			const last = a.runs[0]
+			const w = { fromHour: last?.windowFrom ?? 9, toHour: last?.windowTo ?? 23 }
+			await this.prisma.tgWarmupRun.create({
+				data: {
+					accountId: a.id,
+					kind: 'UPKEEP',
+					days: 0, // у фона нет срока
+					windowFrom: w.fromHour, windowTo: w.toHour,
+					pace: 'calm',
+					status: 'SCHEDULED',
+					nextRunAt: this.nextStart(a.id, new Date(), w),
+				},
+			})
+		}
+		return accounts.length
+	}
+
+	/**
+	 * Остановить прогрев. Фон при этом остаётся: «стоп» здесь означает
+	 * «хватит греть», а не «замолчи совсем». Замолчать совсем — это пауза
+	 * аккаунта, она снимает и фон тоже и не даёт ему завестись заново.
+	 */
 	async stopWarmup(ids: string[]) {
 		await this.prisma.tgWarmupRun.updateMany({
-			where: { accountId: { in: ids }, status: { in: ['SCHEDULED', 'RUNNING'] } },
+			where: { accountId: { in: ids }, kind: 'WARMUP', status: { in: ['SCHEDULED', 'RUNNING'] } },
 			data: { status: 'STOPPED', finishedAt: new Date() },
 		})
 		await this.prisma.tgAccount.updateMany({
@@ -1989,9 +2427,19 @@ export class TgWarmupService {
 		if (!run || run.status === 'STOPPED' || run.status === 'DONE') return
 
 		const account = run.account
+		/*
+		 * Фон (UPKEEP) — бессрочный прогон после прогрева.
+		 *
+		 * Он и заводится ради аккаунтов в рассылке: без него аккаунт между
+		 * отправками не делает вообще ничего и для Telegram выглядит заведённым
+		 * ради исходящего потока. Поэтому отвод «только под рассылку» фон не
+		 * отменяет, в отличие от прогрева: объём у фона вчетверо меньше и
+		 * сообщений в нём нет.
+		 */
+		const upkeep = run.kind === 'UPKEEP'
 		// Аккаунт, отведённый только под рассылку, не греем: он и так работает,
 		// а два занятия сразу — двойная нагрузка на одну сессию.
-		if (account.mode === 'SEND') {
+		if (account.mode === 'SEND' && !upkeep) {
 			await this.prisma.tgWarmupRun.update({
 				where: { id: run.id },
 				data: { nextRunAt: new Date(Date.now() + 3600_000), lastError: 'аккаунт отведён под рассылку' },
@@ -2017,7 +2465,8 @@ export class TgWarmupService {
 
 		if (run.planDate !== today) {
 			dayIndex = run.dayIndex + 1
-			if (dayIndex > run.days) {
+			// Фон не заканчивается: пока аккаунт в пуле, он каждый день заходит.
+			if (!upkeep && dayIndex > run.days) {
 				await this.finishRun(run.id, account.id, 'DONE')
 				return
 			}
@@ -2030,16 +2479,24 @@ export class TgWarmupService {
 				runIndex: run.days,
 				ageDays,
 				windows: [window],
-				pace: (run.pace as Pace) ?? 'normal',
+				// Фон идёт самым бережным темпом и без разгона: аккаунт уже
+				// прогрет, это поддержание присутствия, а не подъём нормы.
+				pace: upkeep ? 'calm' : ((run.pace as Pace) ?? 'normal'),
+				rampDayIndex: upkeep ? 7 : undefined,
 			})
 			plan = built.sessions
+			// Зелёному аккаунту фон иногда пропускаем: сплошная цепочка дней
+			// без единого пропуска — сама по себе узор.
+			if (upkeep && upkeepIdle(account.id, today, this.isGreen(account))) plan = []
 			doneToday = 0
 			await this.prisma.tgWarmupRun.update({
 				where: { id: run.id },
 				data: { dayIndex, planDate: today, plan: plan as any, doneToday: 0 },
 			})
-			// Прошлый день закрыт — засчитываем его аккаунту.
-			if (run.planDate) {
+			// Прошлый день закрыт — засчитываем его аккаунту. Дни фона в счётчик
+			// прогрева не идут: он про то, сколько аккаунт грели, а не про то,
+			// сколько он вообще прожил в пуле.
+			if (run.planDate && !upkeep) {
 				await this.prisma.tgAccount.update({
 					where: { id: account.id },
 					data: { warmupDaysDone: { increment: 1 } },
@@ -2071,7 +2528,14 @@ export class TgWarmupService {
 		const disabled = await this.getDisabledActions()
 		const peer = await this.pickPeer(account.id)
 		const usedToday = await this.usedToday(account.id)
-		const allow = await this.allowanceFor(account, dayIndex)
+		// У фона нет дня прогрева: ноль означает «прогрев не идёт», то есть без
+		// разгона и без режима первых читающих суток. Иначе только что заведённый
+		// фон на два дня закрыл бы аккаунту даже реакции.
+		// settle: воркер реально работает аккаунтом, ему и утверждать норму дня.
+		// Читающие экраны норму считают, но не записывают — иначе судьбу дня
+		// решал бы тот, кто первым открыл админку. Записывать или нет, решает
+		// сам расчёт: он утверждает только норму «вообще», без дня разгона.
+		const allow = await this.allowanceFor(account, upkeep ? 0 : dayIndex, { settle: true })
 
 		const opts = this.clientOptions(account)
 		const rnd = makeRng(accountSeed(account.id) + dayIndex * 7919 + index)
@@ -2098,6 +2562,7 @@ export class TgWarmupService {
 						allowOutgoing: allow.allowOutgoing,
 						canJoin: allow.maxJoinsPerDay > usedToday.joins,
 						canMessage: allow.maxMessagesPerDay > usedToday.messages,
+						canReact: allow.maxReactionsPerDay > usedToday.reactions,
 						peer,
 						// Ключ пары не зависит от того, кто пишет первым: у обоих
 						// аккаунтов должен быть один и тот же разговор.
@@ -2112,7 +2577,8 @@ export class TgWarmupService {
 						},
 					})
 					if (outcome.kind === 'join') usedToday.joins++
-					if (outcome.kind === 'reaction' || outcome.kind === 'peer-chat') usedToday.messages++
+					else if (outcome.kind === 'peer-chat') usedToday.messages++
+					else if (REACTION_KINDS.has(outcome.kind)) usedToday.reactions++
 					done++
 					if (i < session.actions - 1) await sleep(gapMs * (0.6 + rnd() * 0.8))
 				}
@@ -2214,27 +2680,204 @@ export class TgWarmupService {
 	 * Если анкеты ещё нет, подписки считаем по собственному журналу вступлений
 	 * — иначе аккаунт, который сам себе набрал каналов, выглядел бы пустым.
 	 */
-	async allowanceFor(account: any, dayIndex: number): Promise<Allowance> {
+	async allowanceFor(account: any, dayIndex: number, opts?: { settle?: boolean }): Promise<Allowance> {
+		const now = new Date()
+		const counters = await this.allowanceCounters([account.id], now)
+		const { allowance, settleCap } = this.allowanceFrom(account, dayIndex, counters.get(account.id)!, now)
+		if (settleCap !== null && opts?.settle) {
+			await this.settleCaps([account.id], settleCap, now)
+		}
+		return allowance
+	}
+
+	/**
+	 * Записать утверждённую на сегодня норму.
+	 *
+	 * updateMany с условием, а не update по id: норму утверждает ПЕРВЫЙ
+	 * посчитавший. Без условия два одновременных вызова — тик рассылки и заход
+	 * прогрева — перетирали бы друг друга, и суточным потолком становилось
+	 * случайное из двух чисел.
+	 *
+	 * Условие расписано через OR, а не коротким `not`. У поля, которое умеет
+	 * быть пустым, `not` разворачивается в голое `<>`, а `NULL <> '2026-09-20'`
+	 * в SQL — не истина, а неизвестность: строка под условие не подходит. То
+	 * есть самая первая запись нормы, когда поле ещё пустое, не проходила бы
+	 * никогда, и ступень роста не работала бы вовсе.
+	 */
+	private async settleCaps(ids: string[], cap: number, now: Date): Promise<void> {
+		const todayKey = dateKey(now)
+		await this.prisma.tgAccount
+			.updateMany({
+				where: {
+					id: { in: ids },
+					OR: [{ dailyCapDate: null }, { dailyCapDate: { not: todayKey } }],
+				},
+				data: { dailyCap: cap, dailyCapDate: todayKey },
+			})
+			.catch(() => undefined)
+	}
+
+	/**
+	 * То же разрешение, но сразу на пачку аккаунтов.
+	 *
+	 * Поштучный расчёт стоит пяти запросов на аккаунт: на полусотне это триста
+	 * последовательных обращений к базе на одну загрузку списка. Здесь счётчики
+	 * снимаются агрегатами по всему набору, а сам расчёт идёт в памяти теми же
+	 * чистыми функциями — результат по аккаунту обязан совпадать с одиночным.
+	 *
+	 * Утверждение нормы тоже общее: по одному updateMany на каждое значение
+	 * нормы. Значений в пуле единицы, аккаунтов десятки.
+	 */
+	private async allowancesFor(
+		accounts: any[],
+		dayIndex: number,
+		opts?: { settle?: boolean },
+	): Promise<Map<string, Allowance>> {
+		const out = new Map<string, Allowance>()
+		if (!accounts.length) return out
+
+		const now = new Date()
+		const counters = await this.allowanceCounters(accounts.map(a => a.id), now)
+		const settle = new Map<number, string[]>()
+		for (const a of accounts) {
+			const { allowance, settleCap } = this.allowanceFrom(a, dayIndex, counters.get(a.id)!, now)
+			out.set(a.id, allowance)
+			if (settleCap !== null) settle.set(settleCap, [...(settle.get(settleCap) ?? []), a.id])
+		}
+
+		// Читающий экран норму не утверждает. Иначе судьбу дня решал бы тот, кто
+		// первым открыл админку: заглянул в полночь — у всего пула зафиксирован
+		// один потолок, заглянул утром — другой. Утверждают те, кто реально
+		// работает аккаунтом: тик рассылки и воркер прогрева.
+		if (opts?.settle === false) return out
+
+		await Promise.all([...settle].map(([cap, ids]) => this.settleCaps(ids, cap, now)))
+		return out
+	}
+
+	/**
+	 * Счётчики, из которых считается разрешение, — на любое число аккаунтов.
+	 *
+	 * Окна времени общие для всех: сутки по Москве — дневной расход, двое суток
+	 * — автоснижение. Двое, а не одни: срок действия задаёт само окно — отказ
+	 * стареет, выпадает из него, и норма возвращается без таймеров и без
+	 * состояния в базе (см. throttleFor).
+	 *
+	 * Время передаётся снаружи: на пачке все аккаунты должны мериться одной и
+	 * той же полуночью, иначе соседние строки списка считались бы по разным
+	 * суткам.
+	 */
+	private async allowanceCounters(ids: string[], now: Date): Promise<Map<string, AllowanceCounters>> {
+		const out = new Map<string, AllowanceCounters>()
+		for (const id of ids) {
+			out.set(id, { joined: 0, spentOnOutreach: 0, sent48h: 0, blockedAt: [], peerFloodAt: null })
+		}
+		if (!ids.length) return out
+
+		const midnight = mskAt(now, 0, 0)
+		const from48 = new Date(now.getTime() - 48 * 3600_000)
+		const [joins, firstTouches, secondTouches, sent48h, refusals, peerFloods] = await Promise.all([
+			this.prisma.tgWarmupAction.groupBy({
+				by: ['accountId'],
+				where: { accountId: { in: ids }, kind: 'join', ok: true },
+				_count: { _all: true },
+			}),
+			// Первое и второе касание считаются раздельно, а складываются уже
+			// здесь: у рассылки и прогрева бюджет исходящих общий, иначе каждый
+			// отсчитывал бы свою норму и в сумме выходило бы вдвое больше, чем
+			// считает безопасным любой из них.
+			this.prisma.tgRecipient.groupBy({
+				by: ['accountId'],
+				where: { accountId: { in: ids }, sentAt: { gte: midnight } },
+				_count: { _all: true },
+			}),
+			this.prisma.tgRecipient.groupBy({
+				by: ['accountId'],
+				where: { accountId: { in: ids }, secondSentAt: { gte: midnight } },
+				_count: { _all: true },
+			}),
+			this.prisma.tgRecipient.groupBy({
+				by: ['accountId'],
+				where: { accountId: { in: ids }, sentAt: { gte: from48 } },
+				_count: { _all: true },
+			}),
+			// Отказы считаем по стоп-листу: туда попадают и те, кто закрылся, и
+			// те, кто прямо попросил не писать. Строка адресата к этому моменту
+			// может быть уже удалена вместе с кампанией, а отказ — остаться.
+			this.prisma.tgStopList.findMany({
+				where: { accountId: { in: ids }, createdAt: { gte: from48 }, source: { in: ['blocked', 'opt-out'] } },
+				select: { accountId: true, createdAt: true },
+			}),
+			// Нужен только последний PEER_FLOOD — _max по группе отвечает на это
+			// одним запросом вместо findFirst на каждый аккаунт.
+			this.prisma.tgAccountEvent.groupBy({
+				by: ['accountId'],
+				where: { accountId: { in: ids }, kind: 'peer-flood' },
+				_max: { createdAt: true },
+			}),
+		])
+
+		for (const r of joins) out.get(r.accountId)!.joined = r._count._all
+		for (const r of firstTouches) out.get(r.accountId!)!.spentOnOutreach += r._count._all
+		for (const r of secondTouches) out.get(r.accountId!)!.spentOnOutreach += r._count._all
+		for (const r of sent48h) out.get(r.accountId!)!.sent48h = r._count._all
+		for (const r of refusals) out.get(r.accountId!)!.blockedAt.push(r.createdAt)
+		for (const r of peerFloods) out.get(r.accountId)!.peerFloodAt = r._max.createdAt
+		return out
+	}
+
+	/**
+	 * Собственно расчёт разрешения — ни одного обращения к базе.
+	 *
+	 * Вынесен отдельно, чтобы одиночный вызов и список считали одно и то же:
+	 * расхождение между «нормой в карточке» и «нормой в списке» — ровно тот
+	 * разнобой, из-за которого экран перестают читать.
+	 *
+	 * Норму, которую надо утвердить в базе, метод не пишет, а возвращает:
+	 * одиночный вызов пишет её UPDATE, список — одним updateMany на группу.
+	 */
+	private allowanceFrom(
+		account: any,
+		dayIndex: number,
+		counters: AllowanceCounters,
+		now: Date,
+	): { allowance: Allowance; settleCap: number | null } {
 		const probe: any = account.probe ?? {}
-		const joined = await this.prisma.tgWarmupAction.count({
-			where: { accountId: account.id, kind: 'join', ok: true },
-		})
 		const filled = account.probe
 			? ((probe.hasFirstName ? 1 : 0) + (probe.hasLastName ? 1 : 0) + (probe.hasUsername ? 1 : 0) +
 				(probe.hasBio ? 1 : 0) + ((probe.photoCount ?? 0) > 0 ? 1 : 0)) / 5
 			// Анкеты нет — считаем только по тому, что пришло из json поставщика.
 			: ((account.firstName ? 1 : 0) + (account.lastName ? 1 : 0) + (account.username ? 1 : 0)) / 5
 
-		// Сколько исходящих аккаунт уже потратил СЕГОДНЯ на рассылку. Если он
-		// делает и то и другое, бюджет у него общий: иначе прогрев отсчитывал
-		// бы свою норму, рассылка свою, и в сумме выходило бы вдвое больше, чем
-		// считает безопасным любой из них.
-		const midnight = mskAt(new Date(), 0, 0)
-		const [firstTouches, secondTouches] = await Promise.all([
-			this.prisma.tgRecipient.count({ where: { accountId: account.id, sentAt: { gte: midnight } } }),
-			this.prisma.tgRecipient.count({ where: { accountId: account.id, secondSentAt: { gte: midnight } } }),
-		])
-		const spentOnOutreach = firstTouches + secondTouches
+		const throttle = throttleFor({
+			now,
+			peerFloodAt: counters.peerFloodAt,
+			sent48h: counters.sent48h,
+			blockedAt: counters.blockedAt,
+		})
+
+		/*
+		 * Норма на сутки утверждается ОДИН раз за день и дальше не
+		 * пересматривается. Иначе ступень роста мерилась бы сама от себя:
+		 * утром три, к обеду четыре, к вечеру пять — и за сутки набежало бы
+		 * ровно то удвоение, от которого ступень и защищает.
+		 */
+		const todayKey = dateKey(now)
+		const settled = account.dailyCapDate === todayKey
+		/*
+		 * Ноль потолком НЕ считается — ни утверждённый сегодня, ни вчерашний.
+		 *
+		 * Иначе получалось так: в пять минут первого кто-то открыл экран, а у
+		 * аккаунта висел временный спам-блок — норма честно посчиталась нулём и
+		 * этим нулём утвердилась на сутки. В три часа ночи @SpamBot снял
+		 * ограничение, бот написал «снова в рассылке» — а писать аккаунт не мог
+		 * до следующей полуночи, потому что потолок дня был нулевой.
+		 *
+		 * Ступень роста существует, чтобы не пускать норму вверх скачком.
+		 * Держать её внизу — дело автоснижения и спам-блока, и они посчитаются
+		 * заново при следующем же вызове.
+		 */
+		const capCeiling = settled ? (account.dailyCap || null) : growthCeiling(account.dailyCap)
 
 		const allow = outgoingAllowance({
 			dayIndex,
@@ -2244,31 +2887,63 @@ export class TgWarmupService {
 			daysManaged: Math.max(0, Math.floor((Date.now() - account.createdAt.getTime()) / DAY_MS)),
 			actionsTotal: account.actionsTotal ?? 0,
 			dialogs: probe.dialogs ?? 0,
-			channels: Math.max(probe.channels ?? 0, joined),
+			channels: Math.max(probe.channels ?? 0, counters.joined),
 			profileFilled: filled,
 			spamBlock: probe.spamBlock ?? 'unknown',
 			floodWaits: account.floodWaits ?? 0,
 			peerFloods: account.peerFloods ?? 0,
+			throttle,
+			capCeiling,
 		})
 
-		if (!spentOnOutreach) return allow
+		/*
+		 * Норму на сегодня утверждаем только при dayIndex = 0, то есть при
+		 * расчёте «сколько этому аккаунту можно вообще», каким его спрашивают
+		 * рассылка и фон. Расчёт с днём прогрева — про разгон внутри прогрева:
+		 * на первых сутках он честно отвечает «ноль, только читаем», и
+		 * утверждать этот ноль как норму дня нельзя. Иначе всё решал бы порядок
+		 * вызовов: успел прийти прогрев — рассылка на сегодня закрыта, успела
+		 * рассылка — открыта.
+		 *
+		 * Запись одна на аккаунт в сутки: дальше dailyCapDate совпадает с
+		 * сегодняшним днём и сюда мы не заходим.
+		 *
+		 * Ноль не утверждаем вовсе: «сегодня нельзя» — это ответ спам-блока или
+		 * автоснижения, и он пересчитывается сам. Записанный нулём потолок
+		 * пережил бы снятие ограничения и продержал бы аккаунт молчащим до
+		 * следующих суток.
+		 *
+		 * Запоминаем здоровую норму (baseMessages), а не итоговую: иначе
+		 * завтрашняя ступень мерилась бы от прижатого автоснижением числа и
+		 * возврат растягивался бы на лишние сутки после того, как повод
+		 * снижать уже прошёл.
+		 */
+		const settleCap = !settled && dayIndex === 0 && allow.baseMessages > 0 ? allow.baseMessages : null
+
+		const spentOnOutreach = counters.spentOnOutreach
+		if (!spentOnOutreach) return { allowance: allow, settleCap }
 
 		const left = Math.max(0, allow.maxMessagesPerDay - spentOnOutreach)
 		return {
-			...allow,
-			maxMessagesPerDay: left,
-			// Вступления не режем: они не исходящие сообщения и в спам-лимит
-			// не идут, а историю подписок аккаунту набирать всё равно надо.
-			allowOutgoing: allow.maxJoinsPerDay > 0 || left > 0,
-			notes: [
-				...allow.notes,
-				`Из нормы исходящих ${spentOnOutreach} уже ушло на рассылку, на прогрев осталось ${left}`,
-			],
+			allowance: {
+				...allow,
+				maxMessagesPerDay: left,
+				// Вступления и реакции не режем: они не исходящие сообщения и в
+				// спам-лимит не идут, а историю подписок и присутствия аккаунту
+				// набирать всё равно надо — особенно когда норма сообщений ушла
+				// на рассылку и прогреву писать уже нечем.
+				allowOutgoing: allow.maxJoinsPerDay > 0 || left > 0 || allow.maxReactionsPerDay > 0,
+				notes: [
+					...allow.notes,
+					`Из нормы исходящих ${spentOnOutreach} уже ушло на рассылку, на прогрев осталось ${left}`,
+				],
+			},
+			settleCap,
 		}
 	}
 
-	/** Сколько вступлений и исходящих уже сделано сегодня — для дневных квот. */
-	private async usedToday(accountId: string): Promise<{ joins: number; messages: number }> {
+	/** Сколько вступлений, сообщений и реакций уже сделано сегодня — для дневных квот. */
+	private async usedToday(accountId: string): Promise<{ joins: number; messages: number; reactions: number }> {
 		const from = mskAt(new Date(), 0, 0)
 		const rows = await this.prisma.tgWarmupAction.findMany({
 			where: { accountId, createdAt: { gte: from }, ok: true },
@@ -2276,7 +2951,11 @@ export class TgWarmupService {
 		})
 		return {
 			joins: rows.filter(r => r.kind === 'join').length,
-			messages: rows.filter(r => r.kind === 'reaction' || r.kind === 'peer-chat').length,
+			// Переписка со своими — единственное исходящее СООБЩЕНИЕ в прогреве,
+			// и норма у него общая с рассылкой.
+			messages: rows.filter(r => r.kind === 'peer-chat').length,
+			// Реакции, голоса, пересылки: своя квота, автоснижением не режется.
+			reactions: rows.filter(r => REACTION_KINDS.has(r.kind)).length,
 		}
 	}
 
@@ -2293,6 +2972,7 @@ export class TgWarmupService {
 				status: { in: ['READY', 'WARMING'] },
 			},
 			select: { username: true },
+			orderBy: { id: 'asc' },
 			take: 20,
 		})
 		if (!rows.length) return null

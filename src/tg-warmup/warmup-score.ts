@@ -13,6 +13,13 @@
 /** Что удалось прочитать из аккаунта за один заход, без единого пишущего вызова. */
 export type AccountProbe = {
 	ageDays: number | null // возраст по user_id, null если не оценён
+	/**
+	 * Насколько верить возрасту: 'между' — обычная интерполяция между замерами,
+	 * 'старше' — аккаунт точно не моложе этой даты, 'позже' — экстраполяция за
+	 * последним замером, то есть оценка самая грубая. Блок «Возраст» весит 18%,
+	 * и степень доверия к нему надо показывать вместе с числом.
+	 */
+	ageKind?: 'между' | 'старше' | 'позже' | null
 	oldestSessionDays: number | null
 	hasFirstName: boolean
 	hasLastName: boolean
@@ -86,7 +93,12 @@ export const GEO_SURVIVAL: Record<string, number> = {
 	MM: 66.0, TH: 64.0, CA: 62.3, CO: 60.8, ID: 60.7, BD: 56.4,
 }
 
-const WEIGHTS = {
+/**
+ * Веса блоков в итоговом балле. Экспортируются наружу намеренно: без веса
+ * «возраст 40 из 100» не говорит, стоит ли его чинить первым. Человек должен
+ * видеть, что возраст весит 18%, а происхождение 12%.
+ */
+export const WEIGHTS = {
 	age: 18,
 	identity: 16,
 	network: 15,
@@ -196,6 +208,8 @@ export type ScoreResult = {
 	score: number
 	category: 'низкий' | 'средний' | 'хороший' | 'высокий'
 	blocks: Record<BlockKey, number>
+	/** Вес каждого блока в процентах — чтобы было видно, что чинить первым. */
+	weights: Record<BlockKey, number>
 	/** Блоки, по которым данных ещё нет: в итоговый балл они не вошли. */
 	noData: BlockKey[]
 	/** Сработавшее вето, если есть: тогда score = 1.0 независимо от баллов. */
@@ -343,6 +357,7 @@ export function scoreAccount(i: ScoreInput): ScoreResult {
 		score,
 		category: score < 4 ? 'низкий' : score < 7 ? 'средний' : score < 8.5 ? 'хороший' : 'высокий',
 		blocks,
+		weights: { ...WEIGHTS },
 		noData,
 		veto,
 		blocked,

@@ -46,6 +46,16 @@ export class TgWarmupController {
 		return this.svc.assignProxies()
 	}
 
+	/**
+	 * Заменить мёртвые каналы: перепроверить и пересадить тех, у кого прокси так
+	 * и не ответил. Отдельно от assign — тот по построению трогает только
+	 * аккаунты вовсе без прокси.
+	 */
+	@Post('proxies/replace-dead')
+	replaceDeadProxies() {
+		return this.svc.replaceDeadProxies()
+	}
+
 	@Post('proxies/:id/check')
 	checkProxy(@Param('id') id: string) {
 		return this.svc.checkProxy(id)
@@ -123,6 +133,30 @@ export class TgWarmupController {
 	@Post('accounts/:id/check')
 	check(@Param('id') id: string) {
 		return this.svc.checkAccount(id)
+	}
+
+	/**
+	 * Здоровье пула одной таблицей: что с аккаунтом, сколько он написал,
+	 * сколько отказов, какая у него норма на сегодня и почему именно такая.
+	 */
+	@Get('health')
+	health() {
+		return this.svc.accountsHealth()
+	}
+
+	/** Кто ещё заходит в этот аккаунт: активные сессии Telegram. */
+	@Get('accounts/:id/sessions')
+	sessions(@Param('id') id: string) {
+		return this.svc.listSessions(id)
+	}
+
+	/**
+	 * Завершить чужую сессию. Только по одной и только руками: «не наша
+	 * сессия» иногда оказывается телефоном владельца, а отменить сброс нельзя.
+	 */
+	@Post('accounts/:id/sessions/reset')
+	resetSession(@Param('id') id: string, @Body() body: { hash: string }) {
+		return this.svc.resetSession(id, String(body?.hash ?? ''))
 	}
 
 	/**

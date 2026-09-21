@@ -96,12 +96,19 @@ export class CampaignController {
 		return this.svc.clients(stage, limit ? Number(limit) : undefined, q)
 	}
 
+	/** waiting=1 — только те, где последнее сообщение входящее: ждут нас. */
 	@Get('conversations')
-	conversations(@Query('limit') limit?: string, @Query('q') q?: string, @Query('replied') replied?: string) {
+	conversations(
+		@Query('limit') limit?: string,
+		@Query('q') q?: string,
+		@Query('replied') replied?: string,
+		@Query('waiting') waiting?: string,
+	) {
 		return this.svc.conversations({
 			limit: limit ? Number(limit) : undefined,
 			q,
 			onlyReplied: replied === '1' || replied === 'true',
+			waiting: waiting === '1' || waiting === 'true',
 		})
 	}
 
@@ -154,6 +161,26 @@ export class CampaignController {
 		return this.svc.removeRecipient(id)
 	}
 
+	// ── стоп-лист ────────────────────────────────────────────────────────────
+
+	/** Кому пул больше не пишет: отказы, блокировки и занесённые вручную. */
+	@Get('stop-list')
+	stopList(@Query('q') q?: string, @Query('limit') limit?: string) {
+		return this.svc.stopList({ q, limit: limit ? Number(limit) : undefined })
+	}
+
+	/** Занести вручную: по одному контакту в строке, юзернейм или телефон. */
+	@Post('stop-list')
+	addStopList(@Body() body: { text: string; reason?: string }) {
+		return this.svc.addStopListText(body?.text ?? '', body?.reason)
+	}
+
+	/** Убрать одну строку: ошибку автомата исправляет человек. */
+	@Delete('stop-list/:id')
+	removeStopList(@Param('id') id: string) {
+		return this.svc.removeFromStopList(id)
+	}
+
 	/** Что уйдёт этому человеку — оба сообщения с подстановками. */
 	@Get('recipients/:id/preview')
 	preview(@Param('id') id: string) {
@@ -178,6 +205,17 @@ export class CampaignController {
 	}
 
 	/** Закрыть вопрос по отправке с неизвестным исходом. */
+	/**
+	 * Проверить доставку автоматически: читаем переписку и ищем наше исходящее.
+	 *
+	 * Ручка была только в менеджерском контроллере, а кнопка в админке звала её
+	 * по своему адресу — и всегда получала 404.
+	 */
+	@Post('recipients/:id/check-delivery')
+	checkDelivery(@Param('id') id: string) {
+		return this.svc.checkDelivery(id)
+	}
+
 	@Post('recipients/:id/delivery')
 	resolveDelivery(@Param('id') id: string, @Body() body: { delivered: boolean }) {
 		return this.svc.resolveDelivery(id, body?.delivered !== false)

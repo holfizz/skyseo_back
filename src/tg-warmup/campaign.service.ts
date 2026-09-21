@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { Api } from 'teleproto'
 import bigInt from 'big-integer'
+import type { TgCampaignStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { normalizeName } from '../common/normalize-name'
 import { TelegramService } from '../telegram/telegram.service'
@@ -16,6 +17,7 @@ import { distributeDaily } from './warmup-plan'
 import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
 import { mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
+import { keysOf, optOutReason, type StopKey } from './stop-list'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -85,6 +87,57 @@ export type PollResult = {
 	failed: number
 	/** Сколько переписок не успели проверить: время вышло, зайдите ещё раз. */
 	skipped: number
+}
+
+/**
+ * Почему аккаунт не отправлял в этот день.
+ *
+ * Наружу уходит вид причины, а не готовая строка: к виду можно привязать
+ * кнопку («открыть аккаунт», «перепроверить прокси») и сложить одинаковые
+ * причины в одну, к строке — нельзя. Текст собирается там, где рисуют.
+ */
+export type DayReasonKind = 'dead' | 'paused' | 'warmOnly' | 'noProxy' | 'proxyDown' | 'noQuota'
+
+export type DayReason = {
+	accountId: string
+	label: string
+	kind: DayReasonKind
+	campaignId: string
+	/** Чем уточняется вид, если внутри него есть разница: у dead — статус. */
+	detail?: string
+}
+
+export type DaySummary = {
+	date: string
+	planned: number
+	sent: number
+	campaigns: Array<{
+		id: string
+		name: string
+		status: TgCampaignStatus
+		planned: number
+		sent: number
+		/** Сколько аккаунтов в рассылке и сколько из них в этот день могли
+		 *  отправлять. null — недобора не было и причины не разбирали. */
+		accounts: number
+		working: number | null
+		reasons: DayReason[]
+	}>
+	reasons: DayReason[]
+}
+
+/**
+ * Текст причины — только для бота: в сообщение в чат структуру не положишь.
+ * На экране те же виды подписывает фронт, поэтому второй копии текста здесь
+ * быть не должно — этот словарь живёт ради одного исходящего письма.
+ */
+const DAY_REASON_TEXT: Record<DayReasonKind, string> = {
+	dead: 'не в строю',
+	paused: 'отключён',
+	warmOnly: 'отведён только под прогрев',
+	noProxy: 'без прокси',
+	proxyDown: 'по последней проверке прокси не отвечал',
+	noQuota: 'прогрев не выдал дневной нормы, и разрешение «без прогрева» не включено',
 }
 
 /**
@@ -306,7 +359,7 @@ export class CampaignService {
 			id: c.id, name: c.name, status: c.status,
 			perAccountPerDay: c.perAccountPerDay,
 			windowFrom: c.windowFrom, windowTo: c.windowTo,
-			createdAt: c.createdAt, startedAt: c.startedAt,
+			createdAt: c.createdAt, startedAt: c.startedAt, pausedAt: c.pausedAt,
 			recipients: c._count.recipients,
 			accounts: c._count.accounts,
 			funnel: stats.get(c.id) ?? this.emptyFunnel(),
@@ -433,6 +486,16 @@ export class CampaignService {
 				status,
 				startedAt: status === 'RUNNING' && !c.startedAt ? new Date() : c.startedAt,
 				finishedAt: status === 'DONE' ? new Date() : null,
+				// Повторное нажатие «Пауза» дату не сдвигает: «стоит с 18
+				// сентября» должно считаться от первой остановки, а не от
+				// последнего нажатия. Закрытие рассылки дату не трогает — она
+				// остаётся частью её истории.
+				// Повторное нажатие на УЖЕ стоящей рассылке дату не сдвигает, но
+				// если её нет вовсе — ставим. Иначе кампании, которые стояли на
+				// паузе в момент появления этого поля, остались бы без даты
+				// навсегда: снять и снова поставить паузу ради неё никто не будет.
+				pausedAt: status === 'PAUSED' ? (c.status === 'PAUSED' ? (c.pausedAt ?? new Date()) : new Date())
+					: status === 'RUNNING' ? null : c.pausedAt,
 			},
 		})
 
@@ -608,7 +671,7 @@ export class CampaignService {
 	 * заметное, что можно сделать. Человек в лучшем случае перестанет отвечать.
 	 */
 	private async insertRecipients(campaignId: string, rows: any[], take?: number) {
-		if (!rows.length) return { added: 0, duplicates: 0, alreadyWritten: 0 }
+		if (!rows.length) return { added: 0, duplicates: 0, alreadyWritten: 0, refused: 0 }
 
 		const inThis = await this.prisma.tgRecipient.findMany({
 			where: { campaignId },
@@ -645,8 +708,14 @@ export class CampaignService {
 			}
 		}
 
+		// Стоп-лист проверяем уже здесь, а не только перед отправкой: иначе
+		// человек добавляет тысячу контактов, видит «добавлено 1000» и узнаёт
+		// об отсеве только по факту — из журнала отправки.
+		const refusedKeys = await this.stopped(rows)
+
 		let duplicates = 0
 		let alreadyWritten = 0
+		let refused = 0
 		const fresh = rows.filter(r => {
 			const key = r.username ?? r.phone
 			if (seen.has(key)) {
@@ -655,6 +724,10 @@ export class CampaignService {
 			}
 			if (written.has(key)) {
 				alreadyWritten++
+				return false
+			}
+			if (keysOf(r).some(k => refusedKeys.has(`${k.kind}:${k.value}`))) {
+				refused++
 				return false
 			}
 			seen.add(key)
@@ -688,7 +761,7 @@ export class CampaignService {
 			// висел бы в календаре «без времени» до следующего запуска.
 			await this.buildSchedule(campaignId)
 		}
-		return { added: chosen.length, duplicates, alreadyWritten, available: fresh.length }
+		return { added: chosen.length, duplicates, alreadyWritten, refused, available: fresh.length }
 	}
 
 	/**
@@ -894,7 +967,7 @@ export class CampaignService {
 	 * на аккаунт, короткое окно. Писать «не влезло» без причины бесполезно —
 	 * человек не поймёт, что чинить.
 	 */
-	private async bottleneck(campaign: any, queued: number, today: number): Promise<string | null> {
+	async bottleneck(campaign: any, queued: number, today: number): Promise<string | null> {
 		if (today >= queued) return null
 
 		const links = await this.prisma.tgCampaignAccount.findMany({
@@ -1517,7 +1590,11 @@ export class CampaignService {
 		for (const l of links) {
 			const acc = l.account
 			const dead = acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED'
-			const allow = dead ? null : await this.warmup.allowanceFor(acc, 0)
+			// settle: раскладка дневной цели — это и есть момент «сегодня с этого
+			// аккаунта пишем», и норму дня утверждает он. Остальные вызовы
+			// (карточка, календарь, готовность, узкое место) только читают:
+			// просмотр страницы не должен решать, сколько уйдёт сообщений.
+			const allow = dead ? null : await this.warmup.allowanceFor(acc, 0, { settle: true })
 
 			// Предохранитель прогрева: сколько исходящих в сутки он считает
 			// безопасным для ЭТОГО аккаунта. Раньше рассылка его не спрашивала
@@ -1654,6 +1731,27 @@ export class CampaignService {
 			}
 		}
 
+		/*
+		 * Стоп-лист. Проверяем перед каждой отправкой, а не только при
+		 * добавлении: отказ мог прийти уже после того, как адресат встал в
+		 * очередь — с этого аккаунта или с любого другого в пуле.
+		 *
+		 * Ради этого он общий. Человек, который закрылся от первого аккаунта и
+		 * получил то же самое со второго и третьего, — это три жалобы вместо
+		 * одной, а ограничивают аккаунт именно жалобы.
+		 */
+		const stop = await this.stopReason(recipient)
+		if (stop) {
+			await this.prisma.tgRecipient.update({
+				where: { id: recipient.id },
+				data: {
+					status: 'STOPPED', sentAt: null, accountId: null,
+					error: `стоп-лист: ${stop.reason ?? 'писать нельзя'}`,
+				},
+			})
+			return 'skipped'
+		}
+
 		// Данных не хватает — не отправляем вовсе. Обезличенное «Здравствуйте»
 		// сжигает адресата навсегда, а второго шанса написать не будет.
 		const missing = missingPlaceholders(campaign.firstMessage, recipient)
@@ -1746,6 +1844,23 @@ export class CampaignService {
 						sentAt: null, error: REASON_RU[code] ?? code,
 					},
 				})
+				/*
+				 * Заблокировал — это отказ, и он касается всего пула.
+				 *
+				 * Закрытая приватность сюда НЕ идёт: это настройка человека «не
+				 * принимаю от незнакомых», а не ответ нам. Заносить таких в
+				 * стоп-лист значило бы навсегда хоронить лид за то, чего он не
+				 * делал, — и заодно накручивать аккаунту долю отказов, по
+				 * которой считается автоснижение темпа.
+				 */
+				if (code === 'USER_IS_BLOCKED') {
+					await this.addToStopList(recipient, {
+						source: 'blocked',
+						reason: 'заблокировал наш аккаунт',
+						accountId: account.id,
+						campaignName: campaign.name,
+					})
+				}
 				// Сеть тронули, но виноват адресат, а не аккаунт: паузу не ставим.
 				return 'skipped'
 			}
@@ -1849,6 +1964,112 @@ export class CampaignService {
 			return { entity: user, userId: String(user.id) }
 		}
 		throw new TgError({ kind: 'other', message: 'PEER_ID_INVALID' })
+	}
+
+	// ── стоп-лист ────────────────────────────────────────────────────────────
+
+	/**
+	 * Кто из этих адресатов в стоп-листе.
+	 *
+	 * Возвращает набор ключей «вид:значение» — по нему отсев идёт без второго
+	 * похода в базу на каждого. Один человек может лежать в списке и по
+	 * юзернейму, и по телефону: это две строки и два ключа.
+	 */
+	private async stopped(rows: Array<{ username?: string | null; phone?: string | null; tgUserId?: string | null }>) {
+		const keys = rows.flatMap(r => keysOf(r))
+		if (!keys.length) return new Set<string>()
+		/*
+		 * Ключи группируем по виду и спрашиваем двумя списками, а не ветками OR
+		 * по одной на контакт. Список адресатов вставляют пачками по несколько
+		 * тысяч: столько веток OR в одном запросе кладут планировщик Postgres, а
+		 * тысяч на двадцать упираются в предел числа параметров и падают.
+		 */
+		const byKind = new Map<string, string[]>()
+		for (const k of keys) byKind.set(k.kind, [...(byKind.get(k.kind) ?? []), k.value])
+		const hits = await this.prisma.tgStopList.findMany({
+			where: { OR: [...byKind].map(([kind, values]) => ({ kind, value: { in: values } })) },
+			select: { kind: true, value: true },
+		})
+		return new Set(hits.map(h => `${h.kind}:${h.value}`))
+	}
+
+	/** Есть ли этот адресат в стоп-листе и почему он туда попал. */
+	private async stopReason(r: { username?: string | null; phone?: string | null; tgUserId?: string | null }) {
+		const keys = keysOf(r)
+		if (!keys.length) return null
+		return this.prisma.tgStopList.findFirst({
+			where: { OR: keys.map(k => ({ kind: k.kind, value: k.value })) },
+			select: { reason: true, source: true, createdAt: true },
+		})
+	}
+
+	/**
+	 * Занести адресата в стоп-лист.
+	 *
+	 * Заносятся ВСЕ известные ключи человека сразу: в следующей кампании он
+	 * придёт телефоном, а закрылся от нас под юзернеймом. Повторное занесение
+	 * не плодит строк — обновляется причина, чтобы было видно последнюю.
+	 */
+	async addToStopList(
+		r: { username?: string | null; phone?: string | null; tgUserId?: string | null; firstName?: string | null; lastName?: string | null; id?: string },
+		opts: { source: 'blocked' | 'opt-out' | 'manual'; reason: string; accountId?: string | null; campaignName?: string | null },
+	): Promise<number> {
+		const keys: StopKey[] = keysOf(r)
+		if (!keys.length) return 0
+		const label = [r.firstName, r.lastName].filter(Boolean).join(' ')
+			|| (r.username ? '@' + r.username : null)
+			|| r.phone
+			|| null
+		for (const k of keys) {
+			await this.prisma.tgStopList.upsert({
+				where: { kind_value: { kind: k.kind, value: k.value } },
+				create: {
+					kind: k.kind, value: k.value,
+					source: opts.source, reason: opts.reason.slice(0, 300), label,
+					recipientId: r.id ?? null, campaignName: opts.campaignName ?? null,
+					accountId: opts.accountId ?? null,
+				},
+				update: { source: opts.source, reason: opts.reason.slice(0, 300) },
+			})
+		}
+		return keys.length
+	}
+
+	/** Стоп-лист для кабинета: последние занесённые сверху. */
+	async stopList(opts: { q?: string; limit?: number } = {}) {
+		const q = String(opts.q ?? '').trim().toLowerCase().replace(/^@/, '')
+		const rows = await this.prisma.tgStopList.findMany({
+			where: q ? { OR: [{ value: { contains: q } }, { label: { contains: q, mode: 'insensitive' } }] } : undefined,
+			orderBy: { createdAt: 'desc' },
+			take: Math.max(1, Math.min(500, opts.limit ?? 200)),
+		})
+		return rows
+	}
+
+	/** Занести руками: строка вида «@ivan» или телефон, по одной в строке. */
+	async addStopListText(text: string, reason?: string) {
+		const lines = String(text ?? '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+		let added = 0
+		const rejected: string[] = []
+		for (const line of lines) {
+			const n = await this.addToStopList(
+				{ username: line, phone: line },
+				{ source: 'manual', reason: reason?.trim() || 'занесён вручную' },
+			)
+			if (n) added++
+			else rejected.push(line)
+		}
+		return { added, rejected }
+	}
+
+	/**
+	 * Убрать из стоп-листа. Ошибку человека исправлять надо, но по одной
+	 * строке: «очистить всё» — это способ разом вернуть в рассылку тех, кто
+	 * просил не писать.
+	 */
+	async removeFromStopList(id: string) {
+		await this.prisma.tgStopList.delete({ where: { id } }).catch(() => undefined)
+		return { ok: true }
 	}
 
 	// ── опрос ответов ────────────────────────────────────────────────────────
@@ -2188,6 +2409,32 @@ export class CampaignService {
 		patch.status = r.secondSentAt ? 'SECOND_SENT' : replied ? 'REPLIED' : read ? 'READ' : r.status
 
 		await this.prisma.tgRecipient.update({ where: { id: r.id }, data: patch })
+
+		/*
+		 * Прямой отказ в ответе закрывает человека для всего пула.
+		 *
+		 * Проверяем каждое входящее, а не только первое: «не пишите мне» чаще
+		 * приходит вторым сообщением, после «здравствуйте». Повторов не будет —
+		 * опросник берёт только то, что новее lastSeenMsgId.
+		 *
+		 * Статус адресата при этом не трогаем: разговор ведёт человек, и
+		 * закрывать ему переписку автомат не должен. Закрыта только автоматика.
+		 */
+		const refusal = incoming.map(m => optOutReason(m.text)).find(Boolean)
+		if (refusal) {
+			await this.addToStopList(r, {
+				source: 'opt-out',
+				reason: `ответил «${refusal}»`,
+				accountId: account.id,
+				campaignName: r.campaign?.name ?? null,
+			})
+			await this.notifyAdmin(
+				`🚫 <b>Отказ — занесли в стоп-лист</b>\n\n` +
+					`<b>${esc([r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone) || '')}</b>\n` +
+					`В ответе прозвучало «${esc(refusal)}». Больше ему не пишет ни один аккаунт пула.\n` +
+					`Если это ошибка — уберите строку в стоп-листе.`,
+			)
+		}
 
 		if (incoming.length && !r.repliedAt) {
 			const who = [r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone)
@@ -2834,6 +3081,10 @@ export class CampaignService {
 				readAt: r.readAt,
 				repliedAt: r.repliedAt,
 				secondSentAt: r.secondSentAt,
+				// Когда человек закрылся от нас. Поле выбиралось запросом и
+				// терялось при сборке ответа — на экране «закрыл личку» было
+				// без даты, хотя дата есть.
+				blockedAt: r.blockedAt,
 				deliveryUnknown: r.deliveryUnknown,
 				error: r.error,
 				account: r.account,
@@ -2851,7 +3102,7 @@ export class CampaignService {
 	 * сообщения в ленте, и по нему сортируем. Ответившие всплывают наверх сами
 	 * — их repliedAt свежее любого нашего исходящего.
 	 */
-	async conversations(opts: { limit?: number; q?: string; onlyReplied?: boolean } = {}) {
+	async conversations(opts: { limit?: number; q?: string; onlyReplied?: boolean; waiting?: boolean } = {}) {
 		const take = Math.max(1, Math.min(300, Math.round(opts.limit ?? 30)))
 		const q = String(opts.q ?? '').trim()
 
@@ -2859,6 +3110,41 @@ export class CampaignService {
 		const base: any = { OR: [{ sentAt: { not: null } }, { messages: { some: {} } }] }
 		const where: any = { ...base }
 		if (opts.onlyReplied) where.repliedAt = { not: null }
+
+		/*
+		 * «Ждут ответа» — те, у кого ПОСЛЕДНЕЕ сообщение входящее: мяч на нашей
+		 * стороне. Спрашиваем базу целиком, а не смотрим на загруженную
+		 * страницу: число на чипе обязано отвечать на вопрос «сколько людей
+		 * ждут», а не «сколько ждут среди первых тридцати».
+		 *
+		 * Запросом, а не через Prisma: «последнее сообщение» условием where не
+		 * выражается, а перебирать ленты в JS — это вся переписка пула в память
+		 * ради одного числа. Один список id даёт разом и счётчик, и фильтр.
+		 */
+		/*
+		 * Кто ждёт ответа: последнее сообщение в переписке — входящее.
+		 *
+		 * Условие repliedAt IS NOT NULL обязательно, и не ради смысла, а ради
+		 * цены. Без него это полный проход по таблице адресатов с отдельным
+		 * поиском последнего сообщения на КАЖДУЮ строку, включая десятки тысяч
+		 * тех, кому мы только собираемся писать и у кого переписки нет вовсе.
+		 * Ждать ответа может только тот, кто уже ответил хоть раз, а таких
+		 * всегда на порядки меньше.
+		 *
+		 * Имена таблиц и колонок здесь записаны руками: переименование в
+		 * schema.prisma компилятор не поймает, сломается только в работе.
+		 */
+		const waiting = await this.prisma.$queryRaw<Array<{ id: string }>>`
+			SELECT r."id" FROM "tg_recipients" r
+			WHERE r."repliedAt" IS NOT NULL
+			  AND (
+				SELECT m."out" FROM "tg_dialog_messages" m
+				WHERE m."recipientId" = r."id"
+				ORDER BY m."tgId" DESC
+				LIMIT 1
+			) = false
+		`
+		if (opts.waiting) where.id = { in: waiting.map(r => r.id) }
 		if (q) {
 			where.AND = [{
 				OR: [
@@ -2936,7 +3222,7 @@ export class CampaignService {
 			this.prisma.tgRecipient.count({ where: { ...base, repliedAt: { not: null } } }),
 		])
 
-		return { counts: { all, replied }, rows: page, more }
+		return { counts: { all, replied, waiting: waiting.length }, rows: page, more }
 	}
 
 	/**
@@ -3056,13 +3342,7 @@ export class CampaignService {
 	 *
 	 * День — московский: рассылка живёт по московскому окну.
 	 */
-	async daySummary(date?: string): Promise<{
-		date: string
-		planned: number
-		sent: number
-		campaigns: Array<{ id: string; name: string; planned: number; sent: number; reasons: string[] }>
-		reasons: string[]
-	}> {
+	async daySummary(date?: string): Promise<DaySummary> {
 		const day = parseDay(date) ?? startOfDay(new Date())
 		const from = day
 		const to = new Date(day.getTime() + 86400000)
@@ -3087,7 +3367,11 @@ export class CampaignService {
 			const planned = scheduled || (c.sendDate && dayKey(c.sendDate) === key ? (c.dailyGoal ?? 0) : 0)
 			if (!planned && !sent) continue
 
-			const reasons: string[] = []
+			const reasons: DayReason[] = []
+			// Сколько аккаунтов в этот день реально могли отправлять. Считаем
+			// только при недоборе: без него разбирать нечего, а пересчёт норм —
+			// это запрос на каждый аккаунт. null значит «не разбирали», не «ноль».
+			let working: number | null = null
 			if (sent < planned) {
 				const quota = await this.dailyQuota(c, key)
 
@@ -3103,33 +3387,51 @@ export class CampaignService {
 					})).map(g => g.accountId!),
 				)
 
-				let working = 0
+				working = 0
 				for (const l of c.accounts) {
 					const a = l.account
 					const norm = quota.get(a.id) ?? 0
 					if (norm > 0 || worked.has(a.id)) { working++; continue }
-					const dead = a.status === 'BANNED' || a.status === 'ERROR' || a.status === 'PAUSED'
-					reasons.push(
-						dead ? `«${a.label ?? a.id}» — ${a.status === 'PAUSED' ? 'отключён' : 'не в строю'}`
-							: a.mode === 'WARM' ? `«${a.label ?? a.id}» — отведён только под прогрев`
-								: !a.proxyId ? `«${a.label ?? a.id}» — без прокси`
-									: a.proxy && !a.proxy.alive ? `«${a.label ?? a.id}» — по последней проверке прокси не отвечал`
-										: `«${a.label ?? a.id}» — прогрев не выдал дневной нормы, и разрешение «без прогрева» не включено`,
-					)
+					const kind: DayReasonKind =
+						a.status === 'BANNED' || a.status === 'ERROR' ? 'dead'
+							: a.status === 'PAUSED' ? 'paused'
+								: a.mode === 'WARM' ? 'warmOnly'
+									: !a.proxyId ? 'noProxy'
+										: a.proxy && !a.proxy.alive ? 'proxyDown'
+											: 'noQuota'
+					reasons.push({
+						accountId: a.id,
+						label: a.label ?? a.id,
+						kind,
+						campaignId: c.id,
+						// «Не в строю» — это и бан, и сорвавшийся с ошибкой:
+						// чинятся они по-разному, поэтому статус отдаём рядом.
+						detail: kind === 'dead' ? a.status : undefined,
+					})
 				}
-				if (!working) reasons.unshift('ни один аккаунт кампании в этот день не мог отправлять')
-				else if (working < c.accounts.length) {
-					reasons.unshift(`работал ${working} аккаунт из ${c.accounts.length} — весь дневной объём лёг на него`)
-				}
-				if (c.status === 'PAUSED') reasons.unshift('рассылка стояла на паузе')
 			}
 
-			rows.push({ id: c.id, name: c.name, planned, sent, reasons })
+			// Статус и счёт аккаунтов раньше уезжали строками «рассылка стояла на
+			// паузе» и «работал 1 аккаунт из 4». Числа в строке не кликаются и не
+			// складываются, поэтому отдаём их полями, а фразу собирают на месте.
+			rows.push({
+				id: c.id, name: c.name, status: c.status, planned, sent,
+				accounts: c.accounts.length, working, reasons,
+			})
 		}
 
 		// Общие причины — те, что повторяются у всех кампаний: их и стоит чинить.
-		const all = rows.flatMap(r => r.reasons)
-		const common = [...new Set(all)]
+		// Один аккаунт стоит в нескольких рассылках с одной и той же бедой,
+		// поэтому склеиваем по паре «аккаунт + вид», как раньше склеивались
+		// одинаковые строки.
+		const seenReason = new Set<string>()
+		const common: DayReason[] = []
+		for (const r of rows.flatMap(x => x.reasons)) {
+			const k = `${r.accountId}:${r.kind}`
+			if (seenReason.has(k)) continue
+			seenReason.add(k)
+			common.push(r)
+		}
 
 		return {
 			date: key,
@@ -3138,6 +3440,27 @@ export class CampaignService {
 			campaigns: rows,
 			reasons: common,
 		}
+	}
+
+	/**
+	 * Причины недобора строками — для бота: в сообщение структуру не положишь.
+	 *
+	 * Порядок тот же, что человек видел в чате раньше: сначала про саму
+	 * рассылку, потом поимённо про аккаунты. Одинаковые строки склеиваются —
+	 * одна и та же беда обычно повторяется во всех рассылках сразу.
+	 */
+	private dayReasonLines(sum: DaySummary): string[] {
+		const out: string[] = []
+		for (const c of sum.campaigns) {
+			if (c.working === null) continue
+			if (c.status === 'PAUSED') out.push('рассылка стояла на паузе')
+			if (!c.working) out.push('ни один аккаунт кампании в этот день не мог отправлять')
+			else if (c.working < c.accounts) {
+				out.push(`работал ${c.working} аккаунт из ${c.accounts} — весь дневной объём лёг на него`)
+			}
+			for (const r of c.reasons) out.push(`«${r.label}» — ${DAY_REASON_TEXT[r.kind]}`)
+		}
+		return [...new Set(out)]
 	}
 
 	/**
@@ -3178,12 +3501,13 @@ export class CampaignService {
 			.filter(c => c.sent < c.planned)
 			.map(c => `• «${esc(c.name)}» — ушло ${c.sent} из ${c.planned}`)
 			.join('\n')
+		const why = this.dayReasonLines(sum)
 
 		await this.notifyAdmin(
 			`⚠️ <b>Рассылка за день не добрала</b>\n\n` +
 				`Ушло <b>${sum.sent}</b> из <b>${sum.planned}</b> запланированных.\n\n` +
 				`${lines}\n\n` +
-				(sum.reasons.length ? `<b>Почему:</b>\n${sum.reasons.map(r => '— ' + esc(r)).join('\n')}` : ''),
+				(why.length ? `<b>Почему:</b>\n${why.map(r => '— ' + esc(r)).join('\n')}` : ''),
 		)
 		return true
 	}
@@ -3456,7 +3780,20 @@ export class CampaignService {
 			minIntervalSec: c.minIntervalSec, maxIntervalSec: c.maxIntervalSec,
 			windowFrom: c.windowFrom, windowTo: c.windowTo,
 			createdAt: c.createdAt, startedAt: c.startedAt, finishedAt: c.finishedAt,
+			pausedAt: c.pausedAt,
 			accounts, funnel,
+			// Готовность ВСЕХ аккаунтов кампании, а не только неготовых: выбирая,
+			// кого добавить, надо видеть и тех, кто в порядке, и чего не хватает
+			// остальным. Раньше наружу выходил только отфильтрованный notWarm.
+			readiness,
+			/*
+			 * Почему сегодня уйдёт не вся очередь.
+			 *
+			 * Раньше это считалось только при быстром запуске и показывалось
+			 * один раз тостом: после перезагрузки страницы ответа на вопрос
+			 * «почему так мало» в интерфейсе не существовало вовсе.
+			 */
+			bottleneck: await this.bottleneck(c, funnel.queued, plan.today),
 		}
 	}
 

@@ -46,6 +46,14 @@ export type ActionContext = {
 	canJoin: boolean
 	/** Разрешены ли ещё исходящие сообщения сегодня. */
 	canMessage: boolean
+	/**
+	 * Разрешены ли ещё реакции, голоса и пересылки.
+	 *
+	 * Отдельно от canMessage: у них своя дневная квота, которую автоснижение
+	 * темпа не режет. Жалуются на сообщение, а не на сердечко под постом, —
+	 * и фон обязан продолжаться даже тогда, когда писать уже нельзя.
+	 */
+	canReact: boolean
 	/** Юзернейм своего же аккаунта из пула, кому не жалко написать. */
 	peer?: string | null
 	/** Ключ пары «кто с кем»: от него зависит, какой у них разговор. */
@@ -796,6 +804,14 @@ const BY_ID = new Map(CATALOG.map(d => [d.id, d]))
 /** Действия, которые видит собеседник: идут в дневную квоту исходящих. */
 export const OUTGOING: ActionKind[] = CATALOG.filter(d => d.outgoing).map(d => d.id)
 
+/**
+ * Исходящие, которые не являются сообщением: реакции, голоса, пересылки.
+ * У них своя дневная квота — см. maxReactionsPerDay в warmup-plan.ts.
+ */
+export const REACTION_ACTIONS: ActionKind[] = CATALOG
+	.filter(d => d.outgoing && d.id !== 'join' && d.id !== 'peer-chat')
+	.map(d => d.id)
+
 /** Действия, качающие медиа: в экономном режиме выключаются. */
 export const TRAFFIC: ActionKind[] = CATALOG.filter(d => d.traffic).map(d => d.id)
 
@@ -813,9 +829,9 @@ function poolFor(ctx: ActionContext): ActionDef[] {
 		if (ctx.disabled?.has(d.id)) return false
 		if (d.outgoing) {
 			if (!ctx.allowOutgoing) return false
-			if (d.id === 'join' && !ctx.canJoin) return false
-			if (d.id !== 'join' && !ctx.canMessage) return false
-			if (d.id === 'peer-chat' && !ctx.peer) return false
+			if (d.id === 'join') return ctx.canJoin
+			if (d.id === 'peer-chat') return ctx.canMessage && !!ctx.peer
+			return ctx.canReact
 		}
 		return true
 	})
