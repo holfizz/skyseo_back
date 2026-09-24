@@ -239,6 +239,14 @@ export class CampaignController {
 		return this.svc.editMessage(id, messageId, body?.text)
 	}
 
+	/** Голосовое, кружок или видео из переписки — чтобы прослушать прямо в чате. */
+	@Get('recipients/:id/messages/:messageId/media')
+	async media(@Param('id') id: string, @Param('messageId') messageId: string, @Res() res: Response) {
+		const file = await this.svc.messageMedia(id, messageId)
+		res.setHeader('Content-Type', file.mime)
+		res.send(file.buffer)
+	}
+
 	/** Удалить сообщение: ?forBoth=1 — у обоих, иначе только у нас. */
 	@Delete('recipients/:id/messages/:messageId')
 	deleteMessage(@Param('id') id: string, @Param('messageId') messageId: string, @Query('forBoth') forBoth?: string) {

@@ -2634,6 +2634,42 @@ export class CampaignService {
 		return { ok: true }
 	}
 
+	/**
+	 * Голосовое, кружок или видео — по запросу, когда нажали «Слушать».
+	 * В базу их не кладём: весят мегабайты, а слушают единицы.
+	 */
+	async messageMedia(recipientId: string, messageId: string) {
+		const m = await this.prisma.tgDialogMessage.findFirst({ where: { id: messageId, recipientId } })
+		if (!m) throw new NotFoundException('Сообщение не найдено')
+		if (!m.mediaKind) throw new BadRequestException('В сообщении нет вложения')
+		if ((m.mediaSize ?? 0) > MEDIA_PLAY_LIMIT) throw new BadRequestException('Файл слишком большой — откройте его в Telegram')
+
+		return this.onRecipientAccount(recipientId, async (client, peer) => {
+			const msgs: any = await call(client, 'getMessages', () => client.getMessages(peer.entity, { ids: [m.tgId] }))
+			const msg = (msgs ?? [])[0]
+			const info = msg ? mediaOf(msg) : null
+			if (!info) throw new BadRequestException('Сообщение удалили в Telegram')
+			const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(msg))
+			if (!buf?.length) throw new BadRequestException('Telegram не отдал файл')
+			/*
+			 * Отметка «прослушано», как будто нажали плей в самом Telegram: у
+			 * клиента пропадает синяя точка у его голосового или кружка.
+			 * Только для входящих — у своих сообщений такой отметки нет.
+			 * Плей в Telegram означает и открытый чат, поэтому переписку до
+			 * этого сообщения тоже помечаем прочитанной: «прослушано, но не
+			 * прочитано» у клиента выглядело бы странно.
+			 * Не вышло — не беда: файл важнее отметки.
+			 */
+			if (!m.out && (info.kind === 'voice' || info.kind === 'round')) {
+				await call(client, 'readHistory', () =>
+					client.invoke(new Api.messages.ReadHistory({ peer: peer.entity, maxId: m.tgId }))).catch(() => undefined)
+				await call(client, 'readMessageContents', () =>
+					client.invoke(new Api.messages.ReadMessageContents({ id: [m.tgId] }))).catch(() => undefined)
+			}
+			return { buffer: Buffer.from(buf), mime: mimeFor(info) }
+		})
+	}
+
 	/** Действие в переписке с того аккаунта, с которого она велась. */
 	private async onRecipientAccount<T>(recipientId: string, fn: (client: any, peer: any) => Promise<T>): Promise<T> {
 		const r = await this.prisma.tgRecipient.findUnique({
@@ -4085,3 +4121,6 @@ function presenceOf(st: any): Presence {
 		default: return { status: 'long', at: null }
 	}
 }
+
+// Больше этого по кнопке не тянем: 50 МБ — это уже длинное видео, его проще открыть в Telegram.
+const MEDIA_PLAY_LIMIT = 50 * 1024 * 1024

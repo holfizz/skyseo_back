@@ -13,7 +13,7 @@
  */
 
 /** Виды вложений, которые различаем. */
-export type MediaKind = 'photo' | 'sticker' | 'gif' | 'video' | 'voice' | 'audio' | 'document' | 'other'
+export type MediaKind = 'photo' | 'sticker' | 'gif' | 'video' | 'round' | 'voice' | 'audio' | 'document' | 'other'
 
 export type MediaInfo = {
 	kind: MediaKind
@@ -39,6 +39,7 @@ export const KIND_LABEL: Record<MediaKind, string> = {
 	sticker: 'Стикер',
 	gif: 'Гифка',
 	video: 'Видео',
+	round: 'Кружок',
 	voice: 'Голосовое',
 	audio: 'Аудио',
 	document: 'Файл',
@@ -83,7 +84,10 @@ export function mediaOf(msg: any): MediaInfo | null {
 
 	if (has('DocumentAttributeSticker')) return { kind: 'sticker', name, size, mime }
 	if (has('DocumentAttributeAnimated')) return { kind: 'gif', name, size, mime }
-	if (has('DocumentAttributeVideo')) return { kind: 'video', name, size, mime }
+	if (has('DocumentAttributeVideo')) {
+		const v = attrs(doc).find(x => x?.className === 'DocumentAttributeVideo')
+		return { kind: v?.roundMessage ? 'round' : 'video', name, size, mime }
+	}
 	if (has('DocumentAttributeAudio')) {
 		const a = attrs(doc).find(x => x?.className === 'DocumentAttributeAudio')
 		return { kind: a?.voice ? 'voice' : 'audio', name, size, mime }
