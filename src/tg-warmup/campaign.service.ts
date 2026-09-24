@@ -5,6 +5,8 @@ import type { TgCampaignStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { normalizeName } from '../common/normalize-name'
 import { TelegramService } from '../telegram/telegram.service'
+import { ReportService } from '../report/report.service'
+import { CustomFile } from 'teleproto/client/uploads'
 import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
 import { fillTemplate, missingPlaceholders } from './campaign-text'
@@ -344,6 +346,7 @@ export class CampaignService {
 		private prisma: PrismaService,
 		private warmup: TgWarmupService,
 		private telegram: TelegramService,
+		private report: ReportService,
 	) {}
 
 	// ── кампании ─────────────────────────────────────────────────────────────
@@ -2505,6 +2508,8 @@ export class CampaignService {
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
 			deliveryUnknown: r.deliveryUnknown,
 			campaign: r.campaign, account: r.account,
+			// Отчёт есть только у адресата, пришедшего из базы лидов.
+			hasReport: !!r.leadId,
 			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
 			// кода остаётся хвостом, а начало собирается по его выдаче.
 			secondPreview: await this.fullSecondMessage(
@@ -2578,6 +2583,14 @@ export class CampaignService {
 		})
 	}
 
+	/** PDF-отчёт адресата — посмотреть перед тем, как приложить к ответу. */
+	async reportPdf(recipientId: string) {
+		const r = await this.prisma.tgRecipient.findUnique({ where: { id: recipientId }, select: { leadId: true, domain: true } })
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (!r.leadId) throw new BadRequestException('У этого адресата нет отчёта: он не из базы лидов')
+		return { name: reportFileName(r.domain), buffer: await this.report.renderPdf(r.leadId) }
+	}
+
 	/**
 	 * Написать адресату — любой текст, в любой момент.
 	 *
@@ -2590,9 +2603,9 @@ export class CampaignService {
 	 * «второе касание»: именно этот шаг там и меряется. Дальнейшие — уже
 	 * переписка, и в воронке им места нет.
 	 */
-	async sendManual(recipientId: string, text: string) {
+	async sendManual(recipientId: string, text: string, withReport = false) {
 		const body = String(text ?? '').trim()
-		if (!body) throw new BadRequestException('Пустое сообщение')
+		if (!body && !withReport) throw new BadRequestException('Пустое сообщение')
 		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
 
 		const r = await this.prisma.tgRecipient.findUnique({
@@ -2603,6 +2616,14 @@ export class CampaignService {
 		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла переписка')
 		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — с него уже не написать')
 
+		// PDF собираем до захвата аккаунта: рендер занимает секунды, и держать
+		// аккаунт всё это время незачем.
+		let pdf: { name: string; buffer: Buffer } | null = null
+		if (withReport) {
+			if (!r.leadId) throw new BadRequestException('У этого адресата нет отчёта: он не из базы лидов')
+			pdf = { name: reportFileName(r.domain), buffer: await this.report.renderPdf(r.leadId) }
+		}
+
 		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
 			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')
 		}
@@ -2610,8 +2631,24 @@ export class CampaignService {
 		try {
 			const { result, session } = await withClient(opts, async client => {
 				const peer = await this.resolvePeer(client, r)
-				const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: body }))
-				return Number(msg?.id ?? 0)
+				if (!pdf) {
+					const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: body }))
+					return [{ id: Number(msg?.id ?? 0), text: body, file: false }]
+				}
+				// Подпись к файлу в Telegram — до 1024 символов. Длинный текст
+				// уходит отдельным сообщением перед файлом.
+				const sent: Array<{ id: number; text: string; file: boolean }> = []
+				let caption = body
+				if (body.length > 1024) {
+					const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: body }))
+					sent.push({ id: Number(msg?.id ?? 0), text: body, file: false })
+					caption = ''
+				}
+				const file = new CustomFile(pdf.name, pdf.buffer.length, '', pdf.buffer)
+				const msg: any = await call(client, 'sendFile', () =>
+					client.sendFile(peer.entity, { file, caption, forceDocument: true, workers: 1 }))
+				sent.push({ id: Number(msg?.id ?? 0), text: caption || `[${pdf.name}]`, file: true })
+				return sent
 			})
 			await this.warmup.persistSession(r.account.id, opts.session, session)
 
@@ -2620,12 +2657,16 @@ export class CampaignService {
 				data: {
 					error: null,
 					...(r.secondSentAt ? {} : { secondSentAt: new Date(), status: 'SECOND_SENT' as const }),
-					...(result ? { lastSeenMsgId: Math.max(r.lastSeenMsgId, result) } : {}),
+					lastSeenMsgId: Math.max(r.lastSeenMsgId, ...result.map(m => m.id)),
 				},
 			})
-			if (result) {
+			const saved = result.filter(m => m.id)
+			if (saved.length) {
 				await this.prisma.tgDialogMessage.createMany({
-					data: [{ recipientId: r.id, tgId: result, out: true, text: body, date: new Date() }],
+					data: saved.map(m => ({
+						recipientId: r.id, tgId: m.id, out: true, text: m.text, date: new Date(),
+						...(m.file && pdf ? { mediaKind: 'document', mediaName: pdf.name, mediaSize: pdf.buffer.length } : {}),
+					})),
 					skipDuplicates: true,
 				})
 			}
@@ -3069,6 +3110,8 @@ export class CampaignService {
 					campaign: { select: { id: true, name: true } },
 					account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
 					plannedAccountId: true,
+					// Последнее сообщение — чтобы показать, чья очередь писать.
+					messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, date: true } },
 				},
 			}),
 			this.prisma.tgRecipient.groupBy({ by: ['status'], _count: { _all: true } }),
@@ -3112,6 +3155,7 @@ export class CampaignService {
 				deliveryUnknown: r.deliveryUnknown,
 				error: r.error,
 				account: r.account,
+				last: r.messages[0] ?? null,
 			})),
 		}
 	}
@@ -3939,4 +3983,9 @@ export class CampaignService {
 function esc(s: string): string {
 	return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
+}
+
+// Имя файла — латиницей: так его одинаково покажут Telegram и браузер.
+function reportFileName(domain: string | null): string {
+	return `skyseo-${String(domain ?? 'report').replace(/[^a-zA-Z0-9.-]/g, '_')}.pdf`
 }

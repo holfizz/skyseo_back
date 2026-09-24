@@ -52,7 +52,8 @@ export const DEFAULT_SERP_PAGE_RAMP = '1-6:3, 7-13:4, 14+:5'
 // называет менеджер. Значение правится в админке, чтобы поднять ценник
 // не пересобирая бэкенд.
 const KEY_REPORT_PRICE = 'report_price_from'
-export const DEFAULT_REPORT_PRICE = '9000'
+// Как «Сайт услуг от …» на сайте. 9000 была ценой прошлого продукта.
+export const DEFAULT_REPORT_PRICE = '60000'
 
 /**
  * Как приложение находит кнопку «Дальше» в выдаче. Держим в БД, потому что

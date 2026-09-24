@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common'
+import type { Response } from 'express'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { SprintGuard } from '../sprint/sprint.guard'
 import { CampaignService } from './campaign.service'
@@ -132,8 +133,17 @@ export class CampaignManagerController {
 	}
 
 	@Post('recipients/:id/message')
-	message(@Param('id') id: string, @Body() body: { text: string }) {
-		return this.svc.sendManual(id, body?.text)
+	message(@Param('id') id: string, @Body() body: { text: string; withReport?: boolean }) {
+		return this.svc.sendManual(id, body?.text, !!body?.withReport)
+	}
+
+	/** PDF-отчёт адресата: открыть и посмотреть перед отправкой. Счётчик открытий лида не трогает. */
+	@Get('recipients/:id/report')
+	async report(@Param('id') id: string, @Res() res: Response) {
+		const pdf = await this.svc.reportPdf(id)
+		res.setHeader('Content-Type', 'application/pdf')
+		res.setHeader('Content-Disposition', `inline; filename="${pdf.name}"`)
+		res.send(pdf.buffer)
 	}
 
 	/** Подробная статистика — только для окна, которое открывают по кнопке. */

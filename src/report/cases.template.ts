@@ -274,9 +274,9 @@ ${gallery}
   ${shape(3, SH.tri, 'width:18mm;height:18mm;top:70mm;left:50mm;opacity:.5')}
   <div class="wrap col hero">
     ${brandBar()}
-    <div class="kicker" style="margin-top:14px">на связи · первые 10 дней бесплатно</div>
+    <div class="kicker" style="margin-top:14px">на связи · первые 5 дней бесплатно</div>
     <h1>Хотите свой сайт<br>в этой <span class="hl">подборке</span>?</h1>
-    <p class="sub">Посмотрим ваш сайт, соберём запросы и покажем движение позиций. Первые 10 дней — бесплатно, до любого договора.</p>
+    <p class="sub">Посмотрим ваш сайт, соберём запросы и покажем движение позиций. Первые 5 дней — бесплатно, до любого договора.</p>
     <div><span class="pill">Telegram: @skyseo_support</span><span class="site">skyseo.site</span></div>
     ${foot('SkySEO · продвижение сайтов в топ Яндекса', total, total)}
   </div>

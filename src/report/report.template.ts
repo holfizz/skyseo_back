@@ -1,4 +1,5 @@
 import { ReportCompetitor, ReportData, ReportKeyword } from './report.types'
+import { AI_LOGOS } from './ai-logos'
 
 /**
  * Верстка PDF-отчета для холодного лида. Три страницы:
@@ -197,9 +198,10 @@ export function renderReportHtml(data: ReportData): string {
 
   .note { background: ${C.block}; border-radius: 20px; padding: 15px 18px; color: ${C.dark}; }
   .mark { background: ${C.yellow}; padding: 1px 6px; border-radius: 6px; font-weight: 700; }
-  /* Чипы нейросетей в GEO-блоке: своя простая иконка, не логотип платформы. */
+  /* Чипы нейросетей в GEO-блоке: настоящие логотипы, вшитые строкой (ai-logos.ts). */
   .ai { display: inline-flex; align-items: center; gap: 6px; background: ${C.paper};
         border-radius: 999px; padding: 5px 12px 5px 8px; font-size: 12px; font-weight: 700; }
+  .ai img { display: block; width: auto; }
   .ai.more { background: rgba(0,0,0,.06); color: ${C.muted}; padding: 5px 13px; }
 
   /* ── Лестница конкурентов ── */
@@ -251,6 +253,14 @@ export function renderReportHtml(data: ReportData): string {
                   letter-spacing: 0; margin-top: 5px; }
   .price-t { font-size: 13px; line-height: 1.55; color: rgba(255,255,255,.8); }
   .price-t b { color: ${C.paper}; }
+
+  /* ── Тарифы и условия: те же цифры и правила, что на сайте и в оферте ── */
+  .tariff { background: ${C.dark}; color: ${C.paper}; border-radius: 18px; padding: 13px 18px; }
+  .tariff-n { font-size: 26px; font-weight: 800; letter-spacing: -0.8px; line-height: 1.15; white-space: nowrap; }
+  .tariff-sub { font-size: 11px; opacity: .6; }
+  .terms { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .terms li { background: ${C.block}; border-radius: 14px; padding: 8px 14px; font-size: 12px; line-height: 1.45; color: ${C.muted}; }
+  .terms b { color: ${C.dark}; }
 
   .foot { position: absolute; left: 15mm; right: 15mm; bottom: 12mm;
           border-top: 1px solid ${C.line}; padding-top: 9px; color: ${C.faint}; font-size: 10.5px;
@@ -372,11 +382,8 @@ export function renderReportHtml(data: ReportData): string {
   <div style="background:${C.yellow};color:${C.dark};border-radius:20px;padding:16px 18px;margin-top:16px">
     <b style="display:block;font-size:15px;margin-bottom:4px">GEO-оптимизация под нейросети — бесплатно</b>
     <span style="font-size:12.5px;line-height:1.5">Готовим сайт так, чтобы вас рекомендовали, когда вашу услугу спрашивают у нейросети. Отдельно не тарифицируется — входит в работу.</span>
-    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px">
-      <span class="ai"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 4v8l-7 4-7-4V7z" stroke="#10A37F" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="11.5" r="2.4" fill="#10A37F"/></svg>ChatGPT</span>
-      <span class="ai"><svg width="15" height="15" viewBox="0 0 24 24"><g stroke="#C15F3C" stroke-width="2.1" stroke-linecap="round"><line x1="12" y1="3.5" x2="12" y2="20.5"/><line x1="3.5" y1="12" x2="20.5" y2="12"/><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></g></svg>Claude</span>
-      <span class="ai"><svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 2.5c.7 5.1 3.7 8.1 8.8 8.8v1.4c-5.1.7-8.1 3.7-8.8 8.8h-1.4c-.7-5.1-3.7-8.1-8.8-8.8v-1.4c5.1-.7 8.1-3.7 8.8-8.8z" fill="#3D7BFF"/></svg>Gemini</span>
-      <span class="ai"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><g stroke="#FC3F1D" stroke-width="2.1" stroke-linecap="round" fill="none"><path d="M8.2 8a6 6 0 000 8"/><path d="M15.8 8a6 6 0 010 8"/></g><circle cx="12" cy="12" r="2.3" fill="#FC3F1D"/></svg>Алиса</span>
+    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px;align-items:center">
+      ${AI_LOGOS.map(l => `<span class="ai"><img src="${l.src}" style="height:${l.label ? 16 : 15}px" alt="">${l.label ? esc(l.label) : ''}</span>`).join('')}
       <span class="ai more">и другие</span>
     </div>
   </div>
@@ -396,24 +403,26 @@ export function renderReportHtml(data: ReportData): string {
   <div class="foot"><span>SkySEO · разбор выдачи</span><span>${esc(data.domain)} · стр. 3 из 4</span></div>
 </div>
 
-<!-- ─────────── Страница 4: цена, условия, отзывы ─────────── -->
+<!-- ─────────── Страница 4: цены и условия – как на сайте и в оферте ─────────── -->
 <div class="page">
   ${brandBar()}
   <div class="sec"><div class="sec-n">5</div><h2>Сколько это стоит</h2></div>
-  <div class="price">
-    <div class="price-n">${price} ₽<span>в месяц</span></div>
-    <div class="price-t">
-      Цена зависит от проекта: сколько запросов, какая конкуренция в нише и какого
-      размера сайт. Точную сумму назовём до старта. В отличие от рекламы, позиции
-      остаются с вами и приводят людей после того, как работа закончена.
-    </div>
+  <div class="tariff" style="display:flex;align-items:baseline;gap:10px">
+    <div class="tariff-n">от ${price} ₽</div><div class="tariff-sub" style="font-size:13px">в месяц</div>
   </div>
+  <p class="lead" style="margin:10px 2px 0;font-size:12px">Точную сумму назовём до старта: она зависит от числа страниц и запросов и от конкуренции в вашем регионе. Продвижение в нейросетях входит в цену, без доплат.</p>
 
-  <div style="background:${C.yellow};color:${C.dark};border-radius:24px;padding:20px 24px;margin-top:16px">
-    <div style="font-weight:800;font-size:17px;letter-spacing:-0.3px;line-height:1.3;margin-bottom:8px">Напишите «да» — и через 10 дней увидите, двигается ваш сайт или нет</div>
-    <p style="margin:0;font-size:13px;line-height:1.6">Соберём всю информацию по вашему сайту и запустим 10-дневный бесплатный тест. За эти дни вы поймёте, получается ли у нас с вами работать и есть ли куда расти. Не двинулось — расходимся, вы ничего не платите.</p>
-  </div>
-  <p style="margin:12px 2px 0;font-size:11.5px;color:${C.faint}">Позиции зависят не только от нас — ещё от контента, техники сайта и конкурентов. Поэтому и начинаем с бесплатного теста, а не с обещаний.</p>
+  <div class="sec" style="margin-top:20px"><div class="sec-n">6</div><h2>Условия</h2></div>
+  <ul class="terms">
+    <li><b>Сначала бесплатный тест 5 дней</b> – потом договор. Если позиции не двинулись, покажем, что мешает сайту: чаще всего это техника. Скажем, что исправить в первую очередь.</li>
+    <li><b>Оплата помесячно</b>, вперёд за один месяц. Выйти можно в любой момент – деньги за неоказанный период вернём.</li>
+    <li><b>План и отчёт.</b> В начале месяца – план работ, в конце – отчёт: что сделано, что изменено на сайте, адреса всех ссылок и позиции.</li>
+    <li><b>Не сделали план по своей вине</b> – доделаем бесплатно или вернём деньги за невыполненное.</li>
+    <li><b>Только разрешённые методы.</b> Если сайт получит санкции из-за наших действий – снимем их за свой счёт и вернём оплату за месяц.</li>
+    <li><b>Всё остаётся у вас:</b> тексты, семантика, доступы к сайту и аналитике.</li>
+    <li><b>Позиции не гарантируем</b> – выдачу решает поисковик. Гарантируем работу, отчёт и деньги, если план не выполнен.</li>
+  </ul>
+  <p style="margin:8px 2px 0;font-size:11px;color:${C.faint}">Полные условия – в публичной оферте: skyseo.site/offer</p>
 
   <div class="foot">
     <span>Разбор бесплатный · данные из выдачи Яндекса на ${formatDate(data.generatedAt)}</span>

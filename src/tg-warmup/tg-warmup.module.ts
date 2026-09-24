@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { PrismaModule } from '../prisma/prisma.module'
+import { ReportModule } from '../report/report.module'
 import { TelegramModule } from '../telegram/telegram.module'
 import { CampaignController } from './campaign.controller'
 import { CampaignManagerController } from './campaign-manager.controller'
@@ -14,7 +15,8 @@ import { TgWarmupService } from './tg-warmup.service'
 // прогрева и параметры подключения, и разрешение писать.
 @Module({
 	// TelegramModule — ради уведомлений админу в бот, когда кто-то ответил.
-	imports: [PrismaModule, TelegramModule.forRoot()],
+	// ReportModule — чтобы прикладывать PDF-отчёт к ответу в переписке.
+	imports: [PrismaModule, TelegramModule.forRoot(), ReportModule],
 	controllers: [TgWarmupController, CampaignController, CampaignManagerController],
 	providers: [TgWarmupService, TgWarmupScheduler, CampaignService, CampaignScheduler],
 })
