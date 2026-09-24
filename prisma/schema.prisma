@@ -1508,6 +1508,16 @@ model TgRecipient {
   // Докуда прочитали переписку при опросе, чтобы не тянуть её заново.
   lastSeenMsgId Int @default(0)
 
+  // Докуда собеседник прочитал НАШИ сообщения (readOutboxMaxId диалога):
+  // по нему у каждого исходящего ставится «прочитано», а не только у первого.
+  readOutboxMaxId Int @default(0)
+  // Был ли в сети, как показывает Telegram: online | offline | recently |
+  // week | month | long. peerSeenAt — когда был (или до когда онлайн),
+  // peerCheckedAt — когда мы это узнали.
+  peerStatus    String?
+  peerSeenAt    DateTime?
+  peerCheckedAt DateTime?
+
   createdAt DateTime @default(now())
 
   campaign       TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)

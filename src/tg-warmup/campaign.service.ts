@@ -2194,7 +2194,7 @@ export class CampaignService {
 			try {
 				const { result, session } = await withClient(opts, async client => {
 					const dialogs: any = await call(client, 'getDialogs', () => client.getDialogs({ limit: 100 }))
-					const out: Array<{ recipient: any; readTo: number; top: number; entity: any }> = []
+					const out: Array<{ recipient: any; readTo: number; top: number; entity: any; presence: Presence }> = []
 					for (const d of dialogs ?? []) {
 						if (!d?.isUser || !d?.entity) continue
 						const uid = String(d.entity.id)
@@ -2206,6 +2206,7 @@ export class CampaignService {
 							readTo: Number(d.dialog?.readOutboxMaxId ?? 0),
 							top: Number(d.dialog?.topMessage ?? 0),
 							entity: d.entity,
+							presence: presenceOf(d.entity.status),
 						})
 					}
 					/*
@@ -2316,6 +2317,17 @@ export class CampaignService {
 				const history = new Map(result.fetched.map(f => [f.id, f.messages]))
 				const media = new Map(result.fetched.map(f => [f.id, f.media]))
 				for (const item of result.out) {
+					// Прочтение и «в сети» пишем всегда и отдельно: они меняются
+					// каждую минуту, и считать это «изменением в переписке» нельзя.
+					await this.prisma.tgRecipient.update({
+						where: { id: item.recipient.id },
+						data: {
+							readOutboxMaxId: Math.max(item.recipient.readOutboxMaxId ?? 0, item.readTo),
+							peerStatus: item.presence.status,
+							peerSeenAt: item.presence.at,
+							peerCheckedAt: new Date(),
+						},
+					}).catch(() => undefined)
 					const before = !!item.recipient.repliedAt
 					if (await this.applyDialogState(item, history.get(item.recipient.id) ?? [], account, media.get(item.recipient.id))) {
 						changed++
@@ -2507,6 +2519,9 @@ export class CampaignService {
 			sentAt: r.sentAt, readAt: r.readAt, repliedAt: r.repliedAt,
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
 			deliveryUnknown: r.deliveryUnknown,
+			// Для галочек и «был в сети» в шапке.
+			readOutboxMaxId: r.readOutboxMaxId,
+			peer: { status: r.peerStatus, at: r.peerSeenAt, checkedAt: r.peerCheckedAt },
 			campaign: r.campaign, account: r.account,
 			// Отчёт есть только у адресата, пришедшего из базы лидов.
 			hasReport: !!r.leadId,
@@ -2519,7 +2534,7 @@ export class CampaignService {
 				r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
 			),
 			messages: r.messages.map(m => ({
-				id: m.id, out: m.out, text: m.text, date: m.date,
+				id: m.id, tgId: m.tgId, out: m.out, text: m.text, date: m.date,
 				// Вложение: вид нужен всегда, содержимое — только если мелкое
 				// и мы его забрали.
 				mediaKind: m.mediaKind, mediaData: m.mediaData,
@@ -2605,12 +2620,13 @@ export class CampaignService {
 	}
 
 	/**
-	 * Удалить сообщение: только у нас или у обоих. В личной переписке Telegram
-	 * позволяет удалить у обоих и чужое сообщение тоже.
+	 * Удалить своё сообщение: только у нас или у обоих. Сообщения клиента не
+	 * трогаем: Telegram это позволяет, но стирать чужие слова нельзя.
 	 */
 	async deleteMessage(recipientId: string, messageId: string, forBoth: boolean) {
 		const m = await this.prisma.tgDialogMessage.findFirst({ where: { id: messageId, recipientId } })
 		if (!m) throw new NotFoundException('Сообщение не найдено')
+		if (!m.out) throw new BadRequestException('Удалять можно только свои сообщения')
 
 		await this.onRecipientAccount(recipientId, (client, peer) =>
 			call(client, 'deleteMessages', () => client.deleteMessages(peer.entity, [m.tgId], { revoke: forBoth })))
@@ -4054,4 +4070,18 @@ function esc(s: string): string {
 // Имя файла — латиницей: так его одинаково покажут Telegram и браузер.
 function reportFileName(domain: string | null): string {
 	return `skyseo-${String(domain ?? 'report').replace(/[^a-zA-Z0-9.-]/g, '_')}.pdf`
+}
+
+type Presence = { status: string; at: Date | null }
+
+// Статус пользователя Telegram → то же, что Telegram показывает под именем.
+function presenceOf(st: any): Presence {
+	switch (st?.className) {
+		case 'UserStatusOnline': return { status: 'online', at: st.expires ? new Date(Number(st.expires) * 1000) : null }
+		case 'UserStatusOffline': return { status: 'offline', at: st.wasOnline ? new Date(Number(st.wasOnline) * 1000) : null }
+		case 'UserStatusRecently': return { status: 'recently', at: null }
+		case 'UserStatusLastWeek': return { status: 'week', at: null }
+		case 'UserStatusLastMonth': return { status: 'month', at: null }
+		default: return { status: 'long', at: null }
+	}
 }
