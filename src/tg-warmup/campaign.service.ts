@@ -548,6 +548,15 @@ export class CampaignService {
 		return out.sort((a, b) => (a.at?.getTime() ?? Infinity) - (b.at?.getTime() ?? Infinity))
 	}
 
+	/** Аккаунты, которым режим разрешает писать и которые не выведены из строя. */
+	private async writingAccountIds(): Promise<string[]> {
+		const rows = await this.prisma.tgAccount.findMany({
+			where: { mode: { in: ['SEND', 'BOTH'] }, status: { notIn: ['BANNED', 'ERROR', 'PAUSED'] } },
+			select: { id: true },
+		})
+		return rows.map(r => r.id)
+	}
+
 	/** Какие аккаунты работают в кампании. Полная замена списка. */
 	async setAccounts(campaignId: string, accountIds: string[]) {
 		const ids = [...new Set(accountIds ?? [])]
@@ -816,14 +825,13 @@ export class CampaignService {
 			// Не нашлось ни одной прошлой кампании — берём все аккаунты, которым
 			// разрешена рассылка. Иначе первое же нажатие кнопки упиралось бы в
 			// «не выбрано ни одного аккаунта», а выбирать негде: настроек нет.
-			const pool = last
-				? accounts.map(a => a.accountId)
-				: (
-						await this.prisma.tgAccount.findMany({
-							where: { mode: { in: ['SEND', 'BOTH'] }, status: { notIn: ['BANNED', 'ERROR', 'PAUSED'] } },
-							select: { id: true },
-						})
-					).map(a => a.id)
+			// Из прошлой берём только тех, кому писать по-прежнему можно. Если
+			// никого не осталось — например, старые аккаунты удалили, — берём
+			// всех пишущих: иначе новая рассылка наследовала пустой список и
+			// молча стояла с «нет аккаунтов», хотя пишущие аккаунты были.
+			const writing = await this.writingAccountIds()
+			const inherited = accounts.map(a => a.accountId).filter(id => writing.includes(id))
+			const pool = last && inherited.length ? inherited : writing
 
 			target = await this.prisma.tgCampaign.create({
 				data: {
@@ -1365,6 +1373,22 @@ export class CampaignService {
 
 		let sent = 0
 		for (const c of campaigns) {
+			// Идущая рассылка без единого аккаунта — никогда не замысел, а
+			// последствие: аккаунты удалили, а новых в неё никто не добавил.
+			// Подтягиваем всех, кому разрешено писать.
+			if (!c.accounts.length) {
+				const ids = await this.writingAccountIds()
+				if (ids.length) {
+					await this.prisma.tgCampaignAccount.createMany({
+						data: ids.map(accountId => ({ campaignId: c.id, accountId })),
+						skipDuplicates: true,
+					})
+					c.accounts = await this.prisma.tgCampaignAccount.findMany({
+						where: { campaignId: c.id },
+						include: { account: { include: { proxy: true } } },
+					})
+				}
+			}
 			/*
 			 * Очередь пуста — рассылка закончилась, и сказать об этом надо сразу.
 			 *

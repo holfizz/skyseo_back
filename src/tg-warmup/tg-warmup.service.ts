@@ -861,11 +861,35 @@ export class TgWarmupService {
 		}
 
 		const ids = created.map(c => c.id)
+		// Новые аккаунты по умолчанию «греются и пишут» — значит, сразу в рассылки.
+		await this.joinActiveCampaigns(ids)
 		const pool = input.proxyMode !== 'one' && input.proxyMode !== 'none' && ids.length
 			? await this.assignFromPool(ids)
 			: null
 
 		return { created: created.length, duplicates, errors, ids, pool }
+	}
+
+	/**
+	 * Режим — единственный переключатель «пишет ли аккаунт». Аккаунт, которому
+	 * разрешено писать, сам попадает во все незавершённые рассылки. Раньше
+	 * список аккаунтов кампании был вторым, скрытым переключателем: владелец
+	 * ставил «греется и пишет», а рассылка аккаунт не видела и писала
+	 * «нет аккаунтов». Обратного шага нет намеренно: отправка и так пропускает
+	 * аккаунты в режиме WARM, а в привязке живёт пауза после флуда, которую
+	 * нельзя терять при повторном включении.
+	 */
+	private async joinActiveCampaigns(accountIds: string[]) {
+		if (!accountIds.length) return
+		const active = await this.prisma.tgCampaign.findMany({
+			where: { status: { in: ['DRAFT', 'RUNNING', 'PAUSED'] } },
+			select: { id: true },
+		})
+		if (!active.length) return
+		await this.prisma.tgCampaignAccount.createMany({
+			data: active.flatMap(c => accountIds.map(accountId => ({ campaignId: c.id, accountId }))),
+			skipDuplicates: true,
+		})
 	}
 
 	async deleteAccount(id: string) {
@@ -902,6 +926,7 @@ export class TgWarmupService {
 		const a = await this.prisma.tgAccount.findUnique({ where: { id }, select: { status: true } })
 		if (!a) throw new NotFoundException('Аккаунт не найден')
 		await this.prisma.tgAccount.update({ where: { id }, data: { mode: value } })
+		if (value !== 'WARM') await this.joinActiveCampaigns([id])
 
 		// Сняли с прогрева — останавливаем идущий, иначе воркер будет ходить
 		// к аккаунту, которому это больше не положено.
