@@ -152,6 +152,33 @@ export class TgWarmupService {
 	 * проверкой количества. Срок нужен на случай, если воркер упал и не снял
 	 * захват — иначе аккаунт завис бы навсегда.
 	 */
+	/** Проверка переписки, которую рассылка просит делать в паузах захода. */
+	private sessionPoller: ((accountId: string, client: any) => Promise<void>) | null = null
+
+	setSessionPoller(fn: (accountId: string, client: any) => Promise<void>) {
+		this.sessionPoller = fn
+	}
+
+	/**
+	 * Пауза внутри захода. Раз в минуту заглядываем в переписку через это же
+	 * подключение: второе открыть нельзя, а ответ клиента не должен ждать
+	 * конца захода. Сбой проверки заход не роняет.
+	 */
+	private async idle(accountId: string, client: any, ms: number, state: { lastPoll: number }) {
+		const until = Date.now() + ms
+		for (;;) {
+			if (this.sessionPoller && Date.now() - state.lastPoll >= 60_000) {
+				state.lastPoll = Date.now()
+				await this.sessionPoller(accountId, client).catch(e =>
+					this.logger.warn(`Проверка переписки во время прогрева не удалась: ${e?.message ?? e}`))
+			}
+			const left = until - Date.now()
+			if (left <= 0) return
+			// Спим до конца паузы или до следующей проверки — что раньше.
+			await sleep(Math.max(1000, Math.min(left, state.lastPoll + 60_000 - Date.now())))
+		}
+	}
+
 	async claimAccount(accountId: string, by: string, seconds: number): Promise<boolean> {
 		const now = new Date()
 		const claimed = await this.prisma.tgAccount.updateMany({
@@ -2601,6 +2628,8 @@ export class TgWarmupService {
 		let done = 0
 		try {
 			const { session: saved } = await withClient(opts, async client => {
+				// lastPoll = 0: первая проверка переписки — в первой же паузе.
+				const polled = { lastPoll: 0 }
 				for (let i = 0; i < session.actions; i++) {
 					const outcome = await runAction({
 						client,
@@ -2627,7 +2656,7 @@ export class TgWarmupService {
 					else if (outcome.kind === 'peer-chat') usedToday.messages++
 					else if (REACTION_KINDS.has(outcome.kind)) usedToday.reactions++
 					done++
-					if (i < session.actions - 1) await sleep(gapMs * (0.6 + rnd() * 0.8))
+					if (i < session.actions - 1) await this.idle(account.id, client, gapMs * (0.6 + rnd() * 0.8), polled)
 				}
 				return null
 			})

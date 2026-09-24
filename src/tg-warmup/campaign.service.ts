@@ -347,7 +347,11 @@ export class CampaignService {
 		private warmup: TgWarmupService,
 		private telegram: TelegramService,
 		private report: ReportService,
-	) {}
+	) {
+		// Прогрев в паузах между действиями проверяет переписку через своё
+		// подключение — иначе ответы ждали бы конца захода, до двадцати минут.
+		this.warmup.setSessionPoller((accountId, client) => this.pollInSession(accountId, client))
+	}
 
 	// ── кампании ─────────────────────────────────────────────────────────────
 
@@ -2180,7 +2184,8 @@ export class CampaignService {
 				include: { proxy: true },
 			})
 			if (!account || account.status === 'BANNED') return
-			// Занят прогревом — пропускаем, ответы подождут до следующего тика.
+			// Занят прогревом — пропускаем: переписку в это время проверяет сам
+			// прогрев, через своё подключение (pollInSession).
 			if (account.busyUntil && account.busyUntil > new Date()) {
 				skipped += list.length
 				return
@@ -2192,154 +2197,11 @@ export class CampaignService {
 
 			const opts = this.warmup.clientOptions(account)
 			try {
-				const { result, session } = await withClient(opts, async client => {
-					const dialogs: any = await call(client, 'getDialogs', () => client.getDialogs({ limit: 100 }))
-					const out: Array<{ recipient: any; readTo: number; top: number; entity: any; presence: Presence }> = []
-					for (const d of dialogs ?? []) {
-						if (!d?.isUser || !d?.entity) continue
-						const uid = String(d.entity.id)
-						const uname = String(d.entity.username ?? '').toLowerCase()
-						const r = list.find(x => (x.tgUserId && x.tgUserId === uid) || (x.username && x.username === uname))
-						if (!r) continue
-						out.push({
-							recipient: r,
-							readTo: Number(d.dialog?.readOutboxMaxId ?? 0),
-							top: Number(d.dialog?.topMessage ?? 0),
-							entity: d.entity,
-							presence: presenceOf(d.entity.status),
-						})
-					}
-					/*
-					 * Вложения, записанные до того, как мы научились их разбирать.
-					 *
-					 * Такие строки лежат в базе как «[вложение без текста]» — при
-					 * записи мы не сохранили ни вида, ни содержимого, а обычный
-					 * опрос до них уже не дойдёт: он берёт сообщения новее
-					 * lastSeenMsgId. Спрашиваем их отдельно, по конкретным id, и
-					 * только один раз: заполнили — больше не попадают в выборку.
-					 */
-					const legacy = await this.prisma.tgDialogMessage.findMany({
-						where: {
-							recipientId: { in: list.map(r => r.id) },
-							out: false,
-							mediaKind: null,
-							text: { startsWith: '[вложение' },
-						},
-						select: { id: true, recipientId: true, tgId: true },
-					})
-					const legacyBy = new Map<string, Array<{ id: string; tgId: number }>>()
-					for (const m of legacy) {
-						const arr = legacyBy.get(m.recipientId)
-						if (arr) arr.push({ id: m.id, tgId: m.tgId })
-						else legacyBy.set(m.recipientId, [{ id: m.id, tgId: m.tgId }])
-					}
-
-					// История тянется только там, где что-то изменилось.
-					const fetched: Array<{ id: string; messages: any[]; media: Map<number, { data: string | null; mime: string }> }> = []
-					const backfill: Array<{ rowId: string; kind: string; name: string | null; size: number | null; text: string; data: string | null }> = []
-
-					for (const item of out) {
-						const old = legacyBy.get(item.recipient.id)
-						if (old?.length) {
-							try {
-								const msgs: any = await call(client, 'getMessages', () =>
-									client.getMessages(item.entity, { ids: old.map(x => x.tgId) }),
-								)
-								for (const m of (msgs ?? []) as any[]) {
-									if (!m?.id) continue
-									const row = old.find(x => x.tgId === Number(m.id))
-									const info = mediaOf(m)
-									if (!row || !info) continue
-									let data: string | null = null
-									if (worthDownloading(info)) {
-										try {
-											const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
-											if (buf?.length) data = `data:${mimeFor(info)};base64,${Buffer.from(buf).toString('base64')}`
-										} catch { /* не скачалось — вид всё равно запишем */ }
-									}
-									backfill.push({
-										rowId: row.id, kind: info.kind, name: info.name, size: info.size,
-										text: String(m.message ?? '') || mediaCaption(info), data,
-									})
-								}
-							} catch {
-								// Переписку могли удалить с той стороны — тогда этих
-								// сообщений больше нет ни у кого, и это не наша ошибка.
-							}
-						}
-
-						if (item.top <= item.recipient.lastSeenMsgId) continue
-						const msgs: any = await call(client, 'getMessages', () =>
-							client.getMessages(item.entity, { limit: 40, minId: item.recipient.lastSeenMsgId }),
-						)
-
-						/*
-						 * Вложения забираем здесь же, пока подключение открыто и
-						 * сообщение под рукой. Отдельным заходом позже это стоило
-						 * бы нового коннекта на каждую картинку.
-						 *
-						 * Только входящие и только мелкие: свои картинки мы и так
-						 * знаем, а чужое видео на мобильном прокси — оплаченный
-						 * трафик ради превью, которое всё равно не покажем.
-						 */
-						const media = new Map<number, { data: string | null; mime: string }>()
-						for (const m of (msgs ?? []) as any[]) {
-							if (!m?.id || m.out) continue
-							const info = mediaOf(m)
-							if (!info || !worthDownloading(info)) continue
-							try {
-								const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
-								if (buf?.length) {
-									media.set(Number(m.id), {
-										data: Buffer.from(buf).toString('base64'),
-										mime: mimeFor(info),
-									})
-								}
-							} catch {
-								// Не скачалось — не беда: вид и размер всё равно запишем.
-							}
-						}
-						fetched.push({ id: item.recipient.id, messages: msgs ?? [], media })
-					}
-					return { out, fetched, backfill }
-				})
+				const { result, session } = await withClient(opts, client => this.pollDialogs(client, list))
 				await this.warmup.persistSession(account.id, opts.session, session)
-
-				// Дозаполняем то, что раньше записалось безымянным вложением.
-				for (const b of result.backfill) {
-					await this.prisma.tgDialogMessage.update({
-						where: { id: b.rowId },
-						data: { mediaKind: b.kind, mediaName: b.name, mediaSize: b.size, mediaData: b.data, text: b.text },
-					}).catch(() => undefined)
-				}
-				if (result.backfill.length) changed += result.backfill.length
-
-				const history = new Map(result.fetched.map(f => [f.id, f.messages]))
-				const media = new Map(result.fetched.map(f => [f.id, f.media]))
-				for (const item of result.out) {
-					// Прочтение и «в сети» пишем всегда и отдельно: они меняются
-					// каждую минуту, и считать это «изменением в переписке» нельзя.
-					await this.prisma.tgRecipient.update({
-						where: { id: item.recipient.id },
-						data: {
-							readOutboxMaxId: Math.max(item.recipient.readOutboxMaxId ?? 0, item.readTo),
-							peerStatus: item.presence.status,
-							peerSeenAt: item.presence.at,
-							peerCheckedAt: new Date(),
-						},
-					}).catch(() => undefined)
-					const before = !!item.recipient.repliedAt
-					if (await this.applyDialogState(item, history.get(item.recipient.id) ?? [], account, media.get(item.recipient.id))) {
-						changed++
-						if (!before) {
-							const after = await this.prisma.tgRecipient.findUnique({
-								where: { id: item.recipient.id },
-								select: { repliedAt: true },
-							})
-							if (after?.repliedAt) replies++
-						}
-					}
-				}
+				const res = await this.applyPoll(result, account)
+				changed += res.changed
+				replies += res.replies
 			} catch (e: any) {
 				failed++
 				const failure = e instanceof TgError ? e.failure : classifyError(e)
@@ -2369,6 +2231,183 @@ export class CampaignService {
 			all.catch(() => {})
 		}
 		return { accounts: byAccount.size, checked: pending.length, changed, replies, failed, skipped }
+	}
+
+	/**
+	 * Одна проверка переписок аккаунта по уже открытому подключению: список
+	 * диалогов, новое в тех, где что-то изменилось, и дозаполнение вложений.
+	 */
+	private async pollDialogs(client: any, list: any[]) {
+		const dialogs: any = await call(client, 'getDialogs', () => client.getDialogs({ limit: 100 }))
+		const out: Array<{ recipient: any; readTo: number; top: number; entity: any; presence: Presence }> = []
+		for (const d of dialogs ?? []) {
+			if (!d?.isUser || !d?.entity) continue
+			const uid = String(d.entity.id)
+			const uname = String(d.entity.username ?? '').toLowerCase()
+			const r = list.find(x => (x.tgUserId && x.tgUserId === uid) || (x.username && x.username === uname))
+			if (!r) continue
+			out.push({
+				recipient: r,
+				readTo: Number(d.dialog?.readOutboxMaxId ?? 0),
+				top: Number(d.dialog?.topMessage ?? 0),
+				entity: d.entity,
+				presence: presenceOf(d.entity.status),
+			})
+		}
+		/*
+		 * Вложения, записанные до того, как мы научились их разбирать.
+		 *
+		 * Такие строки лежат в базе как «[вложение без текста]» — при
+		 * записи мы не сохранили ни вида, ни содержимого, а обычный
+		 * опрос до них уже не дойдёт: он берёт сообщения новее
+		 * lastSeenMsgId. Спрашиваем их отдельно, по конкретным id, и
+		 * только один раз: заполнили — больше не попадают в выборку.
+		 */
+		const legacy = await this.prisma.tgDialogMessage.findMany({
+			where: {
+				recipientId: { in: list.map(r => r.id) },
+				out: false,
+				mediaKind: null,
+				text: { startsWith: '[вложение' },
+			},
+			select: { id: true, recipientId: true, tgId: true },
+		})
+		const legacyBy = new Map<string, Array<{ id: string; tgId: number }>>()
+		for (const m of legacy) {
+			const arr = legacyBy.get(m.recipientId)
+			if (arr) arr.push({ id: m.id, tgId: m.tgId })
+			else legacyBy.set(m.recipientId, [{ id: m.id, tgId: m.tgId }])
+		}
+
+		// История тянется только там, где что-то изменилось.
+		const fetched: Array<{ id: string; messages: any[]; media: Map<number, { data: string | null; mime: string }> }> = []
+		const backfill: Array<{ rowId: string; kind: string; name: string | null; size: number | null; text: string; data: string | null }> = []
+
+		for (const item of out) {
+			const old = legacyBy.get(item.recipient.id)
+			if (old?.length) {
+				try {
+					const msgs: any = await call(client, 'getMessages', () =>
+						client.getMessages(item.entity, { ids: old.map(x => x.tgId) }),
+					)
+					for (const m of (msgs ?? []) as any[]) {
+						if (!m?.id) continue
+						const row = old.find(x => x.tgId === Number(m.id))
+						const info = mediaOf(m)
+						if (!row || !info) continue
+						let data: string | null = null
+						if (worthDownloading(info)) {
+							try {
+								const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
+								if (buf?.length) data = `data:${mimeFor(info)};base64,${Buffer.from(buf).toString('base64')}`
+							} catch { /* не скачалось — вид всё равно запишем */ }
+						}
+						backfill.push({
+							rowId: row.id, kind: info.kind, name: info.name, size: info.size,
+							text: String(m.message ?? '') || mediaCaption(info), data,
+						})
+					}
+				} catch {
+					// Переписку могли удалить с той стороны — тогда этих
+					// сообщений больше нет ни у кого, и это не наша ошибка.
+				}
+			}
+
+			if (item.top <= item.recipient.lastSeenMsgId) continue
+			const msgs: any = await call(client, 'getMessages', () =>
+				client.getMessages(item.entity, { limit: 40, minId: item.recipient.lastSeenMsgId }),
+			)
+
+			/*
+			 * Вложения забираем здесь же, пока подключение открыто и
+			 * сообщение под рукой. Отдельным заходом позже это стоило
+			 * бы нового коннекта на каждую картинку.
+			 *
+			 * Только входящие и только мелкие: свои картинки мы и так
+			 * знаем, а чужое видео на мобильном прокси — оплаченный
+			 * трафик ради превью, которое всё равно не покажем.
+			 */
+			const media = new Map<number, { data: string | null; mime: string }>()
+			for (const m of (msgs ?? []) as any[]) {
+				if (!m?.id || m.out) continue
+				const info = mediaOf(m)
+				if (!info || !worthDownloading(info)) continue
+				try {
+					const buf: any = await call(client, 'downloadMedia', () => client.downloadMedia(m))
+					if (buf?.length) {
+						media.set(Number(m.id), {
+							data: Buffer.from(buf).toString('base64'),
+							mime: mimeFor(info),
+						})
+					}
+				} catch {
+					// Не скачалось — не беда: вид и размер всё равно запишем.
+				}
+			}
+			fetched.push({ id: item.recipient.id, messages: msgs ?? [], media })
+		}
+		return { out, fetched, backfill }
+	}
+
+	/** Разложить результат проверки по базе. Возвращает, сколько изменилось и сколько новых ответов. */
+	private async applyPoll(result: Awaited<ReturnType<CampaignService['pollDialogs']>>, account: any) {
+		// Дозаполняем то, что раньше записалось безымянным вложением.
+		for (const b of result.backfill) {
+			await this.prisma.tgDialogMessage.update({
+				where: { id: b.rowId },
+				data: { mediaKind: b.kind, mediaName: b.name, mediaSize: b.size, mediaData: b.data, text: b.text },
+			}).catch(() => undefined)
+		}
+		let changed = result.backfill.length
+		let replies = 0
+
+		const history = new Map(result.fetched.map(f => [f.id, f.messages]))
+		const media = new Map(result.fetched.map(f => [f.id, f.media]))
+		for (const item of result.out) {
+			// Прочтение и «в сети» пишем всегда и отдельно: они меняются
+			// каждую минуту, и считать это «изменением в переписке» нельзя.
+			await this.prisma.tgRecipient.update({
+				where: { id: item.recipient.id },
+				data: {
+					readOutboxMaxId: Math.max(item.recipient.readOutboxMaxId ?? 0, item.readTo),
+					peerStatus: item.presence.status,
+					peerSeenAt: item.presence.at,
+					peerCheckedAt: new Date(),
+				},
+			}).catch(() => undefined)
+			const before = !!item.recipient.repliedAt
+			if (await this.applyDialogState(item, history.get(item.recipient.id) ?? [], account, media.get(item.recipient.id))) {
+				changed++
+				if (!before) {
+					const after = await this.prisma.tgRecipient.findUnique({
+						where: { id: item.recipient.id },
+						select: { repliedAt: true },
+					})
+					if (after?.repliedAt) replies++
+				}
+			}
+		}
+		return { changed, replies }
+	}
+
+	/**
+	 * Проверка переписок посреди захода прогрева — через его же подключение.
+	 *
+	 * Опросник занятый прогревом аккаунт пропускает: второе подключение с той
+	 * же сессии Telegram видит. А заход длится до двадцати минут, и ответ
+	 * клиента всё это время лежал непрочитанным у нас. Теперь прогрев сам раз
+	 * в минуту заглядывает в диалоги, не открывая ничего нового.
+	 */
+	async pollInSession(accountId: string, client: any): Promise<void> {
+		const list = await this.prisma.tgRecipient.findMany({
+			where: { accountId, status: { in: ['SENT', 'READ', 'REPLIED', 'SECOND_SENT'] } },
+			include: { campaign: { select: { id: true, name: true } } },
+		})
+		if (!list.length) return
+		const account = await this.prisma.tgAccount.findUnique({ where: { id: accountId } })
+		if (!account) return
+		const res = await this.applyPoll(await this.pollDialogs(client, list), account)
+		if (res.changed) this.logger.log(`Во время прогрева: изменений в переписках ${res.changed}, новых ответов ${res.replies}`)
 	}
 
 	/** Разложить состояние одного диалога: прочтение, новые сообщения, ответ. */
@@ -2475,7 +2514,9 @@ export class CampaignService {
 			)
 		}
 
-		if (incoming.length && !r.repliedAt) {
+		// Пишем в бот о КАЖДОМ новом сообщении клиента, а не только о первом
+		// ответе: дальше идёт живой разговор, и без уведомления его пропускают.
+		if (incoming.length) {
 			const who = [r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone)
 			// Показываем ВСЕ пришедшие реплики, а не последнюю: человек часто
 			// пишет «Здравствуйте» и следом суть, и по одной последней строке
@@ -2486,11 +2527,12 @@ export class CampaignService {
 				.join('\n\n')
 				.slice(0, 2500)
 			await this.notifyAdmin(
-				`💬 <b>Ответили в рассылке</b>\n\n` +
+				(r.repliedAt ? `💬 <b>Новое сообщение</b>\n\n` : `💬 <b>Ответили в рассылке</b>\n\n`) +
 					`<b>${esc(who ?? '')}</b>${r.domain ? ` · ${esc(r.domain)}` : ''}\n` +
 					`Кампания: ${esc(r.campaign?.name ?? '')}\n` +
 					`Аккаунт: ${esc(account.label ?? account.id)}\n\n` +
-					`<blockquote>${body}</blockquote>`,
+					`<blockquote>${body}</blockquote>\n` +
+					`<a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${r.id}">Открыть переписку</a>`,
 			)
 		}
 		return true
@@ -2770,7 +2812,11 @@ export class CampaignService {
 				data: {
 					error: null,
 					...(r.secondSentAt ? {} : { secondSentAt: new Date(), status: 'SECOND_SENT' as const }),
-					lastSeenMsgId: Math.max(r.lastSeenMsgId, ...result.map(m => m.id)),
+					// lastSeenMsgId здесь НЕ двигаем. Если клиент успел написать
+					// между опросом и нашим ответом, его сообщение оказалось бы
+					// ниже отметки, и опросник не забрал бы его уже никогда.
+					// Своё сообщение опросник заберёт повторно — дубль отсечёт
+					// уникальность (recipientId, tgId).
 				},
 			})
 			const saved = result.filter(m => m.id)
@@ -3358,7 +3404,8 @@ export class CampaignService {
 				deliveryUnknown: true, error: true,
 				campaign: { select: { id: true, name: true } },
 				account: { select: { id: true, label: true, avatar: true, tgUserId: true, status: true } },
-				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { out: true, text: true, date: true, mediaKind: true } },
+				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { tgId: true, out: true, text: true, date: true, mediaKind: true } },
+				readOutboxMaxId: true,
 			},
 		})
 
@@ -3391,6 +3438,8 @@ export class CampaignService {
 				error: r.error,
 				account: r.account,
 				last,
+				// Галочки в списке: прочитано ли наше последнее сообщение.
+				lastRead: !!last?.out && last.tgId <= r.readOutboxMaxId,
 				lastActivity,
 			}
 		})
