@@ -2510,6 +2510,8 @@ export class CampaignService {
 			campaign: r.campaign, account: r.account,
 			// Отчёт есть только у адресата, пришедшего из базы лидов.
 			hasReport: !!r.leadId,
+			// Сайт, запросы и конкуренты — чтобы отвечать, не открывая базу лидов.
+			lead: r.leadId ? await this.report.leadBrief(r.leadId) : null,
 			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
 			// кода остаётся хвостом, а начало собирается по его выдаче.
 			secondPreview: await this.fullSecondMessage(
@@ -2581,6 +2583,65 @@ export class CampaignService {
 			keywords,
 			competitors,
 		})
+	}
+
+	/**
+	 * Исправить своё сообщение в переписке. Telegram даёт править только
+	 * свои сообщения и только в первые 48 часов — дальше вернёт ошибку.
+	 */
+	async editMessage(recipientId: string, messageId: string, text: string) {
+		const body = String(text ?? '').trim()
+		if (!body) throw new BadRequestException('Пустое сообщение')
+		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
+		const m = await this.prisma.tgDialogMessage.findFirst({ where: { id: messageId, recipientId } })
+		if (!m) throw new NotFoundException('Сообщение не найдено')
+		if (!m.out) throw new BadRequestException('Править можно только свои сообщения')
+		if (m.mediaKind) throw new BadRequestException('Сообщение с файлом не правится — удалите и отправьте заново')
+
+		await this.onRecipientAccount(recipientId, (client, peer) =>
+			call(client, 'editMessage', () => client.editMessage(peer.entity, { message: m.tgId, text: body })))
+		await this.prisma.tgDialogMessage.update({ where: { id: m.id }, data: { text: body } })
+		return { ok: true }
+	}
+
+	/**
+	 * Удалить сообщение: только у нас или у обоих. В личной переписке Telegram
+	 * позволяет удалить у обоих и чужое сообщение тоже.
+	 */
+	async deleteMessage(recipientId: string, messageId: string, forBoth: boolean) {
+		const m = await this.prisma.tgDialogMessage.findFirst({ where: { id: messageId, recipientId } })
+		if (!m) throw new NotFoundException('Сообщение не найдено')
+
+		await this.onRecipientAccount(recipientId, (client, peer) =>
+			call(client, 'deleteMessages', () => client.deleteMessages(peer.entity, [m.tgId], { revoke: forBoth })))
+		await this.prisma.tgDialogMessage.delete({ where: { id: m.id } })
+		return { ok: true }
+	}
+
+	/** Действие в переписке с того аккаунта, с которого она велась. */
+	private async onRecipientAccount<T>(recipientId: string, fn: (client: any, peer: any) => Promise<T>): Promise<T> {
+		const r = await this.prisma.tgRecipient.findUnique({
+			where: { id: recipientId },
+			include: { account: { include: { proxy: true } } },
+		})
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла переписка')
+		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — с него уже ничего не сделать')
+
+		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
+			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')
+		}
+		const opts = this.warmup.clientOptions(r.account)
+		try {
+			const { result, session } = await withClient(opts, async client => fn(client, await this.resolvePeer(client, r)))
+			await this.warmup.persistSession(r.account.id, opts.session, session)
+			return result
+		} catch (e: any) {
+			const failure = e instanceof TgError ? e.failure : classifyError(e)
+			throw new BadRequestException(`Не получилось: ${failure.message}`)
+		} finally {
+			await this.warmup.releaseAccount(r.account.id)
+		}
 	}
 
 	/** PDF-отчёт адресата — посмотреть перед тем, как приложить к ответу. */
@@ -3316,7 +3377,10 @@ export class CampaignService {
 
 		const rows = []
 		for (const c of campaigns) {
-			const [queued, sentToday, blockedToday, plannedToday, next] = await Promise.all([
+			const [total, sentTotal, queued, sentToday, blockedToday, plannedToday, next] = await Promise.all([
+				// Вся рассылка целиком: «из 20 человек ушло 7» — первое, что хотят видеть.
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id } }),
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { not: null } } }),
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id, status: 'QUEUED' } }),
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { gte: midnight } } }),
 				// Считаем только то, у чего есть отметка времени. У FAILED её нет,
@@ -3352,6 +3416,8 @@ export class CampaignService {
 				windowTo: c.windowTo,
 				dailyGoal: c.dailyGoal,
 				sendDate: dayString(c.sendDate),
+				total,
+				sentTotal,
 				queued,
 				sentToday,
 				blockedToday,

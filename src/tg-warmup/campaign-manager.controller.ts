@@ -137,6 +137,18 @@ export class CampaignManagerController {
 		return this.svc.sendManual(id, body?.text, !!body?.withReport)
 	}
 
+	/** Исправить своё сообщение в переписке. */
+	@Patch('recipients/:id/messages/:messageId')
+	editMessage(@Param('id') id: string, @Param('messageId') messageId: string, @Body() body: { text: string }) {
+		return this.svc.editMessage(id, messageId, body?.text)
+	}
+
+	/** Удалить сообщение: ?forBoth=1 — у обоих, иначе только у нас. */
+	@Delete('recipients/:id/messages/:messageId')
+	deleteMessage(@Param('id') id: string, @Param('messageId') messageId: string, @Query('forBoth') forBoth?: string) {
+		return this.svc.deleteMessage(id, messageId, forBoth === '1')
+	}
+
 	/** PDF-отчёт адресата: открыть и посмотреть перед отправкой. Счётчик открытий лида не трогает. */
 	@Get('recipients/:id/report')
 	async report(@Param('id') id: string, @Res() res: Response) {

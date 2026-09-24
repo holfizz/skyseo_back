@@ -118,6 +118,37 @@ export class ReportService {
 		private appConfig: AppConfigService,
 	) {}
 
+	/**
+	 * Коротко о лиде для шапки переписки: сайт, запросы с позициями и кто выше.
+	 * Без частотности — она платная (XMLRiver), а шапка открывается часто.
+	 */
+	async leadBrief(leadId: string) {
+		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId } })
+		if (!lead) return null
+		const fromSerp = lead.importId ? await this.keywordsFromSerp(lead.importId, lead.domain) : []
+		const keywords = fromSerp.length ? fromSerp : this.keywordsFromLeadFields(lead)
+		const imp = lead.importId
+			? await this.prisma.serpImport.findUnique({ where: { id: lead.importId }, select: { region: true } })
+			: null
+		return {
+			domain: displayDomain(normalizeDomain(lead.domain)),
+			companyName: lead.companyName,
+			city: lead.city,
+			region: imp?.region ?? null,
+			phone: lead.phone,
+			email: lead.email,
+			reportOpens: lead.reportOpens,
+			reportOpenedAt: lead.reportOpenedAt,
+			keywords: keywords.map(k => ({
+				keyword: k.keyword,
+				position: k.position,
+				// Первая пятёрка тех, кто выше: полный список до 49 доменов в шапке не читается.
+				competitors: k.competitors.slice(0, 5).map(c => ({ position: c.position, domain: c.domain, url: c.url })),
+				above: k.competitors.length,
+			})),
+		}
+	}
+
 	async renderPdf(leadId: string): Promise<Buffer> {
 		return renderPdf(await this.renderHtml(leadId))
 	}
