@@ -1565,6 +1565,11 @@ model TgDialogMessage {
   mediaName String?
   mediaSize Int?
 
+  // На какое сообщение это ответ: id того сообщения в Telegram. Клиент
+  // отвечает на конкретную нашу реплику, и без этой связи в ленте не видно,
+  // на какую именно, — а от неё зависит смысл ответа вроде «да, давайте».
+  replyToTgId Int?
+
   createdAt DateTime @default(now())
 
   recipient TgRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)

@@ -1,4 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common'
+import {
+	Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors,
+} from '@nestjs/common'
+import { FilesInterceptor } from '@nestjs/platform-express'
 import type { Response } from 'express'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { SprintGuard } from '../sprint/sprint.guard'
@@ -132,9 +135,27 @@ export class CampaignManagerController {
 		return this.svc.dialog(id)
 	}
 
+	/**
+	 * Написать адресату: текст, картинки и ответ на сообщение.
+	 *
+	 * Принимает и JSON, и multipart: во втором случае photos — приложенные
+	 * картинки, replyTo — id сообщения в Telegram, на которое отвечаем. Поля
+	 * multipart приходят строками, поэтому «true» и true здесь равнозначны.
+	 */
 	@Post('recipients/:id/message')
-	message(@Param('id') id: string, @Body() body: { text: string; withReport?: boolean }) {
-		return this.svc.sendManual(id, body?.text, !!body?.withReport)
+	@UseInterceptors(FilesInterceptor('photos', 10, { limits: { fileSize: 10 * 1024 * 1024 } }))
+	message(
+		@Param('id') id: string,
+		@UploadedFiles() photos: Express.Multer.File[] | undefined,
+		@Body() body: { text?: string; withReport?: boolean | string; replyTo?: number | string },
+	) {
+		const replyTo = body?.replyTo != null && body.replyTo !== '' ? Number(body.replyTo) : null
+		return this.svc.sendManual(id, body?.text ?? '', body?.withReport === true || body?.withReport === 'true', {
+			photos: photos?.length
+				? photos.map((f, i) => ({ buffer: f.buffer, name: f.originalname || `photo-${i + 1}.jpg`, mime: f.mimetype }))
+				: undefined,
+			replyToTgId: Number.isFinite(replyTo) ? replyTo : null,
+		})
 	}
 
 	/** Исправить своё сообщение в переписке. */

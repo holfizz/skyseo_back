@@ -18,7 +18,7 @@ import {
 import { distributeDaily } from './warmup-plan'
 import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
-import { mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
+import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 
 /**
@@ -45,6 +45,12 @@ import { keysOf, optOutReason, type StopKey } from './stop-list'
 
 type SendVerdict = 'sent' | 'skipped' | 'failed'
 
+/** Картинка, приложенная к ответу руками. */
+export type OutPhoto = { buffer: Buffer; name: string; mime?: string | null }
+
+/** Что уходит вложением в ответе: приложенные картинки и отчёт. */
+type OutFile = { kind: 'photo' | 'document'; name: string; mime: string | null; buffer: Buffer }
+
 /**
  * Разбить текст для правки ради метки «ред.»: отправляем без финального знака
  * (?/!/…/.), затем дописываем его — выглядит, будто человек отправил и тут же
@@ -57,6 +63,44 @@ function draftForEditedMark(text: string): { draft: string; final: string } | nu
 	const draft = text.slice(0, m.index).replace(/\s+$/, '')
 	if (!draft) return null
 	return { draft, final: text }
+}
+
+/**
+ * На какое сообщение отвечает это. null — ответа нет.
+ *
+ * Telegram кладёт связь в replyTo, и она бывает не только на сообщение:
+ * ответ на историю или на сообщение из другого чата приходит без
+ * replyToMsgId. Для ленты такой ответ — обычное сообщение: цитировать нечего.
+ */
+function replyToOf(msg: any): number | null {
+	const id = Number(msg?.replyTo?.replyToMsgId ?? 0)
+	return id > 0 ? id : null
+}
+
+/** Сколько символов цитаты отдаём: в ленте видна одна строка. */
+const QUOTE_LIMIT = 200
+
+/**
+ * Цитата для ленты: на какое сообщение это ответ.
+ *
+ * Самого сообщения у нас может не быть: до вложений и до этой связи переписка
+ * тянулась не целиком, а часть могли удалить. Тогда отдаём один id — интерфейс
+ * покажет «сообщение недоступно», а не пустую цитату.
+ */
+function replyQuote(
+	replyToTgId: number | null,
+	byTgId: Map<number, { id: string; out: boolean; text: string; mediaKind: string | null }>,
+) {
+	if (!replyToTgId) return null
+	const q = byTgId.get(replyToTgId)
+	if (!q) return { tgId: replyToTgId, id: null, out: null, text: null, mediaKind: null }
+	return {
+		tgId: replyToTgId,
+		id: q.id,
+		out: q.out,
+		text: q.text.length > QUOTE_LIMIT ? `${q.text.slice(0, QUOTE_LIMIT)}…` : q.text,
+		mediaKind: q.mediaKind,
+	}
 }
 
 /**
@@ -2463,6 +2507,9 @@ export class CampaignService {
 						mediaName: info?.name ?? null,
 						mediaSize: info?.size ?? null,
 						mediaData: got?.data ? `data:${got.mime};base64,${got.data}` : null,
+						// Ответ на конкретное сообщение: «да, давайте» без цитаты
+						// в ленте не разобрать, если мы успели написать дважды.
+						replyToTgId: replyToOf(m),
 					}
 				})
 			if (rows.length) {
@@ -2553,6 +2600,9 @@ export class CampaignService {
 			},
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
+		// Цитаты собираем по своей же ленте: лишнего запроса не нужно, вся
+		// переписка уже здесь.
+		const byTgId = new Map(r.messages.map(m => [m.tgId, m]))
 		return {
 			id: r.id,
 			who: [r.firstName, r.middleName, r.lastName].filter(Boolean).join(' ') || null,
@@ -2581,6 +2631,11 @@ export class CampaignService {
 				// и мы его забрали.
 				mediaKind: m.mediaKind, mediaData: m.mediaData,
 				mediaName: m.mediaName, mediaSize: m.mediaSize,
+				// Цитата: на что это ответ. Сам текст тоже отдаём, хотя он есть
+				// и в своей строке ленты, — иначе цитату нельзя показать, пока
+				// то сообщение не подгрузилось. Обрезаем: в цитате всё равно
+				// видна только первая строка.
+				replyTo: replyQuote(m.replyToTgId, byTgId),
 			})),
 		}
 	}
@@ -2757,11 +2812,32 @@ export class CampaignService {
 	 * Первое отправленное вручную сообщение засчитывается в воронку как
 	 * «второе касание»: именно этот шаг там и меряется. Дальнейшие — уже
 	 * переписка, и в воронке им места нет.
+	 *
+	 * К тексту можно приложить картинки и ответить на конкретное сообщение —
+	 * ровно то, чем человек отвечает в самом Telegram: скриншот позиций
+	 * объясняет больше абзаца, а цитата нужна, когда с прошлого нашего
+	 * сообщения разговор ушёл в сторону.
 	 */
-	async sendManual(recipientId: string, text: string, withReport = false) {
+	async sendManual(
+		recipientId: string,
+		text: string,
+		withReport = false,
+		extra?: { photos?: OutPhoto[]; replyToTgId?: number | null },
+	) {
 		const body = String(text ?? '').trim()
-		if (!body && !withReport) throw new BadRequestException('Пустое сообщение')
+		const photos = extra?.photos ?? []
+		const replyToTgId = extra?.replyToTgId ?? null
+		if (!body && !withReport && !photos.length) throw new BadRequestException('Пустое сообщение')
 		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
+		if (photos.length > PHOTO_COUNT_LIMIT) {
+			throw new BadRequestException(`За раз можно приложить не больше ${PHOTO_COUNT_LIMIT} фото`)
+		}
+		const heavy = photos.find(p => p.buffer.length > PHOTO_SIZE_LIMIT)
+		if (heavy) throw new BadRequestException(`«${heavy.name}» весит ${humanSize(heavy.buffer.length)} — как фото Telegram столько не примет`)
+		// Тип проверяем по тому, что прислал браузер. Без него отправится, но
+		// Telegram покажет картинкой не то, что человек выбрал.
+		const alien = photos.find(p => p.mime && !p.mime.startsWith('image/'))
+		if (alien) throw new BadRequestException(`«${alien.name}» — не картинка: приложить можно только фото`)
 
 		const r = await this.prisma.tgRecipient.findUnique({
 			where: { id: recipientId },
@@ -2771,6 +2847,17 @@ export class CampaignService {
 		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла переписка')
 		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — с него уже не написать')
 
+		// Отвечаем только на сообщение этой переписки: чужой id Telegram молча
+		// проглотит, и сообщение уйдёт без цитаты — а человек будет думать, что
+		// ответил на конкретную реплику.
+		if (replyToTgId) {
+			const target = await this.prisma.tgDialogMessage.findFirst({
+				where: { recipientId, tgId: replyToTgId },
+				select: { id: true },
+			})
+			if (!target) throw new NotFoundException('Сообщения, на которое отвечаем, в этой переписке нет')
+		}
+
 		// PDF собираем до захвата аккаунта: рендер занимает секунды, и держать
 		// аккаунт всё это время незачем.
 		let pdf: { name: string; buffer: Buffer } | null = null
@@ -2779,6 +2866,18 @@ export class CampaignService {
 			pdf = { name: reportFileName(r.domain), buffer: await this.report.renderPdf(r.leadId) }
 		}
 
+		// Вложения одним списком: порядок отправки = порядок в ленте, подпись
+		// достаётся первому. Отчёт идёт последним — к нему текст относится реже.
+		const files: OutFile[] = [
+			...photos.map((p, i) => ({
+				kind: 'photo' as const,
+				name: p.name || `photo-${i + 1}.jpg`,
+				mime: p.mime ?? null,
+				buffer: p.buffer,
+			})),
+			...(pdf ? [{ kind: 'document' as const, name: pdf.name, mime: 'application/pdf', buffer: pdf.buffer }] : []),
+		]
+
 		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
 			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')
 		}
@@ -2786,23 +2885,38 @@ export class CampaignService {
 		try {
 			const { result, session } = await withClient(opts, async client => {
 				const peer = await this.resolvePeer(client, r)
-				if (!pdf) {
-					const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: body }))
-					return [{ id: Number(msg?.id ?? 0), text: body, file: false }]
+				const sent: Array<{ id: number; text: string; attach: number | null; reply: number | null }> = []
+
+				// Подпись к вложению в Telegram — до 1024 символов, и вешаем её
+				// только на первое: один и тот же текст под каждой картинкой
+				// читался бы как несколько сообщений. Текст без вложений или
+				// длиннее подписи уходит отдельным сообщением перед ними.
+				const caption = files.length && body.length <= 1024 ? body : ''
+				if (body && !caption) {
+					const msg: any = await call(client, 'sendMessage', () =>
+						client.sendMessage(peer.entity, { message: body, ...(replyToTgId ? { replyTo: replyToTgId } : {}) }))
+					sent.push({ id: Number(msg?.id ?? 0), text: body, attach: null, reply: replyToTgId })
 				}
-				// Подпись к файлу в Telegram — до 1024 символов. Длинный текст
-				// уходит отдельным сообщением перед файлом.
-				const sent: Array<{ id: number; text: string; file: boolean }> = []
-				let caption = body
-				if (body.length > 1024) {
-					const msg: any = await call(client, 'sendMessage', () => client.sendMessage(peer.entity, { message: body }))
-					sent.push({ id: Number(msg?.id ?? 0), text: body, file: false })
-					caption = ''
+
+				for (const [i, f] of files.entries()) {
+					// Пауза между вложениями: десяток загрузок в одну секунду — это
+					// не то, как человек отправляет фото, и лишний повод для
+					// FLOOD_WAIT на аккаунте, который мы неделями прогревали.
+					if (i > 0) await new Promise(pause => setTimeout(pause, 800 + Math.floor(Math.random() * 700)))
+					// Цитата — только у первого из отправленного: у каждой картинки
+					// из пачки она выглядела бы как отдельный ответ.
+					const reply = replyToTgId && !sent.length ? replyToTgId : null
+					const file = new CustomFile(f.name, f.buffer.length, '', f.buffer)
+					const msg: any = await call(client, 'sendFile', () => client.sendFile(peer.entity, {
+						file,
+						caption: i === 0 ? caption : '',
+						// Фото — картинкой, отчёт — файлом: сжатый PDF не открыть.
+						forceDocument: f.kind === 'document',
+						workers: 1,
+						...(reply ? { replyTo: reply } : {}),
+					}))
+					sent.push({ id: Number(msg?.id ?? 0), text: (i === 0 ? caption : '') || fileCaption(f), attach: i, reply })
 				}
-				const file = new CustomFile(pdf.name, pdf.buffer.length, '', pdf.buffer)
-				const msg: any = await call(client, 'sendFile', () =>
-					client.sendFile(peer.entity, { file, caption, forceDocument: true, workers: 1 }))
-				sent.push({ id: Number(msg?.id ?? 0), text: caption || `[${pdf.name}]`, file: true })
 				return sent
 			})
 			await this.warmup.persistSession(r.account.id, opts.session, session)
@@ -2822,10 +2936,26 @@ export class CampaignService {
 			const saved = result.filter(m => m.id)
 			if (saved.length) {
 				await this.prisma.tgDialogMessage.createMany({
-					data: saved.map(m => ({
-						recipientId: r.id, tgId: m.id, out: true, text: m.text, date: new Date(),
-						...(m.file && pdf ? { mediaKind: 'document', mediaName: pdf.name, mediaSize: pdf.buffer.length } : {}),
-					})),
+					data: saved.map(m => {
+						const f = m.attach == null ? null : files[m.attach]
+						return {
+							recipientId: r.id, tgId: m.id, out: true, text: m.text, date: new Date(),
+							...(m.reply ? { replyToTgId: m.reply } : {}),
+							...(f
+								? {
+									mediaKind: f.kind,
+									mediaName: f.name,
+									mediaSize: f.buffer.length,
+									// Своё фото кладём в базу по тому же правилу, что и
+									// чужое: мелкое — целиком, у крупного остаются вид и
+									// размер, а сама картинка тянется по кнопке.
+									mediaData: f.kind === 'photo' && f.buffer.length <= MEDIA_LIMIT
+										? `data:${f.mime || 'image/jpeg'};base64,${f.buffer.toString('base64')}`
+										: null,
+								}
+								: {}),
+						}
+					}),
 					skipDuplicates: true,
 				})
 			}
@@ -4173,3 +4303,16 @@ function presenceOf(st: any): Presence {
 
 // Больше этого по кнопке не тянем: 50 МБ — это уже длинное видео, его проще открыть в Telegram.
 const MEDIA_PLAY_LIMIT = 50 * 1024 * 1024
+
+// Сколько картинок и какого веса принимаем в одном ответе. Пределы те же, что
+// у аватарок аккаунта: у Telegram фото больше десяти мегабайт уходит файлом, а
+// не картинкой, и выглядит в переписке иначе, чем человек выбирал.
+const PHOTO_COUNT_LIMIT = 10
+const PHOTO_SIZE_LIMIT = 10 * 1024 * 1024
+
+/** Подпись в ленте у своего вложения, когда текста к нему нет. */
+function fileCaption(f: OutFile): string {
+	return f.kind === 'photo'
+		? mediaCaption({ kind: 'photo', name: null, size: f.buffer.length, mime: f.mime })
+		: `[${f.name}]`
+}
