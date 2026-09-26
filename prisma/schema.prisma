@@ -1169,7 +1169,10 @@ model TgProxy {
   port     Int
   username String?
   password String?
-  kind     String  @default("socks5") // socks5 | socks4
+  // Для MTProxy хранится секрет из tg://proxy. Это отдельный протокол Telegram,
+  // не SOCKS и не системный/глобальный прокси.
+  secret   String?
+  kind     String  @default("socks5") // socks5 | socks4 | mtproto
   // Тип канала. Влияет на оценку сильнее всего остального в блоке «Сеть»:
   // мобильный IP делят тысячи живых людей, а IP дата-центра — только боты.
   // Ставится руками при загрузке пула: определить его по адресу нельзя.

@@ -7,12 +7,11 @@
  *   host:port:логин:пароль
  *   логин:пароль@host:port
  *   socks5://логин:пароль@host:port
+ *   tg://proxy?server=host&port=443&secret=...
  *   host:port@логин:пароль
  *
- * Отдельно про схему: MTProto ходит только по SOCKS4/SOCKS5. HTTP-прокси
- * библиотека не принимает вовсе, поэтому такие строки отсеиваются здесь, с
- * объяснением. Иначе они молча легли бы в базу и ломались бы на первом
- * подключении, а выглядело бы это как «аккаунт умер».
+ * Telegram принимает и SOCKS4/SOCKS5, и свой MTProxy. HTTP-прокси библиотека
+ * не принимает вовсе, поэтому такие строки отсеиваются здесь, с объяснением.
  */
 
 export type ParsedProxy = {
@@ -20,7 +19,8 @@ export type ParsedProxy = {
 	port: number
 	username: string | null
 	password: string | null
-	kind: 'socks5' | 'socks4'
+	secret: string | null
+	kind: 'socks5' | 'socks4' | 'mtproto'
 }
 
 export type ProxyParseResult = {
@@ -30,6 +30,30 @@ export type ProxyParseResult = {
 }
 
 const SCHEME = /^([a-z0-9+.-]+):\/\//i
+
+/** Строка `secret` в ссылке Telegram бывает base64url; проверяем ровно те
+ * форматы, которые принимает teleproto: 16 байт, dd+16 или ee+16+домен. */
+function isMtprotoSecret(value: string): boolean {
+	if (!value) return false
+	const normalized = value.replace(/\\([_-])/g, '$1').replace(/-/g, '+').replace(/_/g, '/')
+	const raw = /^[0-9a-f]+$/i.test(normalized)
+		? Buffer.from(normalized, 'hex')
+		: Buffer.from(normalized, 'base64')
+	return raw.length === 16 || (raw.length === 17 && raw[0] === 0xdd) || (raw.length > 17 && raw[0] === 0xee)
+}
+
+function parseMtprotoLink(raw: string): ParsedProxy | string | null {
+	if (!/^tg:\/\/proxy(?:\?|\/)/i.test(raw.trim())) return null
+	let url: URL
+	try { url = new URL(raw.trim().replace(/\\([_-])/g, '$1')) } catch { return 'не удалось прочитать ссылку MTProxy' }
+	const host = (url.searchParams.get('server') ?? '').trim()
+	const port = Number(url.searchParams.get('port'))
+	const secret = (url.searchParams.get('secret') ?? '').trim()
+	if (!isHost(host)) return `не похоже на адрес сервера: «${host}»`
+	if (!Number.isInteger(port) || port < 1 || port > 65535) return 'в ссылке MTProxy нет корректного port'
+	if (!isMtprotoSecret(secret)) return 'в ссылке MTProxy некорректный secret'
+	return { host, port, username: null, password: null, secret, kind: 'mtproto' }
+}
 
 function isHost(s: string): boolean {
 	if (!s || s.length > 253) return false
@@ -42,6 +66,8 @@ function isHost(s: string): boolean {
 function parseLine(raw: string): ParsedProxy | string {
 	let text = raw.trim()
 	if (!text) return 'пустая строка'
+	const mtproto = parseMtprotoLink(text)
+	if (mtproto) return mtproto
 
 	let kind: ParsedProxy['kind'] = 'socks5'
 	const scheme = text.match(SCHEME)
@@ -102,7 +128,7 @@ function parseLine(raw: string): ParsedProxy | string {
 		if (!username) return 'пустой логин'
 	}
 
-	return { host, port, username, password, kind }
+	return { host, port, username, password, secret: null, kind }
 }
 
 export function parseProxyPool(text: string): ProxyParseResult {
@@ -121,7 +147,7 @@ export function parseProxyPool(text: string): ProxyParseResult {
 			rejected.push({ line: i + 1, text: line.trim(), reason: res })
 			continue
 		}
-		const key = `${res.host}:${res.port}:${res.username ?? ''}`
+		const key = `${res.kind}:${res.host}:${res.port}:${res.username ?? ''}:${res.secret ?? ''}`
 		if (seen.has(key)) {
 			rejected.push({ line: i + 1, text: line.trim(), reason: 'дубль в этом же списке' })
 			continue

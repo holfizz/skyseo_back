@@ -40,6 +40,7 @@ export type ProxySettings = {
 	port: number
 	username?: string | null
 	password?: string | null
+	secret?: string | null
 	kind: string
 }
 
@@ -151,7 +152,15 @@ function buildClient(o: ClientOptions): TelegramClient {
 		langCode: o.fingerprint.langCode,
 		systemLangCode: o.fingerprint.systemLangCode,
 		proxy: o.proxy
-			? {
+			? o.proxy.kind === 'mtproto'
+				? {
+						MTProxy: true as const,
+						ip: o.proxy.host,
+						port: o.proxy.port,
+						secret: o.proxy.secret ?? '',
+						timeout: CONNECT_TIMEOUT_SEC,
+					}
+				: {
 					ip: o.proxy.host,
 					port: o.proxy.port,
 					socksType: o.proxy.kind === 'socks4' ? 4 : 5,
@@ -170,6 +179,33 @@ function buildClient(o: ClientOptions): TelegramClient {
 		// Библиотека по умолчанию сыплет в stdout на каждый коннект.
 		baseLogger: new Logger(LogLevel.NONE),
 	})
+}
+
+/**
+ * Проверка MTProxy без чужой сессии и без входа в аккаунт.
+ *
+ * `connect()` поднимает MTProto-канал и проходит обфускацию MTProxy с secret,
+ * но не вызывает методов от имени пользователя. Поэтому это существенно
+ * точнее обычного TCP-пинга: неверный secret или сервер не того протокола
+ * дадут ошибку прямо здесь.
+ */
+export async function checkMtprotoProxy(proxy: ProxySettings): Promise<void> {
+	const client = buildClient({
+		session: '',
+		// Эти реквизиты понадобятся только для API-вызова, которого здесь нет.
+		apiId: 1,
+		apiHash: '00000000000000000000000000000000',
+		fingerprint: {
+			deviceModel: 'MTProxy health check', systemVersion: '1', appVersion: '1.0',
+			langCode: 'en', systemLangCode: 'en',
+		},
+		proxy,
+	})
+	try {
+		await withTimeout(client.connect(), (CONNECT_TIMEOUT_SEC + 8) * 1000 * CONNECTION_RETRIES, 'проверка MTProxy')
+	} finally {
+		await client.destroy().catch(() => {})
+	}
 }
 
 /**

@@ -11,7 +11,7 @@ import { parseProxyPool } from './proxy-pool'
 import { detectOrigin } from './proxy-geo'
 import { Api } from 'teleproto'
 import bigInt from 'big-integer'
-import { call, classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
+import { call, checkMtprotoProxy, classifyError, probeAccount, TgError, withClient, type ProxySettings } from './tg-client'
 import { askStatus, parseRestrictedUntil, pressButton, sendText } from './spam-bot'
 import { applyProfile, readProfile, type ProfilePatch } from './profile-edit'
 import { catalogInfo, DEFAULT_CHANNELS, OUTGOING, REACTION_ACTIONS, runAction, type ActionKind } from './warmup-actions'
@@ -257,6 +257,9 @@ export class TgWarmupService {
 			// createMany со skipDuplicates не подошёл: нужно знать, сколько именно
 			// строк уже было, чтобы показать это в интерфейсе.
 			const exists = await this.prisma.tgProxy.findFirst({
+				// Уникальный индекс исторически задан по точке входа. Одинаковый
+				// host:port не добавляем вторым, даже если продавец прислал иной
+				// secret: это не даёт случайно посадить пул на один сервер.
 				where: { host: p.host, port: p.port, username: p.username },
 				select: { id: true },
 			})
@@ -295,17 +298,20 @@ export class TgWarmupService {
 		for (let attempt = 1; attempt <= 3 && !alive; attempt++) {
 			if (attempt > 1) await new Promise(r => setTimeout(r, 1500))
 			try {
-				const { socket } = await SocksClient.createConnection({
-					proxy: {
-						host: p.host, port: p.port,
-						type: p.kind === 'socks4' ? 4 : 5,
-						userId: p.username ?? undefined, password: p.password ?? undefined,
-					},
-					command: 'connect',
-					destination: DC_PROBE,
-					timeout: 12_000,
-				})
-				socket.destroy()
+				if (p.kind === 'mtproto') {
+					// Не TCP-пинг: teleproto поднимает настоящий MTProxy-канал с
+					// secret. Так ловим и неверный secret, и порт с другим сервисом.
+					await checkMtprotoProxy({ host: p.host, port: p.port, secret: p.secret, kind: p.kind })
+				} else {
+					const { socket } = await SocksClient.createConnection({
+						proxy: {
+							host: p.host, port: p.port,
+							type: p.kind === 'socks4' ? 4 : 5,
+							userId: p.username ?? undefined, password: p.password ?? undefined,
+						}, command: 'connect', destination: DC_PROBE, timeout: 12_000,
+					})
+					socket.destroy()
+				}
 				alive = true
 			} catch (e: any) {
 				lastError = String(e?.message ?? e).slice(0, 300)
@@ -317,7 +323,7 @@ export class TgWarmupService {
 		// его и видит Telegram. Не определилось — оставляем прежнее, а не
 		// затираем: разовый сбой справочника не должен обнулять разметку.
 		let origin = { ip: null as string | null, geo: null as string | null, type: null as string | null, isp: null as string | null }
-		if (alive) origin = await detectOrigin(p)
+		if (alive && p.kind !== 'mtproto') origin = await detectOrigin(p)
 
 		await this.prisma.tgProxy.update({
 			where: { id },
@@ -1016,7 +1022,7 @@ export class TgWarmupService {
 		const proxy: ProxySettings | null = a.proxy
 			? {
 					host: a.proxy.host, port: a.proxy.port,
-					username: a.proxy.username, password: a.proxy.password, kind: a.proxy.kind,
+					username: a.proxy.username, password: a.proxy.password, secret: a.proxy.secret, kind: a.proxy.kind,
 				}
 			: null
 		return {
