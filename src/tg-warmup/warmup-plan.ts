@@ -138,11 +138,27 @@ export const INTENSITY: Record<Stage, Intensity> = {
 	mature: intensityFor('mature'),
 }
 
-// Сколько первых суток прогрева аккаунт только читает. Двое, а не семь:
-// за это время он успевает набрать историю входов и просмотров, но ещё не
-// делает ничего, за что можно получить ограничение. Дальше объём исходящих
-// определяется готовностью, а не календарём.
-export const READ_ONLY_DAYS = 2
+/**
+ * Разгон для аккаунтов, купленных сразу с Premium (сентябрь 2026).
+ *
+ * Раньше готовность строилась неделями через чтение/вступления/реакции —
+ * это было нужно, чтобы «доказать» Telegram, что аккаунт живой. Premium
+ * с покупки уже даёт часть этого доверия, и полноценный прогрев для таких
+ * аккаунтов оказался избыточным: дольше, чем нужно, и без выигрыша по
+ * банам. Вместо готовности — календарь, простой и явный:
+ *   первые сутки — аккаунт не трогаем вообще, даже чтением;
+ *   1-2 сутки — по RAMP_DAILY_MESSAGES сообщений в день;
+ *   с 3 суток — снимаем свой потолок совсем, дальше ограничивает только
+ *   дневная цель кампании (perAccountPerDay).
+ * Спамблок и PEER_FLOOD по-прежнему проверяются выше по функции и здесь
+ * ничего не меняют — это тот же самый отказ, что и раньше.
+ */
+export const PREMIUM_IDLE_DAYS = 1
+export const PREMIUM_RAMP_DAYS = 2
+export const PREMIUM_RAMP_DAILY_MESSAGES = 15
+// Не настоящий потолок — реальный предел всегда ставит кампания
+// (perAccountPerDay). Число просто заведомо больше любой разумной цели дня.
+export const PREMIUM_FULL_DAILY_MESSAGES = 500
 
 /**
  * Автоснижение темпа: во что обошлись последние двое суток.
@@ -380,9 +396,10 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 	// PEER_FLOOD — вердикт о поведении, а не лимит скорости. После двух
 	// возвращаться к исходящим нельзя.
 	if (i.peerFloods >= 2) return deny('Дважды получен PEER_FLOOD: исходящие закрыты, оставляем только чтение')
-	// Первые сутки прогрева — вход, просмотр, выход. Ничего больше.
-	if (i.dayIndex > 0 && i.dayIndex <= READ_ONLY_DAYS) {
-		return deny(`День ${i.dayIndex}: первые ${READ_ONLY_DAYS} суток только читаем, набираем историю входов`)
+	// Аккаунт с Premium: первые сутки после покупки не трогаем совсем —
+	// ни сообщений, ни чтения, ни вступлений. Именно «просто постоять».
+	if (i.daysManaged < PREMIUM_IDLE_DAYS) {
+		return deny('Первые сутки после покупки: аккаунт нарочно ничего не делает')
 	}
 
 	const share = (value: number, target: number) => Math.max(0, Math.min(1, value / target))
@@ -427,25 +444,23 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 	notes.push(`Готовность ${readiness} из 100`)
 	if (weak.length) notes.push(`Слабые места: ${weak.join(', ')}`)
 
-	// Квоты по готовности. Ступени, а не формула: между «двумя вступлениями»
-	// и «тремя» нет непрерывной величины, а ступени видно в журнале.
+	// Вступления и реакции по-прежнему по готовности: она и так низкая в первые
+	// дни (выдержка, наработка ещё не накопились), так что верхнего предела
+	// им отдельно ставить не нужно — обычная нижняя ступень уже про это.
 	let joins = readiness < 25 ? 1 : readiness < 50 ? 2 : readiness < 75 ? 3 : 4
-	let messages = readiness < 30 ? 0 : readiness < 50 ? 1 : readiness < 70 ? 3 : readiness < 85 ? 5 : 8
-	// Реакции щедрее сообщений и по другой причине: жалуются на сообщение, а не
-	// на сердечко под постом. Это и есть тот фон, который отличает живой аккаунт
-	// от спящего между рассылками.
 	let reactions = readiness < 25 ? 3 : readiness < 50 ? 6 : readiness < 75 ? 10 : 15
 
-	// Разгон не заканчивается вместе с чтением: с третьего дня даём половину,
-	// с седьмого — всё. Иначе выход из режима чтения выглядит как рубильник.
-	const dayFactor = i.dayIndex === 0 ? 1 : i.dayIndex <= 4 ? 0.5 : i.dayIndex <= 6 ? 0.75 : 1
-	if (i.dayIndex === 0) notes.push('Прогрев не запущен: показана норма на случай запуска')
-	if (dayFactor < 1) {
-		joins = Math.max(1, Math.round(joins * dayFactor))
-		messages = Math.floor(messages * dayFactor)
-		reactions = Math.max(1, Math.round(reactions * dayFactor))
-		notes.push(`День ${i.dayIndex}: пока ${Math.round(dayFactor * 100)}% от нормы, разгон до седьмого дня`)
-	}
+	// Сообщения — по календарю с момента покупки, а не по готовности: см.
+	// комментарий у PREMIUM_IDLE_DAYS выше. Ступень роста (capCeiling) ниже
+	// намеренно не применяется к переходу на полную норму — это осознанный
+	// скачок, а не постепенный набор.
+	const rampDone = i.daysManaged >= PREMIUM_IDLE_DAYS + PREMIUM_RAMP_DAYS
+	let messages = rampDone ? PREMIUM_FULL_DAILY_MESSAGES : PREMIUM_RAMP_DAILY_MESSAGES
+	notes.push(
+		rampDone
+			? `Сутки ${i.daysManaged}: разгон пройден, дальше ограничивает только цель кампании`
+			: `Сутки ${i.daysManaged}: разгон, ${PREMIUM_RAMP_DAILY_MESSAGES} сообщений в день`,
+	)
 
 	// Писать, не имея ни одного чата, — само по себе странно. Сначала подписки.
 	if (i.dialogs + i.channels < 3) {
@@ -474,8 +489,10 @@ export function outgoingAllowance(i: AllowanceInput): Allowance {
 
 	// Ступень роста: выше утверждённого на сегодня потолка норма не поднимается.
 	// Применяется ДО автоснижения — ступень про то, как быстро аккаунт растёт,
-	// а не про то, насколько его сейчас прижали.
-	if (i.capCeiling != null && messages > i.capCeiling) {
+	// а не про то, насколько его сейчас прижали. Кроме перехода на полную
+	// норму после разгона — это осознанный скачок (см. PREMIUM_FULL_DAILY_MESSAGES),
+	// ступень роста тут же придавила бы его обратно к прежним 15 в день.
+	if (!rampDone && i.capCeiling != null && messages > i.capCeiling) {
 		notes.push(`Ступень роста: сегодня не больше ${i.capCeiling} ${plural(i.capCeiling)}`)
 		messages = i.capCeiling
 	}
