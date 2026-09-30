@@ -22,6 +22,7 @@ export class CrmReminderScheduler implements OnModuleInit {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		if (this.config.get('CRM_ENABLED') === 'false') return // CRM выключена
 		setTimeout(() => this.tick(), 15_000)
 		setInterval(() => this.tick(), 60_000).unref()

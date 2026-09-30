@@ -33,7 +33,7 @@ export class CampaignScheduler implements OnModuleInit {
 			if (n) this.logger.log(`Отправлено сообщений: ${n}`)
 			// Итог дня подводим здесь же, а не отдельным расписанием: тик и так
 			// приходит каждую минуту, а сам разбор случается раз в сутки.
-			if (await this.svc.reportDayIfNeeded()) this.logger.warn('День закрылся с недобором — написали в бот')
+
 		} catch (e: any) {
 			this.logger.error(`Тик отправки упал: ${e?.message ?? e}`)
 		} finally {

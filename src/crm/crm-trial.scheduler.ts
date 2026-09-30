@@ -30,6 +30,7 @@ export class CrmTrialScheduler implements OnModuleInit {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		if (this.config.get('CRM_ENABLED') === 'false') return
 		// Раз в час: сутки до конца — окно широкое, чаще смысла нет.
 		setTimeout(() => this.tick(), 30_000)

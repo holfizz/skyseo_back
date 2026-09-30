@@ -23,6 +23,7 @@ export class AppStatusCronService implements OnModuleInit {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		// Прогон вскоре после старта + далее раз в сутки. Интервал не держит процесс (unref).
 		setTimeout(() => this.run(), 30_000)
 		setInterval(() => this.run(), 24 * 60 * 60 * 1000).unref()

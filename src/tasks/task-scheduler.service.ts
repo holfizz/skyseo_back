@@ -29,6 +29,7 @@ export class TaskSchedulerService implements OnModuleInit {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		setTimeout(() => this.resetStuckTasks(), 10000)
 		setInterval(() => this.resetStuckTasks(), 15 * 60 * 1000)
 

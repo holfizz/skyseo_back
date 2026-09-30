@@ -926,7 +926,15 @@ export class TgWarmupService {
 	}
 
 	async deleteAccount(id: string) {
-		await this.prisma.tgAccount.delete({ where: { id } })
+        await this.prisma.$transaction(async tx => {
+            const a = await tx.tgAccount.findUnique({ where: { id }, include: { events: { where: { kind: { in: ['banned', 'unauthorized'] } }, orderBy: { createdAt: 'asc' }, take: 1 } } })
+            if (!a) throw new NotFoundException('Аккаунт не найден')
+            if (a.busyUntil && a.busyUntil > new Date()) throw new BadRequestException('Аккаунт сейчас занят. Повторите удаление после завершения операции')
+            const sent = await tx.tgRecipient.count({ where: { accountId: id, sentAt: { not: null } } })
+            const replies = await tx.tgDialogMessage.count({ where: { out: false, recipient: { accountId: id } } })
+            await tx.workspaceAccountHistory.create({ data: { id, label: a.label || a.username || 'Аккаунт', addedAt: a.createdAt, endedAt: a.events[0]?.createdAt || null, sent, replies } })
+            await tx.tgAccount.delete({ where: { id } })
+        })
 		return { ok: true }
 	}
 
@@ -2810,7 +2818,7 @@ export class TgWarmupService {
 	 * Утверждение нормы тоже общее: по одному updateMany на каждое значение
 	 * нормы. Значений в пуле единицы, аккаунтов десятки.
 	 */
-	private async allowancesFor(
+	async allowancesFor(
 		accounts: any[],
 		dayIndex: number,
 		opts?: { settle?: boolean },

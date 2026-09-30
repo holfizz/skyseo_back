@@ -31,6 +31,7 @@ export class InboxService implements OnModuleInit, OnModuleDestroy {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		// При старте инициализируем lastNotifiedUid текущим максимумом — не слать старые письма
 		setTimeout(async () => {
 			try {

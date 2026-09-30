@@ -20,6 +20,7 @@ export class NotifyBotService implements OnModuleDestroy {
 		private configService: ConfigService,
 		private prisma: PrismaService,
 	) {
+		return // Bot notifications explicitly disabled by owner.
 		const token = this.configService.get('TELEGRAM_NOTIFY_BOT_TOKEN')
 		if (token && token !== 'dummy-token' && token.length >= 20) {
 			this.initializeBot(token)

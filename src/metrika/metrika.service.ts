@@ -15,6 +15,7 @@ export class MetrikaService implements OnModuleInit {
 	constructor(private config: ConfigService) {}
 
 	async onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		try {
 			const raw = await readFile(TOKEN_FILE, 'utf8')
 			this.runtimeToken = JSON.parse(raw).token ?? null

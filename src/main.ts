@@ -1,3 +1,4 @@
+import { retiredProductGate } from './common/retired-product'
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import { json, urlencoded } from 'express'
@@ -33,6 +34,8 @@ async function bootstrap() {
 		crossOriginEmbedderPolicy: false,
 		contentSecurityPolicy: false,
 	}))
+
+	app.use(retiredProductGate)
 
 	// Global prefix
 	app.setGlobalPrefix('v1/api')

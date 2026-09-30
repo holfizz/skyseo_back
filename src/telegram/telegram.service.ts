@@ -25,6 +25,7 @@ export class TelegramService implements OnModuleDestroy {
 		private prisma: PrismaService,
 		private alerts: AlertsService,
 	) {
+		return // Bot notifications explicitly disabled by owner.
 		this.adminId = this.configService.get('TELEGRAM_ADMIN_ID')
 		const token = this.configService.get('TELEGRAM_BOT_TOKEN')
 

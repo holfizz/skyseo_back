@@ -1382,6 +1382,7 @@ enum TgRecipientStatus {
 }
 
 model TgCampaign {
+  hypotheses TgHypothesis[]
   id     String           @id @default(uuid())
   name   String
   status TgCampaignStatus @default(DRAFT)
@@ -1459,6 +1460,8 @@ model TgCampaignAccount {
 }
 
 model TgRecipient {
+  hypothesisId String?
+  hypothesis TgHypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: Restrict)
   id         String @id @default(uuid())
   campaignId String
 
@@ -1630,4 +1633,77 @@ model TgAccountEvent {
 
   @@index([accountId, createdAt])
   @@map("tg_account_events")
+}
+
+// Internal client ledger. No relation to legacy self-registered users/sites.
+model WorkspaceClient {
+  id String @id @default(uuid())
+  name String
+  telegram String?
+  website String?
+  monthlyFee Decimal @db.Decimal(14, 2)
+  startsOn DateTime @db.Date
+  status String @default("ACTIVE")
+  cancelledOn DateTime? @db.Date
+  cancellationReason String?
+  notes String @default("")
+  topvisorLinks String[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  months WorkspaceMonth[]
+  contracts WorkspaceContract[]
+  @@map("workspace_clients")
+}
+model WorkspaceMonth {
+  id String @id @default(uuid())
+  clientId String
+  month String
+  received Decimal @db.Decimal(14, 2)
+  expenses Decimal @db.Decimal(14, 2)
+  status String @default("PAID")
+  note String @default("")
+  updatedAt DateTime @updatedAt
+  client WorkspaceClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  @@unique([clientId, month])
+  @@map("workspace_months")
+}
+model WorkspaceContract {
+  id String @id @default(uuid())
+  clientId String
+  name String
+  mime String
+  data Bytes
+  createdAt DateTime @default(now())
+  client WorkspaceClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  @@map("workspace_contracts")
+}
+model WorkspaceSettings {
+  id String @id @default("main")
+  dailyGoal Int @default(200)
+  interestedAfter Int @default(5)
+  planningPerAccount Int @default(20)
+  @@map("workspace_settings")
+}
+model TgHypothesis {
+  id String @id @default(uuid())
+  campaignId String
+  name String
+  text String
+  createdAt DateTime @default(now())
+  campaign TgCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipients TgRecipient[]
+  @@index([campaignId])
+  @@map("tg_hypotheses")
+}
+
+// No FK to TgAccount: deleting credentials must not erase lifetime statistics.
+model WorkspaceAccountHistory {
+  id String @id
+  label String
+  addedAt DateTime
+  endedAt DateTime?
+  removedAt DateTime @default(now())
+  sent Int
+  replies Int
+  @@map("workspace_account_history")
 }

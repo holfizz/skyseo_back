@@ -328,7 +328,12 @@ function forceable(acc: any): { ok: boolean; why?: string } {
  *
  * Либо он дорос сам, либо владелец поставил флаг и Telegram не против.
  */
-function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
+function missingForCampaign(campaign: any, recipient: any): string[] {
+ const texts = campaign.hypotheses?.length ? campaign.hypotheses.map((v: any) => v.text) : [campaign.firstMessage]
+ return [...new Set<string>(texts.flatMap((text: string) => missingPlaceholders(text, recipient)))]
+}
+
+export function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
 	if (allow?.allowOutgoing) return true
 	return !!acc?.forceSend && forceable(acc).ok
 }
@@ -424,6 +429,41 @@ export class CampaignService {
 	 * старых списков, и запрещать это незачем. Но по умолчанию — заготовка из
 	 * campaign-preset.ts, и именно она уходит при нажатии кнопки.
 	 */
+ async hypotheses(campaignId: string) {
+  const settings = await this.prisma.workspaceSettings.findUnique({ where: { id: 'main' } })
+  const threshold = settings?.interestedAfter ?? 5
+  const variants = await this.prisma.tgHypothesis.findMany({ where: { campaignId }, orderBy: { createdAt: 'asc' }, include: { recipients: { select: { sentAt: true, readAt: true, repliedAt: true, blockedAt: true, status: true, _count: { select: { messages: { where: { out: false } } } } } } } })
+  return variants.map(({ recipients: rows, ...v }) => ({ ...v, assigned: rows.length, sent: rows.filter(r => r.sentAt).length, read: rows.filter(r => r.readAt).length, readNoReply: rows.filter(r => r.readAt && !r.repliedAt).length, replied: rows.filter(r => r.repliedAt).length, blocked: rows.filter(r => r.blockedAt).length, failed: rows.filter(r => r.status === 'FAILED').length, interested: rows.filter(r => r._count.messages > threshold).length }))
+ }
+ async saveHypotheses(campaignId: string, variants: any) {
+  if (!Array.isArray(variants) || variants.length < 2 || variants.length > 10 || variants.some(v => typeof v?.name !== 'string' || !v.name.trim() || v.name.length > 200 || typeof v?.text !== 'string' || !v.text.trim() || v.text.length > 4000)) throw new BadRequestException('Добавьте от 2 до 10 вариантов с названием и текстом до 4000 символов')
+  await this.prisma.$transaction(async tx => {
+   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${campaignId}))::text AS locked`
+   const c = await tx.tgCampaign.findUnique({ where: { id: campaignId } })
+   if (!c) throw new NotFoundException('Рассылка не найдена')
+   if (c.status !== 'DRAFT' || await tx.tgRecipient.count({ where: { campaignId, OR: [{ hypothesisId: { not: null } }, { sentAt: { not: null } }] } })) throw new BadRequestException('Варианты можно менять только в черновике до первой отправки. Для нового теста создайте новую рассылку')
+   await tx.tgHypothesis.deleteMany({ where: { campaignId } })
+   await tx.tgHypothesis.createMany({ data: variants.map(v => ({ campaignId, name: v.name.trim(), text: v.text.trim() })) })
+   await tx.tgCampaign.update({ where: { id: campaignId }, data: { firstMessage: variants[0].text.trim() } })
+  })
+  return this.hypotheses(campaignId)
+ }
+ // Assignment is persisted before sending and serialized across workers.
+ // Retries keep their original variant; failures remain visible in that cohort.
+ private async hypothesisText(campaignId: string, recipientId: string, fallback: string) {
+  return this.prisma.$transaction(async tx => {
+   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${campaignId}))::text AS locked`
+   const r = await tx.tgRecipient.findUnique({ where: { id: recipientId }, include: { hypothesis: true } })
+   if (r?.hypothesis) return r.hypothesis.text
+   const variants = await tx.tgHypothesis.findMany({ where: { campaignId }, orderBy: { id: 'asc' }, include: { _count: { select: { recipients: true } } } })
+   if (!variants.length) return fallback
+   variants.sort((a,b) => a._count.recipients - b._count.recipients)
+   const chosen = variants[0]
+   await tx.tgRecipient.update({ where: { id: recipientId }, data: { hypothesisId: chosen.id } })
+   return chosen.text
+  })
+ }
+
 	async create(body?: { name?: string; firstMessage?: string; secondMessage?: string }) {
 		return this.prisma.tgCampaign.create({
 			data: {
@@ -437,6 +477,7 @@ export class CampaignService {
 
 	/** Перезалить в кампанию заготовленный текст из кода. */
 	async resetText(id: string) {
+        if (await this.prisma.tgHypothesis.count({ where: { campaignId: id } })) throw new BadRequestException('Тексты этого теста находятся во вкладке «Гипотезы»')
 		await this.prisma.tgCampaign.update({
 			where: { id },
 			data: { firstMessage: FIRST_MESSAGE, secondMessage: SECOND_MESSAGE },
@@ -1197,9 +1238,10 @@ export class CampaignService {
 		const r = await this.prisma.tgRecipient.findUnique({
 			where: { id },
 			include: {
+                hypothesis: true,
 				campaign: {
 					select: {
-						id: true, name: true, firstMessage: true, secondMessage: true,
+						id: true, name: true, firstMessage: true, secondMessage: true, hypotheses: { select: { name: true, text: true } },
 						status: true, windowFrom: true, windowTo: true,
 					},
 				},
@@ -1209,7 +1251,8 @@ export class CampaignService {
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
 
-		const missing = missingPlaceholders(r.campaign.firstMessage, r)
+		const firstTemplate = r.hypothesis?.text ?? r.campaign.firstMessage
+		const missing = r.hypothesis ? missingPlaceholders(firstTemplate, r) : missingForCampaign(r.campaign, r)
 
 		/*
 		 * Почему до сих пор не ушло, если время прошло.
@@ -1231,7 +1274,7 @@ export class CampaignService {
 				const quota = await this.dailyQuota(
 					await this.prisma.tgCampaign.findUniqueOrThrow({
 						where: { id: r.campaignId },
-						include: { accounts: { include: { account: true } } },
+						include: { hypotheses: true, accounts: { include: { account: true } } },
 					}),
 					dayKey(new Date()),
 				)
@@ -1267,7 +1310,8 @@ export class CampaignService {
 			account: r.account ?? r.plannedAccount,
 			// Чего не хватает для подстановки. Пока не хватает — не уйдёт вовсе.
 			missing,
-			first: missing.length ? null : fillTemplate(r.campaign.firstMessage, r),
+			hypothesisNote: r.hypothesis ? `Гипотеза: ${r.hypothesis.name}` : r.campaign.hypotheses.length ? 'Пример первого варианта. Вариант будет назначен равномерно при отправке.' : null,
+			first: missing.length ? null : fillTemplate(firstTemplate, r),
 			// Второе не уходит само: его отправляет человек из переписки, после
 			// ответа. Показываем целиком — с позициями и конкурентами, ровно
 			// так, как оно уйдёт.
@@ -1829,7 +1873,8 @@ export class CampaignService {
 
 		// Данных не хватает — не отправляем вовсе. Обезличенное «Здравствуйте»
 		// сжигает адресата навсегда, а второго шанса написать не будет.
-		const missing = missingPlaceholders(campaign.firstMessage, recipient)
+		const variantText = await this.hypothesisText(campaign.id, recipient.id, campaign.firstMessage)
+		const missing = missingPlaceholders(variantText, recipient)
 		if (missing.length) {
 			await this.prisma.tgRecipient.update({
 				where: { id: recipient.id },
@@ -1840,7 +1885,7 @@ export class CampaignService {
 			})
 			return 'skipped'
 		}
-		const text = fillTemplate(campaign.firstMessage, recipient)
+		const text = fillTemplate(variantText, recipient)
 
 		// Аккаунт уже занят вызывающим на весь тик — здесь его не трогаем.
 		const opts = this.warmup.clientOptions(account)
@@ -3047,7 +3092,7 @@ export class CampaignService {
 	async buildSchedule(campaignId: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
-			include: { accounts: { include: { account: true } } },
+			include: { hypotheses: true, accounts: { include: { account: true } } },
 		})
 		if (!c) throw new NotFoundException('Кампания не найдена')
 
@@ -3063,7 +3108,7 @@ export class CampaignService {
 		// Закреплённых руками не планируем заново — но и не делаем вид, что их
 		// нет: место в дневной норме своего аккаунта они занимают.
 		const locked = queued.filter(r => r.scheduleLocked && r.scheduledAt)
-		const willWrite = queued.filter(r => !r.scheduleLocked && missingPlaceholders(c.firstMessage, r).length === 0)
+		const willWrite = queued.filter(r => !r.scheduleLocked && missingForCampaign(c, r).length === 0)
 
 		const shift = this.dayShiftOf(c, now)
 		const slots = await this.slotsFor(c, now, shift ?? 0)
@@ -3119,7 +3164,7 @@ export class CampaignService {
 	async calendar(campaignId: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
-			include: { accounts: { include: { account: true } } },
+			include: { hypotheses: true, accounts: { include: { account: true } } },
 		})
 		if (!c) throw new NotFoundException('Кампания не найдена')
 
@@ -3226,8 +3271,8 @@ export class CampaignService {
 				id: r.id,
 				name: name(r),
 				username: r.username,
-				why: missingPlaceholders(c.firstMessage, r).length
-					? `нет данных: ${missingPlaceholders(c.firstMessage, r).join(', ')}`
+				why: missingForCampaign(c, r).length
+					? `нет данных: ${missingForCampaign(c, r).join(', ')}`
 					: neverPlanned && slots.length
 						? 'расписание ещё не собрано'
 						: !slots.length
@@ -3292,7 +3337,7 @@ export class CampaignService {
 		const empty = { times: {} as Record<string, PlannedSend>, finishAt: null as string | null, skipped: 0, today: 0, unplanned: 0 }
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
-			include: { accounts: { include: { account: true } } },
+			include: { hypotheses: true, accounts: { include: { account: true } } },
 		})
 		if (!c) return empty
 
@@ -3304,7 +3349,7 @@ export class CampaignService {
 				scheduledAt: true, plannedAccountId: true,
 			},
 		})
-		const willWrite = queued.filter(r => missingPlaceholders(c.firstMessage, r).length === 0)
+		const willWrite = queued.filter(r => missingForCampaign(c, r).length === 0)
 		const skipped = queued.length - willWrite.length
 
 		const times: Record<string, PlannedSend> = {}
@@ -3602,7 +3647,7 @@ export class CampaignService {
 
 		const campaigns = await this.prisma.tgCampaign.findMany({
 			where: { status: { in: ['RUNNING', 'PAUSED'] }, archivedAt: null },
-			include: { accounts: { include: { account: true } } },
+			include: { hypotheses: true, accounts: { include: { account: true } } },
 			orderBy: { createdAt: 'desc' },
 		})
 
@@ -4086,7 +4131,7 @@ export class CampaignService {
 	async card(id: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id },
-			include: { accounts: { include: { account: true } } },
+			include: { hypotheses: true, accounts: { include: { account: true } } },
 		})
 		if (!c) throw new NotFoundException('Кампания не найдена')
 		const funnel = (await this.statsByCampaign([id])).get(id)!

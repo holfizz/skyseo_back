@@ -1,3 +1,4 @@
+import { WorkspaceModule } from './workspace/workspace.module'
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD } from '@nestjs/core'
@@ -41,6 +42,7 @@ import { TrialModule } from './trial/trial.module'
 			{ name: 'medium', ttl: 60000, limit: 300 },
 		]),
 		PrismaModule,
+		WorkspaceModule,
 		HealthModule,
 		AuthModule,
 		RewardsModule,
@@ -66,8 +68,6 @@ import { TrialModule } from './trial/trial.module'
 		AppVersionModule,
 		AppConfigModule,
 		AiModule,
-		CrmModule,
-		TrialModule,
 	],
 	providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

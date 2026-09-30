@@ -20,6 +20,7 @@ export class TrialEmailScheduler implements OnModuleInit {
 	) {}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		setTimeout(() => this.tick(), 45_000)
 		setInterval(() => this.tick(), 60 * 60 * 1000).unref()
 	}

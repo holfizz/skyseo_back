@@ -32,6 +32,7 @@ export class PaymentsService implements OnModuleInit {
 	}
 
 	onModuleInit() {
+		return // Public SkySEO retired; legacy background work disabled.
 		// Дожим брошенных платежей отключён вместе с самостоятельной покупкой.
 		// Он рассылал ссылку со скидкой 10% на createDiscountedRepeat, а тот роут
 		// теперь отдаёт отказ: письма звали бы людей в тупик.

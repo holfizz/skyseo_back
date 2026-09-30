@@ -18,6 +18,7 @@ import { TgWarmupService } from './tg-warmup.service'
 	// ReportModule — чтобы прикладывать PDF-отчёт к ответу в переписке.
 	imports: [PrismaModule, TelegramModule.forRoot(), ReportModule],
 	controllers: [TgWarmupController, CampaignController, CampaignManagerController],
+	exports: [TgWarmupService],
 	providers: [TgWarmupService, TgWarmupScheduler, CampaignService, CampaignScheduler],
 })
 export class TgWarmupModule {}
