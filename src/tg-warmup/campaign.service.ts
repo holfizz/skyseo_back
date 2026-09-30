@@ -429,37 +429,72 @@ export class CampaignService {
 	 * старых списков, и запрещать это незачем. Но по умолчанию — заготовка из
 	 * campaign-preset.ts, и именно она уходит при нажатии кнопки.
 	 */
+
  async hypotheses(campaignId: string) {
   const settings = await this.prisma.workspaceSettings.findUnique({ where: { id: 'main' } })
   const threshold = settings?.interestedAfter ?? 5
-  const variants = await this.prisma.tgHypothesis.findMany({ where: { campaignId }, orderBy: { createdAt: 'asc' }, include: { recipients: { select: { sentAt: true, readAt: true, repliedAt: true, blockedAt: true, status: true, _count: { select: { messages: { where: { out: false } } } } } } } })
-  return variants.map(({ recipients: rows, ...v }) => ({ ...v, assigned: rows.length, sent: rows.filter(r => r.sentAt).length, read: rows.filter(r => r.readAt).length, readNoReply: rows.filter(r => r.readAt && !r.repliedAt).length, replied: rows.filter(r => r.repliedAt).length, blocked: rows.filter(r => r.blockedAt).length, failed: rows.filter(r => r.status === 'FAILED').length, interested: rows.filter(r => r._count.messages > threshold).length }))
+  const variants = await this.prisma.tgHypothesis.findMany({
+   where: { campaignId }, orderBy: [{ position: 'asc' }, { id: 'asc' }],
+   include: { recipients: { select: { sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true, status: true, _count: { select: { messages: { where: { out: false } } } } } } },
+  })
+  return variants.map(({ recipients: rows, ...v }) => ({ ...v,
+   assigned: rows.length, sent: rows.filter(r => r.sentAt).length,
+   read: rows.filter(r => r.readAt).length, readNoReply: rows.filter(r => r.readAt && !r.repliedAt).length,
+   replied: rows.filter(r => r.repliedAt).length, second: rows.filter(r => r.secondSentAt).length,
+   blocked: rows.filter(r => r.blockedAt).length, failed: rows.filter(r => r.status === 'FAILED').length,
+   interested: rows.filter(r => r._count.messages > threshold).length,
+  }))
  }
  async saveHypotheses(campaignId: string, variants: any) {
-  if (!Array.isArray(variants) || variants.length < 2 || variants.length > 10 || variants.some(v => typeof v?.name !== 'string' || !v.name.trim() || v.name.length > 200 || typeof v?.text !== 'string' || !v.text.trim() || v.text.length > 4000)) throw new BadRequestException('Добавьте от 2 до 10 вариантов с названием и текстом до 4000 символов')
+  if (!Array.isArray(variants) || !variants.length) throw new BadRequestException('Добавьте хотя бы один текст')
+  const normalized = variants.map((v, position) => {
+   if (!v || (v.id !== undefined && typeof v.id !== 'string') || (v.name !== undefined && (typeof v.name !== 'string' || v.name.length > 200)) || typeof v.text !== 'string' || !v.text.trim() || v.text.length > 4000) {
+    throw new BadRequestException('Каждый текст должен содержать от 1 до 4000 символов; название — до 200 символов')
+   }
+   if (v.hasSecondMessage !== undefined && typeof v.hasSecondMessage !== 'boolean') throw new BadRequestException('Некорректный флаг второго сообщения')
+   if (v.hasSecondMessage && (typeof v.secondMessage !== 'string' || !v.secondMessage.trim() || v.secondMessage.length > 4000)) throw new BadRequestException(`Заполните второе сообщение у текста ${position + 1} (до 4000 символов)`)
+   return { id: v.id, name: v.name?.trim() || `Текст ${position + 1}`, text: v.text.trim(), position,
+    hasSecondMessage: v.hasSecondMessage === true, secondMessage: v.hasSecondMessage ? v.secondMessage.trim() : null }
+  })
+  const ids = normalized.filter(v => v.id).map(v => v.id)
+  if (new Set(ids).size !== ids.length) throw new BadRequestException('Один текст указан несколько раз')
   await this.prisma.$transaction(async tx => {
    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${campaignId}))::text AS locked`
    const c = await tx.tgCampaign.findUnique({ where: { id: campaignId } })
-   if (!c) throw new NotFoundException('Рассылка не найдена')
-   if (c.status !== 'DRAFT' || await tx.tgRecipient.count({ where: { campaignId, OR: [{ hypothesisId: { not: null } }, { sentAt: { not: null } }] } })) throw new BadRequestException('Варианты можно менять только в черновике до первой отправки. Для нового теста создайте новую рассылку')
-   await tx.tgHypothesis.deleteMany({ where: { campaignId } })
-   await tx.tgHypothesis.createMany({ data: variants.map(v => ({ campaignId, name: v.name.trim(), text: v.text.trim() })) })
-   await tx.tgCampaign.update({ where: { id: campaignId }, data: { firstMessage: variants[0].text.trim() } })
-  })
+   if (!c || c.archivedAt) throw new NotFoundException('Рассылка не найдена')
+   const existing = await tx.tgHypothesis.findMany({ where: { campaignId }, include: { _count: { select: { recipients: true } } } })
+   const byId = new Map(existing.map(v => [v.id, v]))
+   if (ids.some(id => !byId.has(id))) throw new BadRequestException('Текст не принадлежит этой рассылке. Обновите список')
+   const nextById = new Map(normalized.filter(v => v.id).map(v => [v.id, v]))
+   for (const old of existing) {
+    const next = nextById.get(old.id)
+    if (old._count.recipients && (!next || next.text !== old.text || next.hasSecondMessage !== old.hasSecondMessage || next.secondMessage !== old.secondMessage)) {
+     throw new BadRequestException('Использованный текст и его продолжение сохраняются для статистики. Добавьте новый вариант')
+    }
+   }
+   await tx.tgHypothesis.deleteMany({ where: { campaignId, id: { notIn: ids } } })
+   for (const { id, ...data } of normalized) {
+    if (id) await tx.tgHypothesis.update({ where: { id }, data })
+    else await tx.tgHypothesis.create({ data: { campaignId, ...data } })
+   }
+   await tx.tgCampaign.update({ where: { id: campaignId }, data: { firstMessage: normalized[0].text } })
+  }, { timeout: 30000 })
   return this.hypotheses(campaignId)
  }
- // Assignment is persisted before sending and serialized across workers.
- // Retries keep their original variant; failures remain visible in that cohort.
+ // A durable campaign cursor follows the displayed order across restarts/workers.
+ // Retrying a recipient reuses the stored hypothesis without advancing the cursor.
  private async hypothesisText(campaignId: string, recipientId: string, fallback: string) {
   return this.prisma.$transaction(async tx => {
    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${campaignId}))::text AS locked`
    const r = await tx.tgRecipient.findUnique({ where: { id: recipientId }, include: { hypothesis: true } })
-   if (r?.hypothesis) return r.hypothesis.text
-   const variants = await tx.tgHypothesis.findMany({ where: { campaignId }, orderBy: { id: 'asc' }, include: { _count: { select: { recipients: true } } } })
+   if (!r || r.campaignId !== campaignId) throw new NotFoundException('Адресат не найден в рассылке')
+   if (r.hypothesis) return r.hypothesis.text
+   const variants = await tx.tgHypothesis.findMany({ where: { campaignId }, orderBy: [{ position: 'asc' }, { id: 'asc' }] })
    if (!variants.length) return fallback
-   variants.sort((a,b) => a._count.recipients - b._count.recipients)
-   const chosen = variants[0]
+   const campaign = await tx.tgCampaign.findUniqueOrThrow({ where: { id: campaignId }, select: { hypothesisCursor: true } })
+   const chosen = variants[campaign.hypothesisCursor % variants.length]
    await tx.tgRecipient.update({ where: { id: recipientId }, data: { hypothesisId: chosen.id } })
+   await tx.tgCampaign.update({ where: { id: campaignId }, data: { hypothesisCursor: { increment: 1 } } })
    return chosen.text
   })
  }
@@ -1315,10 +1350,7 @@ export class CampaignService {
 			// Второе не уходит само: его отправляет человек из переписки, после
 			// ответа. Показываем целиком — с позициями и конкурентами, ровно
 			// так, как оно уйдёт.
-			second: await this.fullSecondMessage(
-				r,
-				r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
-			),
+			second: await this.secondMessageFor(r),
 		}
 	}
 
@@ -2636,6 +2668,7 @@ export class CampaignService {
 		const r = await this.prisma.tgRecipient.findUnique({
 			where: { id: recipientId },
 			include: {
+				hypothesis: true,
 				campaign: { select: { id: true, name: true, secondMessage: true } },
 				account: { select: { id: true, label: true, username: true, status: true } },
 				// По id, а не по дате: у Telegram дата с точностью до секунды, и
@@ -2666,10 +2699,7 @@ export class CampaignService {
 			lead: r.leadId ? await this.report.leadBrief(r.leadId) : null,
 			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
 			// кода остаётся хвостом, а начало собирается по его выдаче.
-			secondPreview: await this.fullSecondMessage(
-				r,
-				r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null,
-			),
+			secondPreview: await this.secondMessageFor(r),
 			messages: r.messages.map(m => ({
 				id: m.id, tgId: m.tgId, out: m.out, text: m.text, date: m.date,
 				// Вложение: вид нужен всегда, содержимое — только если мелкое
@@ -2697,6 +2727,16 @@ export class CampaignService {
 	 * же прогона парсера, конкурентов — из карточки. Если адресат добавлен
 	 * руками и лида за ним нет, остаётся заготовка: сочинять позиции нельзя.
 	 */
+ private async secondMessageFor(r: any): Promise<string | null> {
+  if (r.hypothesis) {
+   return r.hypothesis.hasSecondMessage && r.hypothesis.secondMessage
+    ? fillTemplate(r.hypothesis.secondMessage, r) : null
+  }
+  // The variant is not assigned until sending. Do not show a different variant's follow-up.
+  if (r.campaign.hypotheses?.length && !r.sentAt) return null
+  return this.fullSecondMessage(r, r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null)
+ }
+
 	private async fullSecondMessage(r: {
 		leadId: string | null
 		domain: string | null

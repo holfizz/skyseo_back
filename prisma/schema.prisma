@@ -1382,6 +1382,7 @@ enum TgRecipientStatus {
 }
 
 model TgCampaign {
+  hypothesisCursor Int @default(0)
   hypotheses TgHypothesis[]
   id     String           @id @default(uuid())
   name   String
@@ -1685,6 +1686,9 @@ model WorkspaceSettings {
   @@map("workspace_settings")
 }
 model TgHypothesis {
+  position Int @default(0)
+  hasSecondMessage Boolean @default(false)
+  secondMessage String?
   id String @id @default(uuid())
   campaignId String
   name String
