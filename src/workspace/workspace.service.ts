@@ -81,8 +81,8 @@ export class WorkspaceService {
   const allowances = await this.warmup.allowancesFor(accounts, 0, { settle: false })
   const accountRows = await Promise.all(accounts.map(async a => {
    const allow = allowances.get(a.id)!
-   const usable = ['READY', 'WARMING'].includes(a.status) && a.mode !== 'WARM' && (!a.proxy || a.proxy.alive) && maySend(a, allow)
-   const cap = usable ? (a.forceSend ? settings.planningPerAccount : allow.dailyMessages) : 0
+   const usable = !['BANNED', 'ERROR', 'PAUSED'].includes(a.status) && a.mode !== 'WARM' && (!a.proxy || a.proxy.alive) && maySend(a, allow)
+   const cap = usable ? Math.min(settings.planningPerAccount, a.forceSend ? settings.planningPerAccount : allow.dailyMessages) : 0
    const rows = recipients.filter(r => r.accountId === a.id)
    const ended = a.events[0]?.createdAt
    return { id: a.id, label: a.label || a.username || a.phone || 'Аккаунт', status: a.status, proxy: !!a.proxyId, cap,

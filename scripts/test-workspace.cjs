@@ -13,7 +13,7 @@ const { retiredProductGate } = require('../dist/src/common/retired-product')
 const { TgWarmupService } = require('../dist/src/tg-warmup/tg-warmup.service')
 const { AdminGuard } = require('../dist/src/admin/admin.guard')
 const db = new PrismaClient()
-const warmup = { setSessionPoller() {}, async allowancesFor(rows) { return new Map(rows.map(a=>[a.id,{dailyMessages:20,allowOutgoing:true}])) } }
+const warmup = { setSessionPoller() {}, async allowancesFor(rows) { return new Map(rows.map(a=>[a.id,{dailyMessages:300,allowOutgoing:true}])) } }
 const svc = new WorkspaceService(db,warmup)
 const campaigns = new CampaignService(db,warmup,{}, {})
 async function main() {
@@ -64,7 +64,9 @@ async function main() {
  assert.equal(dashboard.interested,1);assert.equal(dashboard.readNoReply,1)
  assert.equal(dashboard.neededAccounts,10);assert.equal(dashboard.neededProxies,10)
  assert.equal(dashboard.cancelledClients,1);assert.equal(dashboard.net,7000)
- const account = await db.tgAccount.create({data:{label:'Archive test',session:'test-only',apiId:1,apiHash:'test',deviceModel:'test',systemVersion:'test',appVersion:'test',langCode:'ru',systemLangCode:'ru',createdAt:new Date(Date.now()-10*86400000)}})
+ const account = await db.tgAccount.create({data:{label:'Archive test',status:'READY',session:'test-only',apiId:1,apiHash:'test',deviceModel:'test',systemVersion:'test',appVersion:'test',langCode:'ru',systemLangCode:'ru',createdAt:new Date(Date.now()-10*86400000)}})
+ const capacityCheck = await svc.dashboard(30)
+ assert.equal(capacityCheck.capacity,20);assert.equal(capacityCheck.neededAccounts,10)
  await db.tgAccountEvent.create({data:{accountId:account.id,kind:'banned',text:'test',createdAt:new Date(Date.now()-2*86400000)}})
  const warmService = new TgWarmupService(db, {})
  await warmService.deleteAccount(account.id)
