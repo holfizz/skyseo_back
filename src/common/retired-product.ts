@@ -5,6 +5,6 @@ export function retiredProductGate(req: Request, res: Response, next: NextFuncti
  const allowed = /^\/v1\/api\/(health|auth\/(login|forgot-password|reset-password)|users\/profile)$/.test(path)
   || /^\/v1\/api\/admin\/(workspace|warmup|tg-outreach|staff)(\/|$)/.test(path)
   || /^\/v1\/api\/manager\/outreach(\/|$)/.test(path)
- if (req.method === 'OPTIONS' || allowed) return next()
+ if (req.method === 'OPTIONS' || (req.method === 'POST' && path === '/v1/api/lead') || allowed) return next()
  return res.status(410).json({ message: 'Старое приложение SkySEO отключено', code: 'PRODUCT_RETIRED' })
 }
