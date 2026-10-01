@@ -18,68 +18,69 @@ const svc = new WorkspaceService(db,warmup)
 const campaigns = new CampaignService(db,warmup,{}, {})
 async function main() {
  assert.equal(new URL(process.env.DATABASE_URL).pathname, '/skyseo_workspace_test')
- await db.$executeRawUnsafe('TRUNCATE TABLE workspace_clients, workspace_settings, workspace_account_history, tg_campaigns, tg_accounts RESTART IDENTITY CASCADE')
- // Test DB contains schema only. Create five evenly allocated hypotheses.
- const c = await campaigns.create({name:'Integration test', firstMessage:'Привет'})
- const variants = Array.from({length:5},(_,i)=>({name:`V${i}`,text:`Текст ${i}`}))
- await campaigns.saveHypotheses(c.id,variants)
- const recipients = []
- for(let i=0;i<23;i++) recipients.push(await db.tgRecipient.create({data:{campaignId:c.id,username:`integration_${i}`}}))
- // Concurrent allocations prove the DB lock protects equal cohort sizes.
- await Promise.all(recipients.map(r=>campaigns.hypothesisText(c.id,r.id,'fallback')))
- let stats = await campaigns.hypotheses(c.id)
- assert.deepEqual(stats.map(v=>v.assigned).sort(),[4,4,5,5,5])
- const first = await db.tgRecipient.findUnique({where:{id:recipients[0].id}})
- await campaigns.hypothesisText(c.id,first.id,'different fallback')
- assert.equal((await db.tgRecipient.findUnique({where:{id:first.id}})).hypothesisId,first.hypothesisId)
- await assert.rejects(()=>campaigns.saveHypotheses(c.id,variants))
-
- // More than ten variants, optional names, one-text lists and persisted round-robin.
- const sequence = await campaigns.create({ name: 'Sequence and follow-ups', secondMessage: 'Legacy text must not leak' })
- const eleven = Array.from({ length: 11 }, (_, i) => ({ text: `First ${i}`, hasSecondMessage: i === 0, secondMessage: i === 0 ? 'Здравствуйте, {имя}' : '' }))
- let sequenceRows = await campaigns.saveHypotheses(sequence.id, eleven)
- assert.equal(sequenceRows.length, 11)
- assert.equal(sequenceRows[0].name, 'Текст 1')
- assert.deepEqual(sequenceRows.map(v => v.position), Array.from({length:11}, (_,i)=>i))
- const ordered = []
- for (let i = 0; i < 12; i++) {
-  const r = await db.tgRecipient.create({data:{campaignId:sequence.id,username:`round_${i}`,firstName:'Иван'}})
-  ordered.push(r)
-  assert.equal(await campaigns.hypothesisText(sequence.id,r.id,'fallback'), `First ${i % 11}`)
- }
- const beforeRetry = (await db.tgCampaign.findUnique({where:{id:sequence.id}})).hypothesisCursor
- await campaigns.hypothesisText(sequence.id,ordered[0].id,'changed')
- assert.equal((await db.tgCampaign.findUnique({where:{id:sequence.id}})).hypothesisCursor,beforeRetry)
- const restarted = new CampaignService(db,warmup,{}, {})
- const afterRestart = await db.tgRecipient.create({data:{campaignId:sequence.id,username:'restart'}})
- assert.equal(await restarted.hypothesisText(sequence.id,afterRestart.id,'fallback'),'First 1')
- assert.equal((await campaigns.dialog(ordered[0].id)).secondPreview,'Здравствуйте, Иван')
- assert.equal((await campaigns.preview(ordered[0].id)).second,'Здравствуйте, Иван')
- assert.equal((await campaigns.dialog(ordered[1].id)).secondPreview,null)
- await db.tgCampaign.update({where:{id:sequence.id},data:{status:'RUNNING'}})
- sequenceRows = await campaigns.saveHypotheses(sequence.id,[...sequenceRows,{text:'Added while running'}])
- assert.equal(sequenceRows.length,12)
- assert.equal(sequenceRows[0].assigned,2)
- await assert.rejects(()=>campaigns.saveHypotheses(sequence.id,sequenceRows.map((v,i)=>i===0?{...v,text:'Changed sent text'}:v)))
- await assert.rejects(()=>campaigns.saveHypotheses(sequence.id,sequenceRows.map((v,i)=>i===0?{...v,secondMessage:'Different follow-up'}:v)))
- await assert.rejects(()=>campaigns.saveHypotheses(sequence.id,sequenceRows.filter((_,i)=>i!==0)))
- const single = await campaigns.create({name:'One text'})
- assert.equal((await campaigns.saveHypotheses(single.id,[{text:'Only one'}])).length,1)
- await assert.rejects(()=>campaigns.saveHypotheses(single.id,[{text:'Test',hasSecondMessage:true,secondMessage:''}]))
- await assert.rejects(()=>campaigns.saveHypotheses(single.id,[{text:'Test',hasSecondMessage:'true',secondMessage:'Text'}]))
- await assert.rejects(()=>campaigns.saveHypotheses(single.id,[sequenceRows[0]]))
- // Neither the opening text nor the follow-up changes cohorts when statistics grow.
- await db.tgRecipient.update({where:{id:ordered[0].id},data:{secondSentAt:new Date()}})
- assert.equal((await campaigns.hypotheses(sequence.id))[0].second,1)
- const now = new Date()
+ await db.$executeRawUnsafe('TRUNCATE TABLE workspace_clients, workspace_settings, workspace_account_history, tg_campaigns, tg_accounts, tg_hypotheses, tg_hypothesis_settings RESTART IDENTITY CASCADE')
+ // Global allocation crosses campaign boundaries and survives service restarts.
+ const c = await campaigns.create({name:'Integration test', firstMessage:'Fallback A'})
+ const other = await campaigns.create({name:'Other campaign', firstMessage:'Fallback B'})
+ let variants = (await campaigns.saveHypotheses(Array.from({length:11},(_,i)=>({text:`Text ${i}`, hasSecondMessage:i===0, secondMessage:i===0?'Здравствуйте, {имя}':null})))).variants
+ assert.equal(variants.length,11)
+ assert.equal(variants[0].name,'Текст 1')
+ const recipients=[]
+ for(let i=0;i<23;i++) recipients.push(await db.tgRecipient.create({data:{campaignId:i%2?other.id:c.id,username:`global_${i}`,firstName:'Иван'}}))
+ await Promise.all(recipients.map(r=>campaigns.hypothesisText(r.campaignId,r.id,'fallback')))
+ let stats=(await campaigns.hypotheses()).variants
+ assert.deepEqual(stats.map(v=>v.assigned).sort((a,b)=>a-b),[2,2,2,2,2,2,2,2,2,2,3])
+ const first=await db.tgRecipient.findUnique({where:{id:recipients[0].id},include:{hypothesis:true}})
+ const cursor=(await db.tgHypothesisSettings.findUnique({where:{id:'main'}})).cursor
+ assert.equal(await campaigns.hypothesisText(first.campaignId,first.id,'different'),first.hypothesis.text)
+ assert.equal((await db.tgHypothesisSettings.findUnique({where:{id:'main'}})).cursor,cursor)
+ const restarted=new CampaignService(db,warmup,{}, {})
+ const next=await db.tgRecipient.create({data:{campaignId:other.id,username:'restart'}})
+ assert.equal(await restarted.hypothesisText(other.id,next.id,'fallback'),'Text 1')
+ await assert.rejects(()=>campaigns.hypothesisText(c.id,next.id,'fallback'))
+ await assert.rejects(()=>campaigns.saveHypotheses(variants.map((v,i)=>i===0?{...v,text:'edited'}:v)))
+ await assert.rejects(()=>campaigns.saveHypotheses(variants.slice(1)))
+ await assert.rejects(()=>campaigns.saveHypotheses([...variants,{text:'invalid',hasSecondMessage:true,secondMessage:''}]))
+ await assert.rejects(()=>campaigns.saveHypotheses([...variants,{text:'invalid',enabled:'yes'}]))
+ // Used variants can be disabled without losing assignment or historical statistics.
+ variants=(await campaigns.saveHypotheses(variants.map((v,i)=>({...v,enabled:i===0})))).variants
+ const selected=await db.tgRecipient.create({data:{campaignId:c.id,username:'selected',firstName:'Иван'}})
+ assert.equal(await campaigns.hypothesisText(c.id,selected.id,'fallback'),'Text 0')
+ assert.equal((await campaigns.dialog(selected.id)).secondPreview,'Здравствуйте, Иван')
+ assert.equal((await campaigns.preview(selected.id)).second,'Здравствуйте, Иван')
+ await campaigns.setHypothesesEnabled(false)
+ const disabled=await db.tgRecipient.create({data:{campaignId:other.id,username:'disabled'}})
+ assert.equal(await campaigns.hypothesisText(other.id,disabled.id,'Fallback B'),'Fallback B')
+ assert.equal((await db.tgRecipient.findUnique({where:{id:disabled.id}})).hypothesisId,null)
+ assert.equal(await campaigns.hypothesisText(selected.campaignId,selected.id,'fallback'),'Text 0')
+ await campaigns.setHypothesesEnabled(true)
+ variants=(await campaigns.saveHypotheses(variants.map(v=>({...v,enabled:false})))).variants
+ const allOff=await db.tgRecipient.create({data:{campaignId:c.id,username:'all_off'}})
+ assert.equal(await campaigns.hypothesisText(c.id,allOff.id,'Fallback A'),'Fallback A')
+ assert.equal((await campaigns.hypotheses()).variants.length,11)
+ variants=(await campaigns.saveHypotheses([...variants,{text:'Added globally'}])).variants
+ assert.equal(variants.length,12)
+ assert.equal(await campaigns.hypothesisText(c.id,allOff.id,'fallback'),'Added globally')
+ const preview=campaigns.previewHypothesis({text:'Здравствуйте, {фио}, {сайт}',hasSecondMessage:true,secondMessage:'Компания: {компания}'})
+ assert.equal(preview.first,'Здравствуйте, Иван Петрович, example')
+ assert.equal(preview.second,'Компания: ООО «Пример»')
+ const now=new Date()
  await db.tgRecipient.update({where:{id:first.id},data:{status:'REPLIED',sentAt:now,readAt:now,repliedAt:now}})
- for(let i=0;i<6;i++) await db.tgDialogMessage.create({data:{recipientId:first.id,tgId:i+1,out:false,text:'Ответ',date:now}})
- const second = recipients[1]
+ for(let i=0;i<3;i++) await db.tgDialogMessage.create({data:{recipientId:first.id,tgId:i+1,out:false,text:'Ответ',date:now}})
+ // Outgoing messages do not count, and two incoming messages are insufficient.
+ const second=recipients.find(r=>r.id!==first.id)
  await db.tgRecipient.update({where:{id:second.id},data:{status:'READ',sentAt:now,readAt:now}})
+ for(let i=0;i<2;i++) await db.tgDialogMessage.create({data:{recipientId:second.id,tgId:i+1,out:false,text:'Ответ',date:now}})
+ await db.tgDialogMessage.create({data:{recipientId:second.id,tgId:3,out:true,text:'Наш ответ',date:now}})
+ // Imported incoming history without a sent opening must not inflate conversion.
+ for(let i=0;i<3;i++) await db.tgDialogMessage.create({data:{recipientId:allOff.id,tgId:i+1,out:false,text:'История без отправки',date:now}})
  await svc.saveSettings({dailyGoal:200,planningPerAccount:20,interestedAfter:5})
- stats = await campaigns.hypotheses(c.id)
- assert.equal(stats.reduce((s,v)=>s+v.interested,0),1)
- assert.equal(stats.reduce((s,v)=>s+v.readNoReply,0),1)
+ assert.equal((await svc.settings()).interestedAfter,3)
+ stats=(await campaigns.hypotheses()).variants
+ assert.equal(stats.reduce((n,v)=>n+v.interested,0),1)
+ assert.equal(stats.reduce((n,v)=>n+v.readNoReply,0),1)
+ const winning=stats.find(v=>v.id===first.hypothesisId)
+ assert.equal(winning.interestRate,100/winning.sent)
  const clientData = { name:'Тестовый клиент', telegram:'@client',website:'https://example.com',monthlyFee:10000,startsOn:'2026-08-01',status:'ACTIVE',topvisorLinks:['https://topvisor.com/project/1','https://topvisor.com/project/2'],notes:'' }
  const client = await svc.saveClient(null,clientData)
  await svc.month(client.id,'2026-08',{received:10000,expenses:2000,status:'PAID',note:''})

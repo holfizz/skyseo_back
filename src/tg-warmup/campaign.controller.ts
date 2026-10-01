@@ -45,10 +45,14 @@ export class CampaignController {
 		return this.svc.pollTick({ recipientId: id, deadlineMs: 40_000 })
 	}
 
- @Get('campaigns/:id/hypotheses')
- hypotheses(@Param('id') id: string) { return this.svc.hypotheses(id) }
- @Post('campaigns/:id/hypotheses')
- saveHypotheses(@Param('id') id: string, @Body() body: any) { return this.svc.saveHypotheses(id, body?.variants) }
+ @Get('hypotheses')
+ hypotheses() { return this.svc.hypotheses() }
+ @Post('hypotheses')
+ saveHypotheses(@Body() body: any) { return this.svc.saveHypotheses(body?.variants) }
+ @Patch('hypotheses/settings')
+ hypothesesSettings(@Body() body: any) { return this.svc.setHypothesesEnabled(body?.enabled) }
+ @Post('hypotheses/preview')
+ hypothesesPreview(@Body() body: any) { return this.svc.previewHypothesis(body) }
 
 	@Post('campaigns')
 	create(@Body() body: any) {

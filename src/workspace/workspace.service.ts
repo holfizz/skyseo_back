@@ -20,10 +20,10 @@ function link(value: string) {
 @Injectable()
 export class WorkspaceService {
  constructor(private db: PrismaService, private warmup: TgWarmupService) {}
- settings() { return this.db.workspaceSettings.findUnique({ where: { id: 'main' } }).then(s => s ?? { id: 'main', dailyGoal: 200, interestedAfter: 5, planningPerAccount: 20 }) }
+ settings() { return this.db.workspaceSettings.findUnique({ where: { id: 'main' } }).then(s => s ?? { id: 'main', dailyGoal: 200, interestedAfter: 3, planningPerAccount: 20 }) }
  async saveSettings(b: any) {
-  const data: any = {}
-  for (const [k, max] of [['dailyGoal', 100000], ['interestedAfter', 100], ['planningPerAccount', 200]] as const) {
+  const data: any = { interestedAfter: 3 }
+  for (const [k, max] of [['dailyGoal', 100000], ['planningPerAccount', 200]] as const) {
    if (!Number.isInteger(b?.[k]) || b[k] < 1 || b[k] > max) throw new BadRequestException(`Некорректное значение ${k}`)
    data[k] = b[k]
   }
@@ -87,7 +87,7 @@ export class WorkspaceService {
    const ended = a.events[0]?.createdAt
    return { id: a.id, label: a.label || a.username || a.phone || 'Аккаунт', status: a.status, proxy: !!a.proxyId, cap,
     ageDays: Math.max(0, Math.floor((Date.now() - a.createdAt.getTime()) / 86400000)), lifetimeDays: ended ? Math.max(0, (ended.getTime() - a.createdAt.getTime()) / 86400000) : null,
-    sent: rows.length, sentToday: rows.filter(r => r.sentAt >= today).length, replies: rows.reduce((n, r) => n + r._count.messages, 0), interested: rows.filter(r => r._count.messages > settings.interestedAfter).length }
+    sent: rows.length, sentToday: rows.filter(r => r.sentAt >= today).length, replies: rows.reduce((n, r) => n + r._count.messages, 0), interested: rows.filter(r => r._count.messages >= 3).length }
   }))
   const capacity = accountRows.reduce((s, a) => s + a.cap, 0)
   const ready = accountRows.filter(a => a.cap > 0).length
@@ -98,13 +98,13 @@ export class WorkspaceService {
   const lifetimes = accountRows.filter(a => a.lifetimeDays !== null).map(a => a.lifetimeDays!).concat(archivedLifetimes)
   const daily = Array.from({ length: days }, (_, i) => {
    const day = mskDayKey(new Date(since.getTime() + i * 86400000)); const rows = recipients.filter(r => mskDayKey(r.sentAt) === day)
-   return { day, sent: rows.length, read: rows.filter(r => r.readAt).length, replied: rows.filter(r => r.repliedAt).length, interested: rows.filter(r => r._count.messages > settings.interestedAfter).length }
+   return { day, sent: rows.length, read: rows.filter(r => r.readAt).length, replied: rows.filter(r => r.repliedAt).length, interested: rows.filter(r => r._count.messages >= 3).length }
   })
   const byMonth = new Map<string, { month: string; received: number; expenses: number; net: number }>()
   for (const c of clients) for (const m of c.months) { const row = byMonth.get(m.month) || { month: m.month, received: 0, expenses: 0, net: 0 }; row.received += m.status === 'PAID' ? Number(m.received) : 0; row.expenses += Number(m.expenses); row.net = row.received - row.expenses; byMonth.set(m.month, row) }
   return { settings, days, sent: recipients.length, sentToday: recipients.filter(r => r.sentAt >= today).length,
    read: recipients.filter(r => r.readAt).length, readNoReply: recipients.filter(r => r.readAt && !r.repliedAt).length,
-   replied: recipients.filter(r => r.repliedAt).length, replies: recipients.reduce((s, r) => s + r._count.messages, 0), interested: recipients.filter(r => r._count.messages > settings.interestedAfter).length,
+   replied: recipients.filter(r => r.repliedAt).length, replies: recipients.reduce((s, r) => s + r._count.messages, 0), interested: recipients.filter(r => r._count.messages >= 3).length,
    blocked: recipients.filter(r => r.blockedAt).length, capacity, ready, proxies, neededAccounts: needed, neededProxies: needed,
    additionalAccounts: Math.max(0, needed - ready), additionalProxies: Math.max(0, needed - proxies), perAccount, planningEstimate: !ready,
    remainingToday: accountRows.reduce((s, a) => s + Math.max(0, a.cap - a.sentToday), 0),

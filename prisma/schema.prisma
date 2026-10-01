@@ -1681,20 +1681,27 @@ model WorkspaceContract {
 model WorkspaceSettings {
   id String @id @default("main")
   dailyGoal Int @default(200)
-  interestedAfter Int @default(5)
+  interestedAfter Int @default(3)
   planningPerAccount Int @default(20)
   @@map("workspace_settings")
 }
+model TgHypothesisSettings {
+  id String @id @default("main")
+  enabled Boolean @default(true)
+  cursor Int @default(0)
+  @@map("tg_hypothesis_settings")
+}
 model TgHypothesis {
+  enabled Boolean @default(true)
   position Int @default(0)
   hasSecondMessage Boolean @default(false)
   secondMessage String?
   id String @id @default(uuid())
-  campaignId String
+  campaignId String?
   name String
   text String
   createdAt DateTime @default(now())
-  campaign TgCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign TgCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   recipients TgRecipient[]
   @@index([campaignId])
   @@map("tg_hypotheses")
