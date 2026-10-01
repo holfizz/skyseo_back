@@ -6,3 +6,4 @@ UPDATE tg_accounts SET status='READY' WHERE status='WARMING';
 UPDATE tg_accounts SET "busyUntil"=NULL,"busyBy"=NULL WHERE "busyBy"='warmup';
 UPDATE tg_accounts SET "forceSend"=false;
 ALTER TABLE tg_accounts ADD COLUMN "premiumCheckedAt" TIMESTAMP(3);
+ALTER TABLE tg_accounts ADD COLUMN "restrictedUntil" TIMESTAMP(3);

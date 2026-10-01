@@ -32,6 +32,13 @@ async function main(){
   assert.equal((await warmup.allowanceFor(a,0)).maxMessagesPerDay,0,'Budget exhausted globally')
   a=await db.tgAccount.update({where:{id:a.id},data:{outreachStartedAt:new Date(Date.now()-2*day)}})
   assert.equal((await warmup.allowanceFor(a,0)).dailyMessages,500)
+  await warmup.applyFailure(a.id,{kind:'flood',message:'FLOOD_WAIT_600',seconds:600})
+  a=await db.tgAccount.findUniqueOrThrow({where:{id:a.id}})
+  assert.ok(a.restrictedUntil>Date.now())
+  assert.equal(await warmup.claimAccount(a.id,'poll',10),false,'Server cooldown blocks background connections')
+  assert.equal((await warmup.allowanceFor(a,0)).dailyMessages,0,'Server cooldown blocks every campaign')
+  a=await db.tgAccount.update({where:{id:a.id},data:{restrictedUntil:new Date(Date.now()-1)}})
+  assert.ok((await warmup.allowanceFor(a,0)).dailyMessages<=15,'Restrictions prevent full promotion')
   a=await db.tgAccount.update({where:{id:a.id},data:{premiumCheckedAt:new Date(Date.now()-2*day)}})
   assert.equal((await warmup.allowanceFor(a,0)).dailyMessages,0,'Expired Premium check prevents sending')
  } finally { await db.tgCampaign.delete({where:{id:c.id}});await db.tgAccount.delete({where:{id:account.id}}) }

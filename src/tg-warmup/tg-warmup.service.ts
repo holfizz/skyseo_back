@@ -185,6 +185,7 @@ export class TgWarmupService {
 			where: {
 				id: accountId,
                 purchasedAt: { lte: new Date(now.getTime() - DAY_MS) },
+                AND: [{ OR: [{ restrictedUntil: null }, { restrictedUntil: { lte: now } }] }, ...(by === 'send' ? [{ probe: { path: ['premium'], equals: true }, premiumCheckedAt: { gt: new Date(now.getTime()-DAY_MS) } }] : [])],
 				OR: [{ busyUntil: null }, { busyUntil: { lt: now } }],
 			},
 			data: { busyUntil: new Date(now.getTime() + seconds * 1000), busyBy: by },
@@ -1067,7 +1068,7 @@ export class TgWarmupService {
 		const patch: any = { lastError: failure.message.slice(0, 500), lastCheckAt: new Date() }
 		if (failure.kind === 'banned' || failure.kind === 'frozen') patch.status = 'BANNED'
 		else if (failure.kind === 'unauthorized') patch.status = 'ERROR'
-		if (failure.kind === 'flood') patch.floodWaits = { increment: 1 }
+		if (failure.kind === 'flood') { patch.floodWaits = { increment: 1 }; patch.restrictedUntil = new Date(Date.now() + Math.max(60,failure.seconds ?? 3600)*1000) }
 		if (failure.kind === 'peerFlood') {
 			patch.peerFloods = { increment: 1 }
 			// Стабильный, узнаваемый текст: по нему список рисует помеху
@@ -1077,6 +1078,7 @@ export class TgWarmupService {
 			patch.lastError = 'PEER_FLOOD — спам-лимит, аккаунт не пишет новым людям'
 			// Через сутки планировщик сам напишет @SpamBot и обжалует (autoSpamAppeals).
 			patch.spamRetryAt = new Date(Date.now() + 24 * 3600_000)
+            patch.restrictedUntil = patch.spamRetryAt
 		}
 		await this.prisma.tgAccount.update({ where: { id: accountId }, data: patch })
 
@@ -2834,6 +2836,7 @@ export class TgWarmupService {
 		counters: AllowanceCounters,
 		now: Date,
 	): { allowance: Allowance; settleCap: number | null } {
+        if (account.restrictedUntil && account.restrictedUntil > now) return {settleCap:null, allowance:{allowOutgoing:false,maxJoinsPerDay:0,maxMessagesPerDay:0,maxReactionsPerDay:0,dailyMessages:0,baseMessages:0,readiness:0,signals:[],throttle:null,notes:[`Ограничение Telegram до ${account.restrictedUntil.toISOString()}: аккаунт на паузе`]}}
 		const probe: any = account.probe ?? {}
 		const filled = account.probe
 			? ((probe.hasFirstName ? 1 : 0) + (probe.hasLastName ? 1 : 0) + (probe.hasUsername ? 1 : 0) +
