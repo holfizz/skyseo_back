@@ -292,6 +292,16 @@ export class CampaignController {
 	}
 
 	/** Набрать N последних контактов, которым ещё не писали, и создать рассылку. */
+	@Get('daily-norm')
+	dailyNorm(@Query('from') from?: string, @Query('to') to?: string) {
+		return this.svc.dailyNorm(from == null ? 10 : Number(from), to == null ? 20 : Number(to))
+	}
+
+	@Post('daily-norm/start')
+	startDailyNorm(@Body() body: { windowFrom?: number; windowTo?: number }) {
+		return this.svc.startDailyNorm(body?.windowFrom ?? 10, body?.windowTo ?? 20)
+	}
+
 	@Post('quick')
 	quick(@Body() body: {
 		count?: number; campaignId?: string; windowFrom?: number; windowTo?: number

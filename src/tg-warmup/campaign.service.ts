@@ -925,10 +925,63 @@ export class CampaignService {
 	 * они уже выверены, а начинать каждый раз с пустого поля — верный способ
 	 * запустить рассылку с недописанным текстом.
 	 */
+	/** Read-only daily capacity; no Telegram connections or warmup work. */
+	async dailyNorm(windowFrom = 10, windowTo = 20) {
+		if (!Number.isInteger(windowFrom) || !Number.isInteger(windowTo) || windowFrom < 0 || windowTo > 24 || windowFrom >= windowTo) {
+			throw new BadRequestException('Укажите окно отправки от 0 до 24 часов')
+		}
+		const now = new Date()
+		const [accounts, last, pending] = await Promise.all([
+			this.prisma.tgAccount.findMany({ orderBy: { createdAt: 'asc' } }),
+			this.prisma.tgCampaign.findFirst({ orderBy: { createdAt: 'desc' } }),
+			this.prisma.tgRecipient.findMany({
+				where: { status: 'QUEUED', campaign: { status: { in: ['RUNNING', 'PAUSED'] }, OR: [{ sendDate: null }, { sendDate: { lt: mskAt(now, 24) } }] } },
+				select: { plannedAccountId: true, campaign: { select: { accounts: { select: { accountId: true } } } } },
+			}),
+		])
+		const perAccount = last?.perAccountPerDay ?? 20
+		const allowances = await this.warmup.allowancesFor(accounts, 0)
+		const reservations = new Map<string, number>()
+		for (const r of pending) {
+			// An unassigned active recipient may use any linked account: reserve conservatively.
+			const ids = r.plannedAccountId ? [r.plannedAccountId] : r.campaign.accounts.map(a => a.accountId)
+			for (const id of ids) reservations.set(id, (reservations.get(id) ?? 0) + 1)
+		}
+		const rows = accounts.map(a => {
+			const allow = allowances.get(a.id)
+			const blocked = ['BANNED', 'ERROR', 'PAUSED'].includes(a.status) || a.mode === 'WARM' || !a.proxyId || !allow?.dailyMessages
+			const limit = blocked ? 0 : Math.min(perAccount, allow?.dailyMessages ?? 0)
+			const spent = Math.max(0, (allow?.dailyMessages ?? 0) - (allow?.maxMessagesPerDay ?? 0))
+			const remaining = Math.max(0, limit - spent)
+			const reserved = Math.min(remaining, reservations.get(a.id) ?? 0)
+			const left = Math.max(0, remaining - reserved)
+			// Use a conservative first-slot margin and the existing minimum interval.
+			const start = Math.max(now.getTime(), mskAt(now, windowFrom).getTime(), a.busyUntil?.getTime() ?? 0)
+			const margin = Math.min(45 * 60_000, (windowTo - windowFrom) * 3600_000 * 0.25)
+			const timeSlots = Math.max(0, Math.floor((mskAt(now, windowTo).getTime() - start - margin) / (Math.max(30, last?.minIntervalSec ?? 240) * 1000)))
+			return { id: a.id, limit, spent: Math.min(limit, spent), reserved, available: Math.min(left, timeSlots) }
+		})
+		const groups = [...new Set(rows.filter(r => r.limit > 0).map(r => r.limit))].sort((a,b) => b-a).map(limit => ({ limit, accounts: rows.filter(r => r.limit === limit).length }))
+		const sum = (key: 'limit' | 'spent' | 'reserved' | 'available') => rows.reduce((n,r) => n+r[key],0)
+		return { date: mskDayKey(now), totalAccounts: accounts.length, eligibleAccounts: rows.filter(r => r.limit > 0).length,
+			perAccount, groups, dailyTotal: sum('limit'), sent: sum('spent'), reserved: sum('reserved'), available: sum('available'),
+			launchCount: Math.min(500, sum('available')), windowFrom, windowTo, rows }
+	}
+
+	async startDailyNorm(windowFrom = 10, windowTo = 20) {
+		// Serialize double clicks across instances, then recalculate from fresh counters.
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421019)`
+			const norm = await this.dailyNorm(windowFrom, windowTo)
+			if (!norm.launchCount) throw new BadRequestException('На сегодня свободной нормы нет: проверьте аккаунты, очередь и окно отправки')
+			return this.quickFill(norm.launchCount, undefined, { start: true, date: norm.date, windowFrom, windowTo, norm })
+		}, { timeout: 120000, maxWait: 10000 })
+	}
+
 	async quickFill(
 		count: number,
 		campaignId?: string,
-		opts?: { windowFrom?: number; windowTo?: number; start?: boolean; date?: string; force?: boolean },
+		opts?: { windowFrom?: number; windowTo?: number; start?: boolean; date?: string; force?: boolean; norm?: Awaited<ReturnType<CampaignService['dailyNorm']>> },
 	) {
 		const n = Math.max(1, Math.min(500, Math.round(count || 20)))
 
@@ -938,7 +991,7 @@ export class CampaignService {
 		if (campaignId && !target) throw new NotFoundException('Кампания не найдена')
 
 		let created = false
-		if (!target) {
+		if (!target && !opts?.norm) {
 			// Рассылка называется датой дня. Если сегодняшняя уже заведена и не
 			// закрыта — пополняем её, а не заводим вторую с тем же именем:
 			// нажать кнопку дважды за день дело обычное.
@@ -972,11 +1025,11 @@ export class CampaignService {
 			// молча стояла с «нет аккаунтов», хотя пишущие аккаунты были.
 			const writing = await this.writingAccountIds()
 			const inherited = accounts.map(a => a.accountId).filter(id => writing.includes(id))
-			const pool = last && inherited.length ? inherited : writing
+			const pool = opts?.norm ? opts.norm.rows.filter(r => r.available > 0).map(r => r.id) : last && inherited.length ? inherited : writing
 
 			target = await this.prisma.tgCampaign.create({
 				data: {
-					name: new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+					name: opts?.norm ? `Норма · ${opts.norm.date}` : new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
 					firstMessage: FIRST_MESSAGE,
 					secondMessage: SECOND_MESSAGE,
 					dailyGoal: last?.dailyGoal ?? null,
@@ -989,7 +1042,7 @@ export class CampaignService {
 								windowTo: last.windowTo,
 							}
 						: {}),
-					accounts: { create: pool.map(accountId => ({ accountId })) },
+					accounts: { create: pool.map(accountId => ({ accountId, ...(opts?.norm ? { dailyLimit: opts.norm.rows.find(r => r.id === accountId)!.available } : {}) })) },
 				},
 			})
 			created = true
