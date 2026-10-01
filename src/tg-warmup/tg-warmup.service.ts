@@ -184,6 +184,7 @@ export class TgWarmupService {
 		const claimed = await this.prisma.tgAccount.updateMany({
 			where: {
 				id: accountId,
+                purchasedAt: { lte: new Date(now.getTime() - DAY_MS) },
 				OR: [{ busyUntil: null }, { busyUntil: { lt: now } }],
 			},
 			data: { busyUntil: new Date(now.getTime() + seconds * 1000), busyBy: by },
@@ -615,6 +616,9 @@ export class TgWarmupService {
 							: null
 			return {
 				id: a.id,
+                purchasedAt: a.purchasedAt,
+                outreachStartedAt: a.outreachStartedAt,
+                premium: (a.probe as any)?.premium === true,
 				label: a.label,
 				avatar: a.avatar,
 				mode: a.mode,
@@ -727,7 +731,7 @@ export class TgWarmupService {
 			id: a.id, label: a.label, avatar: a.avatar, mode: a.mode, phone: a.phone, username: a.username,
 			firstName: a.firstName, lastName: a.lastName, tgUserId: a.tgUserId,
 			status: a.status, score: a.score, warmness: a.warmness, scoredAt: a.scoredAt,
-			registeredAt: a.registeredAt, probe: a.probe, advice: a.advice,
+			registeredAt: a.registeredAt, purchasedAt: a.purchasedAt, outreachStartedAt: a.outreachStartedAt, premiumCheckedAt: a.premiumCheckedAt, probe: a.probe, advice: a.advice,
 			fingerprint: {
 				deviceModel: a.deviceModel, systemVersion: a.systemVersion,
 				appVersion: a.appVersion, langCode: a.langCode, systemLangCode: a.systemLangCode,
@@ -758,6 +762,7 @@ export class TgWarmupService {
 	async importAccounts(input: {
 		files: Array<{ name: string; buffer: Buffer }>
 		strings?: string
+        purchasedAt?: string
 		apiId?: number
 		apiHash?: string
 		passcode?: string
@@ -770,6 +775,8 @@ export class TgWarmupService {
 		proxyMode?: 'pool' | 'one' | 'none'
 		proxyId?: string | null
 	}) {
+        const purchasedAt = input.purchasedAt ? new Date(input.purchasedAt) : new Date()
+        if (!Number.isFinite(purchasedAt.getTime()) || purchasedAt.getTime() > Date.now()) throw new BadRequestException('Укажите корректные дату и время покупки, не в будущем')
 		if (!secretsReady()) {
 			throw new BadRequestException(
 				'Не задан SECRETS_KEY — сессии Telegram нечем шифровать. Добавьте переменную и перезапустите сервис.',
@@ -887,6 +894,7 @@ export class TgWarmupService {
 					proxyId: input.proxyMode === 'one' ? input.proxyId || null : null,
 					registeredAt: p.meta.registeredAt ?? (est ? est.date : null),
 					status: 'NEW',
+                    purchasedAt,
 				},
 				select: { id: true },
 			})
@@ -995,6 +1003,7 @@ export class TgWarmupService {
 	 * перестаём мешать. Дневной предел при этом задаёт кампания, а не флаг.
 	 */
 	async setForceSend(id: string, force: boolean) {
+        if (force) throw new BadRequestException("Обход алгоритма Premium и суточных лимитов отключён")
 		const a = await this.prisma.tgAccount.update({
 			where: { id },
 			data: { forceSend: !!force },
@@ -1145,6 +1154,7 @@ export class TgWarmupService {
 	async checkAccount(id: string): Promise<{ ok: boolean; score?: ScoreResult; error?: string }> {
 		const a = await this.prisma.tgAccount.findUnique({ where: { id }, include: { proxy: true } })
 		if (!a) throw new NotFoundException('Аккаунт не найден')
+        if (Date.now() - a.purchasedAt.getTime() < DAY_MS) return {ok:false,error:'Первые 24 часа после покупки: аккаунт отдыхает без подключений'}
 
 		if (!(await this.claimAccount(a.id, 'check', 120))) {
 			return { ok: false, error: 'аккаунт сейчас занят прогревом или рассылкой, попробуйте через минуту' }
@@ -1182,6 +1192,7 @@ export class TgWarmupService {
 					tgUserId: result.self.userId || a.tgUserId,
 					registeredAt: result.registeredAt ?? a.registeredAt,
 					probe: probe as any,
+                    premiumCheckedAt: new Date(),
 					advice: score.advice as any,
 					score: score.score,
 					warmness: score.warmness.total,
@@ -2293,60 +2304,7 @@ export class TgWarmupService {
 	}
 
 	async startWarmup(ids: string[], days: number, windowFrom = 9, windowTo = 23, pace: Pace = 'normal') {
-		if (!ids?.length) throw new BadRequestException('Не выбрано ни одного аккаунта')
-		const d = Math.max(1, Math.min(60, Math.round(days || 7)))
-		if (windowTo <= windowFrom) throw new BadRequestException('Окно активности задано наоборот: конец раньше начала')
-		const speed: Pace = PACES.includes(pace) ? pace : 'normal'
-
-		const accounts = await this.prisma.tgAccount.findMany({
-			where: { id: { in: ids } },
-			select: { id: true, status: true, mode: true },
-		})
-		const started: string[] = []
-		const skipped: Array<{ id: string; reason: string }> = []
-
-		for (const a of accounts) {
-			if (a.status === 'BANNED') {
-				skipped.push({ id: a.id, reason: 'аккаунт заблокирован' })
-				continue
-			}
-			if (a.status === 'PAUSED') {
-				skipped.push({ id: a.id, reason: 'аккаунт на паузе — сначала снимите её' })
-				continue
-			}
-			if (a.mode === 'SEND') {
-				skipped.push({ id: a.id, reason: 'аккаунт отведён только под рассылку' })
-				continue
-			}
-			const active = await this.prisma.tgWarmupRun.findFirst({
-				where: { accountId: a.id, kind: 'WARMUP', status: { in: ['SCHEDULED', 'RUNNING'] } },
-				select: { id: true },
-			})
-			if (active) {
-				skipped.push({ id: a.id, reason: 'прогрев уже идёт' })
-				continue
-			}
-			// Фон уступает место прогреву. Два прогона на один аккаунт — это и
-			// двойная норма действий за сутки, и две попытки захватить одну
-			// сессию: Telegram видит два одновременных подключения.
-			await this.prisma.tgWarmupRun.updateMany({
-				where: { accountId: a.id, kind: 'UPKEEP', status: { in: ['SCHEDULED', 'RUNNING'] } },
-				data: { status: 'STOPPED', finishedAt: new Date() },
-			})
-			await this.prisma.tgWarmupRun.create({
-				data: {
-					accountId: a.id,
-					days: d,
-					windowFrom, windowTo,
-					pace: speed,
-					status: 'SCHEDULED',
-					nextRunAt: this.nextStart(a.id, new Date(), { fromHour: windowFrom, toHour: windowTo }),
-				},
-			})
-			await this.prisma.tgAccount.update({ where: { id: a.id }, data: { status: 'WARMING' } })
-			started.push(a.id)
-		}
-		return { started: started.length, skipped, pace: speed }
+		throw new BadRequestException('Фоновый прогрев отключён. Используется Premium → 24 часа покоя → двое суток по 15 сообщений → лимит рассылки.')
 	}
 
 	/**
@@ -2375,35 +2333,26 @@ export class TgWarmupService {
 	 * READY и снимает прогон, а дальше фон подхватывается ближайшим тиком.
 	 * Отдельной ветки в finishRun для этого не нужно — одно место вместо двух.
 	 */
+ async refreshEligibleAccounts(): Promise<number> {
+  const now = new Date()
+  const due = await this.prisma.tgAccount.findMany({where:{status:{in:['NEW','READY']}, purchasedAt:{lte:new Date(now.getTime()-DAY_MS)}, OR:[{premiumCheckedAt:null},{premiumCheckedAt:{lt:new Date(now.getTime()-DAY_MS)}}]}, orderBy:{premiumCheckedAt:{sort:'asc',nulls:'first'}}, take:3, include:{proxy:true}})
+  let checked=0
+  for (const a of due) {
+   if (!(await this.claimAccount(a.id,'check',90))) continue
+   try {
+    const opts=this.clientOptions(a)
+    const {result:me,session}=await withClient(opts,c=>call(c,'getMe',()=>c.getMe()))
+    await this.persistSession(a.id,opts.session,session)
+    await this.prisma.tgAccount.update({where:{id:a.id},data:{probe:{...((a.probe as any)??{}),premium:!!(me as any)?.premium},premiumCheckedAt:new Date(),status:a.status==='NEW'?'READY':a.status}})
+    checked++
+   } catch(e:any) { await this.applyFailure(a.id,e instanceof TgError?e.failure:classifyError(e)) }
+   finally { await this.releaseAccount(a.id) }
+  }
+  return checked
+ }
+
 	async ensureUpkeep(): Promise<number> {
-		const accounts = await this.prisma.tgAccount.findMany({
-			where: {
-				status: 'READY',
-				runs: { none: { status: { in: ['SCHEDULED', 'RUNNING'] } } },
-			},
-			select: {
-				id: true,
-				// Окно берём то, в котором аккаунт грелся: человек выставил его
-				// под свой часовой пояс и легенду, и менять это молча нельзя.
-				runs: { orderBy: { startedAt: 'desc' }, take: 1, select: { windowFrom: true, windowTo: true } },
-			},
-		})
-		for (const a of accounts) {
-			const last = a.runs[0]
-			const w = { fromHour: last?.windowFrom ?? 9, toHour: last?.windowTo ?? 23 }
-			await this.prisma.tgWarmupRun.create({
-				data: {
-					accountId: a.id,
-					kind: 'UPKEEP',
-					days: 0, // у фона нет срока
-					windowFrom: w.fromHour, windowTo: w.toHour,
-					pace: 'calm',
-					status: 'SCHEDULED',
-					nextRunAt: this.nextStart(a.id, new Date(), w),
-				},
-			})
-		}
-		return accounts.length
+		return 0
 	}
 
 	/**
@@ -2449,54 +2398,7 @@ export class TgWarmupService {
 	 * аккаунт получил бы двойную норму действий за день.
 	 */
 	async tick(limit = 10): Promise<number> {
-		const now = new Date()
-		// Замок старше получаса считаем протухшим: значит воркер упал в процессе.
-		const stale = new Date(now.getTime() - 30 * 60_000)
-		const due = await this.prisma.tgWarmupRun.findMany({
-			where: {
-				status: { in: ['SCHEDULED', 'RUNNING'] },
-				nextRunAt: { lte: now },
-				OR: [{ lockedAt: null }, { lockedAt: { lt: stale } }],
-			},
-			orderBy: { nextRunAt: 'asc' },
-			take: limit,
-			select: { id: true, lockedAt: true },
-		})
-
-		// Прогоны идут пачками по несколько штук сразу. Строго по очереди нельзя:
-		// внутри одного захода есть настоящие паузы между действиями и таймауты
-		// подключения, и пул из полусотни аккаунтов не успевал бы за сутки.
-		// Больше четырёх одновременно не берём: у каждого свой прокси и своё
-		// соединение, а сеть у контейнера одна.
-		const CONCURRENCY = 4
-		let handled = 0
-		const queue = [...due]
-		const worker = async () => {
-			for (;;) {
-				const row = queue.shift()
-				if (!row) return
-				const claimed = await this.prisma.tgWarmupRun.updateMany({
-					where: { id: row.id, lockedAt: row.lockedAt },
-					data: { lockedAt: new Date(), status: 'RUNNING' },
-				})
-				if (claimed.count !== 1) continue // другой тик успел раньше
-
-				try {
-					await this.runDay(row.id)
-					handled++
-				} catch (e: any) {
-					this.logger.error(`Прогон ${row.id} упал: ${e?.message ?? e}`)
-					await this.prisma.tgWarmupRun.update({
-						where: { id: row.id },
-						data: { lastError: String(e?.message ?? e).slice(0, 500) },
-					})
-				} finally {
-					await this.prisma.tgWarmupRun.update({ where: { id: row.id }, data: { lockedAt: null } })
-				}
-			}
-		}
-		await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
-		return handled
+		return 0
 	}
 
 	/**
@@ -2974,7 +2876,9 @@ export class TgWarmupService {
 			ageDays: account.registeredAt
 				? Math.floor((Date.now() - account.registeredAt.getTime()) / DAY_MS)
 				: null,
-			daysManaged: Math.max(0, Math.floor((Date.now() - account.createdAt.getTime()) / DAY_MS)),
+			daysManaged: Math.max(0, Math.floor((now.getTime() - (account.purchasedAt ?? account.createdAt).getTime()) / DAY_MS)),
+            premium: probe.premium === true && !!account.premiumCheckedAt && now.getTime()-account.premiumCheckedAt.getTime() < DAY_MS,
+            outreachDays: account.outreachStartedAt ? Math.max(0, Math.floor((now.getTime() - account.outreachStartedAt.getTime()) / DAY_MS)) : null,
 			actionsTotal: account.actionsTotal ?? 0,
 			dialogs: probe.dialogs ?? 0,
 			channels: Math.max(probe.channels ?? 0, counters.joined),

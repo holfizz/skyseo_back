@@ -97,13 +97,14 @@ export class TgWarmupController {
 	importAccounts(
 		@UploadedFiles() files: Express.Multer.File[],
 		@Body() body: {
-			strings?: string; apiId?: string; apiHash?: string; passcode?: string
+			purchasedAt?: string; strings?: string; apiId?: string; apiHash?: string; passcode?: string
 			proxyMode?: 'pool' | 'one' | 'none'; proxyId?: string
 		},
 	) {
 		return this.svc.importAccounts({
 			files: (files ?? []).map(f => ({ name: f.originalname, buffer: f.buffer })),
 			strings: body?.strings,
+            purchasedAt: body?.purchasedAt,
 			apiId: body?.apiId ? Number(body.apiId) : undefined,
 			apiHash: body?.apiHash || undefined,
 			passcode: body?.passcode || undefined,

@@ -138,20 +138,8 @@ export const INTENSITY: Record<Stage, Intensity> = {
 	mature: intensityFor('mature'),
 }
 
-/**
- * Разгон для аккаунтов, купленных сразу с Premium (сентябрь 2026).
- *
- * Раньше готовность строилась неделями через чтение/вступления/реакции —
- * это было нужно, чтобы «доказать» Telegram, что аккаунт живой. Premium
- * с покупки уже даёт часть этого доверия, и полноценный прогрев для таких
- * аккаунтов оказался избыточным: дольше, чем нужно, и без выигрыша по
- * банам. Вместо готовности — календарь, простой и явный:
- *   первые сутки — аккаунт не трогаем вообще, даже чтением;
- *   1-2 сутки — по RAMP_DAILY_MESSAGES сообщений в день;
- *   с 3 суток — снимаем свой потолок совсем, дальше ограничивает только
- *   дневная цель кампании (perAccountPerDay).
- * Спамблок и PEER_FLOOD по-прежнему проверяются выше по функции и здесь
- * ничего не меняют — это тот же самый отказ, что и раньше.
+/** Политика владельца: Premium, сутки покоя, двое суток по 15, затем лимит кампании.
+ * Premium не гарантирует отсутствие ограничений; ответы Telegram имеют приоритет.
  */
 export const PREMIUM_IDLE_DAYS = 1
 export const PREMIUM_RAMP_DAYS = 2
@@ -262,6 +250,9 @@ export function throttleFor(i: ThrottleInput): Throttle {
 }
 
 export type AllowanceInput = {
+ premium?: boolean
+ /** Полные сутки с первого исходящего. null — отправок ещё не было. */
+ outreachDays?: number | null
 	/** Какой день прогрева идёт, начиная с 1. Ноль — прогрев не запущен. */
 	dayIndex: number
 	/** Возраст по оценке из id. null, если оценить не удалось. */
@@ -384,141 +375,21 @@ function times(n: number): string {
 }
 
 export function outgoingAllowance(i: AllowanceInput): Allowance {
-	const notes: string[] = []
-	const deny = (why: string): Allowance => ({
-		allowOutgoing: false, maxJoinsPerDay: 0, maxMessagesPerDay: 0, maxReactionsPerDay: 0,
-		dailyMessages: 0, baseMessages: 0, readiness: 0, signals: [], throttle: i.throttle ?? null, notes: [why],
-	})
-
-	// Спамблок — прямой запрет. Писать под ограничением значит его продлить.
-	if (i.spamBlock === 'permanent') return deny('Вечный спамблок: исходящие бессмысленны, аккаунт под замену')
-	if (i.spamBlock === 'temporary') return deny('Временный спамблок: только чтение, пока не снимут')
-	// PEER_FLOOD — вердикт о поведении, а не лимит скорости. После двух
-	// возвращаться к исходящим нельзя.
-	if (i.peerFloods >= 2) return deny('Дважды получен PEER_FLOOD: исходящие закрыты, оставляем только чтение')
-	// Аккаунт с Premium: первые сутки после покупки не трогаем совсем —
-	// ни сообщений, ни чтения, ни вступлений. Именно «просто постоять».
-	if (i.daysManaged < PREMIUM_IDLE_DAYS) {
-		return deny('Первые сутки после покупки: аккаунт нарочно ничего не делает')
-	}
-
-	const share = (value: number, target: number) => Math.max(0, Math.min(1, value / target))
-	const signals: ReadinessSignal[] = [
-		{
-			name: 'зрелость', value: i.ageDays ?? 0, target: 30, unit: 'дней от роду',
-			share: i.ageDays == null ? 0.3 : share(i.ageDays, 30),
-			what: i.ageDays == null
-				? 'возраст оценить не удалось — считаем как средний'
-				: 'сколько аккаунту лет по оценке из его номера в Telegram',
-		},
-		{
-			name: 'выдержка', value: i.daysManaged, target: 7, unit: 'суток у нас',
-			share: share(i.daysManaged, 7),
-			what: 'сколько суток аккаунт под нашим управлением, а не сколько ему лет вообще',
-		},
-		{
-			name: 'наработка', value: i.actionsTotal, target: 30, unit: 'действий',
-			share: share(i.actionsTotal, 30),
-			what: 'сколько действий мы за ним записали за всё время',
-		},
-		{
-			name: 'обжитость', value: i.dialogs + i.channels, target: 12, unit: 'чатов и каналов',
-			share: share(i.dialogs + i.channels, 12),
-			what: 'похож ли он на живого: есть ли у него переписки и подписки',
-		},
-		{
-			name: 'профиль', value: Math.round(i.profileFilled * 5), target: 5, unit: 'полей из пяти',
-			share: Math.max(0, Math.min(1, i.profileFilled)),
-			what: 'заполнены ли имя, фамилия, юзернейм, описание и фото',
-		},
-		{
-			name: 'чистота', value: i.floodWaits, target: 0, unit: 'просьб сбавить', lower: true,
-			share: i.floodWaits === 0 ? 1 : Math.max(0, 1 - i.floodWaits / 8),
-			what: 'сколько раз Telegram просил сбавить темп (FLOOD_WAIT)',
-		},
-	]
-	const readiness = Math.round((signals.reduce((a, s) => a + s.share, 0) / signals.length) * 100)
-
-	// Что тянет вниз — показываем, чтобы было понятно, куда добавить.
-	const weak = signals.filter(s => s.share < 0.5).map(s => s.name)
-	notes.push(`Готовность ${readiness} из 100`)
-	if (weak.length) notes.push(`Слабые места: ${weak.join(', ')}`)
-
-	// Вступления и реакции по-прежнему по готовности: она и так низкая в первые
-	// дни (выдержка, наработка ещё не накопились), так что верхнего предела
-	// им отдельно ставить не нужно — обычная нижняя ступень уже про это.
-	let joins = readiness < 25 ? 1 : readiness < 50 ? 2 : readiness < 75 ? 3 : 4
-	let reactions = readiness < 25 ? 3 : readiness < 50 ? 6 : readiness < 75 ? 10 : 15
-
-	// Сообщения — по календарю с момента покупки, а не по готовности: см.
-	// комментарий у PREMIUM_IDLE_DAYS выше. Ступень роста (capCeiling) ниже
-	// намеренно не применяется к переходу на полную норму — это осознанный
-	// скачок, а не постепенный набор.
-	const rampDone = i.daysManaged >= PREMIUM_IDLE_DAYS + PREMIUM_RAMP_DAYS
-	let messages = rampDone ? PREMIUM_FULL_DAILY_MESSAGES : PREMIUM_RAMP_DAILY_MESSAGES
-	notes.push(
-		rampDone
-			? `Сутки ${i.daysManaged}: разгон пройден, дальше ограничивает только цель кампании`
-			: `Сутки ${i.daysManaged}: разгон, ${PREMIUM_RAMP_DAILY_MESSAGES} сообщений в день`,
-	)
-
-	// Писать, не имея ни одного чата, — само по себе странно. Сначала подписки.
-	if (i.dialogs + i.channels < 3) {
-		messages = 0
-		notes.push('Пока меньше трёх чатов: сначала вступления и чтение, сообщения потом')
-	}
-	// FLOOD_WAIT отдельным правилом, а не только признаком «чистота». В среднем
-	// по шести признакам он размывается: аккаунт с шестью флудами, но хорошим
-	// профилем и историей, получал полную норму. Это ровно тот аккаунт, которому
-	// Telegram уже шесть раз сказал сбавить.
-	if (i.floodWaits >= 6) {
-		joins = Math.min(joins, 1)
-		messages = 0
-		notes.push(`FLOOD_WAIT ${times(i.floodWaits)}: исходящие почти закрыты, дайте аккаунту отлежаться на чтении`)
-	} else if (i.floodWaits >= 3) {
-		joins = Math.max(1, Math.floor(joins / 2))
-		messages = Math.floor(messages / 2)
-		notes.push(`FLOOD_WAIT ${times(i.floodWaits)}: норма исходящих урезана вдвое`)
-	}
-	// Один PEER_FLOOD — не приговор, но исходящие режем вдвое.
-	if (i.peerFloods === 1) {
-		joins = Math.max(1, Math.floor(joins / 2))
-		messages = Math.floor(messages / 2)
-		notes.push('Был PEER_FLOOD: норма исходящих урезана вдвое')
-	}
-
-	// Ступень роста: выше утверждённого на сегодня потолка норма не поднимается.
-	// Применяется ДО автоснижения — ступень про то, как быстро аккаунт растёт,
-	// а не про то, насколько его сейчас прижали. Кроме перехода на полную
-	// норму после разгона — это осознанный скачок (см. PREMIUM_FULL_DAILY_MESSAGES),
-	// ступень роста тут же придавила бы его обратно к прежним 15 в день.
-	if (!rampDone && i.capCeiling != null && messages > i.capCeiling) {
-		notes.push(`Ступень роста: сегодня не больше ${i.capCeiling} ${plural(i.capCeiling)}`)
-		messages = i.capCeiling
-	}
-	const baseMessages = messages
-
-	// Автоснижение за последние двое суток. Режет только СООБЩЕНИЯ: вступления
-	// и реакции остаются, иначе прижатый аккаунт перестаёт существовать для
-	// Telegram до самого возврата нормы.
-	const throttle = i.throttle ?? null
-	if (throttle && throttle.factor < 1) {
-		messages = Math.floor(messages * throttle.factor)
-		if (throttle.reason) notes.push(throttle.reason)
-	}
-
-	return {
-		allowOutgoing: joins > 0 || messages > 0 || reactions > 0,
-		maxJoinsPerDay: joins,
-		maxMessagesPerDay: messages,
-		maxReactionsPerDay: reactions,
-		dailyMessages: messages,
-		baseMessages,
-		readiness,
-		signals,
-		throttle,
-		notes,
-	}
+ const deny = (why: string): Allowance => ({allowOutgoing:false,maxJoinsPerDay:0,maxMessagesPerDay:0,maxReactionsPerDay:0,dailyMessages:0,baseMessages:0,readiness:0,signals:[],throttle:i.throttle??null,notes:[why]})
+ if (i.daysManaged < PREMIUM_IDLE_DAYS) return deny('Первые 24 часа после покупки: полный покой, без подключений')
+ if (i.premium !== true) return deny('Premium не подтверждён: отправки закрыты до проверки аккаунта с действующей подпиской')
+ if (i.spamBlock === 'permanent' || i.spamBlock === 'temporary') return deny('Ограничение Telegram: отправки остановлены')
+ if (i.peerFloods >= 2) return deny('Повторный PEER_FLOOD: отправки остановлены')
+ if (i.floodWaits >= 6) return deny('Повторные FLOOD_WAIT: отправки остановлены')
+ const clean = i.peerFloods === 0 && i.floodWaits === 0 && (!i.throttle || i.throttle.factor === 1)
+ const full = (i.outreachDays ?? 0) >= PREMIUM_RAMP_DAYS && clean
+ let messages = full ? PREMIUM_FULL_DAILY_MESSAGES : PREMIUM_RAMP_DAILY_MESSAGES
+ const notes = [full ? 'Разгон пройден без ограничений: работает установленный лимит рассылки' : 'Первые двое суток отправок: не более 15 первых сообщений в сутки на аккаунт']
+ if (!clean) notes.push('Были ограничения: автоматический переход на полный лимит закрыт, сохраняется пониженный темп')
+ if (i.peerFloods > 0 || i.floodWaits >= 3) messages = Math.floor(messages / 2)
+ const baseMessages = messages
+ if (i.throttle && i.throttle.factor < 1) { messages = Math.floor(messages * i.throttle.factor); if (i.throttle.reason) notes.push(i.throttle.reason) }
+ return {allowOutgoing:messages>0,maxJoinsPerDay:0,maxMessagesPerDay:messages,maxReactionsPerDay:0,dailyMessages:messages,baseMessages,readiness:full?100:50,signals:[],throttle:i.throttle??null,notes}
 }
 
 /**

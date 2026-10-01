@@ -1198,6 +1198,9 @@ model TgProxy {
 }
 
 model TgAccount {
+  premiumCheckedAt DateTime?
+  purchasedAt DateTime @default(now())
+  outreachStartedAt DateTime?
   id        String  @id @default(uuid())
   label     String?
   phone     String?

@@ -334,8 +334,7 @@ function missingForCampaign(campaign: any, recipient: any): string[] {
 }
 
 export function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
-	if (allow?.allowOutgoing) return true
-	return !!acc?.forceSend && forceable(acc).ok
+	return !!allow?.allowOutgoing
 }
 
 /**
@@ -1015,16 +1014,6 @@ export class CampaignService {
 		// Разрешение работать сверх норм прогрева. Ставится на аккаунты пула:
 		// флаг живёт на аккаунте, и отдельного «разового» режима заводить не
 		// стоит — иначе их станет два, и никто не вспомнит, какой сейчас.
-		if (opts?.force) {
-			const links = await this.prisma.tgCampaignAccount.findMany({
-				where: { campaignId: target.id },
-				select: { accountId: true },
-			})
-			await this.prisma.tgAccount.updateMany({
-				where: { id: { in: links.map(l => l.accountId) } },
-				data: { forceSend: true },
-			})
-		}
 
 		// «Взять двадцать и запустить» означает двадцать ЗА СЕГОДНЯ. Без цели дня
 		// каждый аккаунт работал бы по своему потолку, и очередь растягивалась
@@ -1163,24 +1152,10 @@ export class CampaignService {
 		for (const l of links) {
 			const a = l.account
 			const allow = await this.warmup.allowanceFor(a, 0)
-			const probe: any = a.probe ?? {}
-			const daysManaged = Math.floor((Date.now() - a.createdAt.getTime()) / 86400000)
-
-			// Чего не хватает — по тем же признакам, что и в оценке готовности,
-			// но списком дел, а не баллом: балл не говорит, что делать.
-			const todo: string[] = []
-			if (!a.probe) todo.push('не проверен ни разу — нажмите «Проверить и оценить»')
-			if (a.status === 'BANNED') todo.push('заблокирован')
-			else if (a.status === 'PAUSED') todo.push('на паузе')
-			if (!a.proxyId) todo.push('без прокси: пойдёт с адреса сервера')
-			if (daysManaged < 7) todo.push(`под нашим управлением ${daysManaged} ${daysManaged === 1 ? 'день' : 'дн'} из 7`)
-			if ((a.actionsTotal ?? 0) < 30) todo.push(`действий ${a.actionsTotal ?? 0} из 30`)
-			if ((probe.dialogs ?? 0) + (probe.channels ?? 0) < 12) todo.push('меньше 12 чатов и подписок')
-			if (a.probe && !(probe.hasFirstName && probe.hasUsername && probe.photoCount > 0)) {
-				todo.push('профиль неполный: имя, юзернейм, фото')
-			}
-			if (probe.spamBlock && probe.spamBlock !== 'clean' && probe.spamBlock !== 'unknown') todo.push('спам-блок')
-			if ((a.peerFloods ?? 0) > 0) todo.push('был PEER_FLOOD')
+            const todo: string[] = [...allow.notes]
+            if (a.status === 'BANNED') todo.push('заблокирован')
+            if (a.status === 'PAUSED') todo.push('на паузе')
+            if (!a.proxyId) todo.push('прокси не назначен')
 
 			rows.push({
 				id: a.id, label: a.label, avatar: a.avatar, tgUserId: a.tgUserId, status: a.status,
@@ -1194,7 +1169,7 @@ export class CampaignService {
 				// отправку, но не делает аккаунт прогретым. Красное
 				// предупреждение в карточке должно остаться — владелец решил
 				// рискнуть, а не отменил риск.
-				coldReady: allow.allowOutgoing && allow.readiness >= 70 && !!a.probe,
+				coldReady: allow.allowOutgoing && !!a.probe,
 				todo,
 			})
 		}
@@ -1591,7 +1566,7 @@ export class CampaignService {
 				// Здоровье аккаунта важнее плана: спамблок и второй PEER_FLOOD
 				// закрывают исходящие независимо от того, что выставил человек.
 				const allow = await this.warmup.allowanceFor(acc, 0)
-				if (!maySend(acc, allow)) {
+				if (!maySend(acc, allow) || allow.maxMessagesPerDay <= 0) {
 					// Аккаунт с флагом сюда попадает только по вердикту Telegram —
 					// в паузе стоит написать именно это, а не «мало готовности».
 					const why = acc.forceSend
@@ -1616,6 +1591,8 @@ export class CampaignService {
 				 * тика, ничего не трогая.
 				 */
 				if (!(await this.warmup.claimAccount(acc.id, 'send', 120))) continue
+                const lockedAllowance = await this.warmup.allowanceFor(acc,0)
+                if (!maySend(acc,lockedAllowance) || lockedAllowance.maxMessagesPerDay <= 0) { await this.warmup.releaseAccount(acc.id); continue }
 
 				// Отсев тех, кому писать нечем, сетью не оплачивается, поэтому
 				// пропускать их можно пачкой, не растягивая на сутки по одному.
@@ -1772,7 +1749,7 @@ export class CampaignService {
 			// Флаг владельца предохранитель снимает: тогда предел задаёт только
 			// кампания. Это осознанный риск, и он должен быть его решением, а не
 			// побочным следствием того, что проверку забыли сделать.
-			const safe = acc.forceSend ? campaign.perAccountPerDay : (allow?.dailyMessages ?? 0)
+			const safe = allow?.dailyMessages ?? 0
 
 			// Уже отправленное сегодня из потолка не вычитаем: раскладка — это
 			// план на сутки целиком, а не остаток. Иначе доля аккаунта менялась
@@ -1960,6 +1937,7 @@ export class CampaignService {
 		try {
 			const { result, session } = await withClient(opts, async client => {
 				const peer = await this.resolvePeer(client, recipient)
+                await this.prisma.tgAccount.updateMany({where:{id:account.id,outreachStartedAt:null},data:{outreachStartedAt:new Date()}})
 				attempted = true
 				const msg: any = await call(client, 'sendMessage', () =>
 					client.sendMessage(peer.entity, { message: doEdit ? edited!.draft : text }),
@@ -2320,7 +2298,7 @@ export class CampaignService {
 				where: { id: accountId },
 				include: { proxy: true },
 			})
-			if (!account || account.status === 'BANNED') return
+			if (!account || ['BANNED','PAUSED','ERROR'].includes(account.status)) return
 			// Занят прогревом — пропускаем: переписку в это время проверяет сам
 			// прогрев, через своё подключение (pollInSession).
 			if (account.busyUntil && account.busyUntil > new Date()) {
@@ -3277,7 +3255,7 @@ export class CampaignService {
 				forceSend: !!acc.forceSend,
 				// Можно ли включить принудительную рассылку прямо отсюда.
 				// У мёртвых и заспамленных нельзя — и врать об этом не надо.
-				forceable: !dead && acc.mode !== 'WARM' && hard.ok,
+				forceable: false,
 			})
 		}
 
@@ -4217,7 +4195,7 @@ export class CampaignService {
 				// аккаунта потолок: выше него делить бессмысленно.
 				dailyLimit: link.dailyLimit ?? null,
 				ceiling: Math.max(0, Math.min(c.perAccountPerDay,
-					link.account.forceSend ? c.perAccountPerDay : allow.dailyMessages)),
+					allow.dailyMessages)),
 				readiness: allow.readiness,
 				allowOutgoing: allow.allowOutgoing,
 				notes: allow.notes,
@@ -4312,6 +4290,9 @@ export class CampaignService {
 		if (!c) throw new NotFoundException('Кампания не найдена')
 		const account = await this.prisma.tgAccount.findUnique({ where: { id: accountId }, include: { proxy: true } })
 		if (!account) throw new NotFoundException('Аккаунт не найден')
+
+        const allowance=await this.warmup.allowanceFor(account,0)
+        if (!maySend(account,allowance) || ['BANNED','ERROR','PAUSED'].includes(account.status)) throw new BadRequestException(allowance.notes[0] ?? 'Отправки недоступны')
 
 		const handle = String(target ?? '').trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '')
 		if (!/^[a-z0-9_]{4,32}$/i.test(handle)) {
