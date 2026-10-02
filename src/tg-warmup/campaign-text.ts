@@ -22,6 +22,9 @@ export type Placeholders = {
 	lastName?: string | null
 	company?: string | null
 	domain?: string | null
+	// Готовые фразы по выдаче лида (см. lead-vars.ts): {позиции}, {конкуренты},
+	// {запрос}, {позиция}, {конкурент}. Считаются один раз и лежат у адресата.
+	leadVars?: unknown
 }
 
 /** Имя сайта без зоны: адрес с точкой Telegram превращает в ссылку. */
@@ -35,11 +38,24 @@ function siteName(domain?: string | null): string {
 	return parts.join('.')
 }
 
-export const PLACEHOLDERS = ['имя', 'отчество', 'фамилия', 'фио', 'сайт', 'компания', 'ждал'] as const
+/** Фразы по выдаче лида; чужие и нестроковые значения отбрасываем. */
+function leadValues(raw: unknown): Record<string, string> {
+	const out: Record<string, string> = {}
+	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+		for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && v.trim()) out[k] = v.trim()
+	}
+	return out
+}
+
+export const PLACEHOLDERS = [
+	'имя', 'отчество', 'фамилия', 'фио', 'сайт', 'компания', 'ждал',
+	'позиции', 'конкуренты', 'запрос', 'позиция', 'конкурент',
+] as const
 
 function values(p: Placeholders, now: Date): Record<string, string> {
 	const weekend = now.getDay() === 0 || now.getDay() === 6
 	return {
+		...leadValues(p.leadVars),
 		// Единственный плейсхолдер, который берётся не из адресата, а из
 		// календаря. Смысл фразы — показать, что момент выбирали, а не писали
 		// веером; в субботу «ждал будние» этот смысл переворачивает. Поэтому

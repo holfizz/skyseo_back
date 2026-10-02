@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { Api } from 'teleproto'
 import bigInt from 'big-integer'
-import type { TgCampaignStatus } from '@prisma/client'
+import { Prisma, type TgCampaignStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { normalizeName } from '../common/normalize-name'
 import { TelegramService } from '../telegram/telegram.service'
@@ -11,6 +11,7 @@ import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
 import { fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
+import { buildLeadVars, type LeadVars } from './lead-vars'
 import {
 	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
 	type MessageCompetitor, type MessageKeyword,
@@ -508,9 +509,63 @@ export class CampaignService {
   const settings = await this.prisma.tgHypothesisSettings.findUnique({ where: { id: 'main' } })
   return settings?.enabled === false ? [] : this.prisma.tgHypothesis.findMany({ where: { enabled: true }, orderBy: [{ position: 'asc' }, { id: 'asc' }] })
  }
+ /**
+  * Фразы по выдаче лида ({позиции}, {конкуренты} и др.) для набора лидов разом.
+  * Данные те же, что у полного второго сообщения: запросы лида в окне позиций,
+  * где есть что улучшать, и конкуренты с 9 и 10 мест.
+  */
+ private async leadVarsFor(leadIds: string[]): Promise<Map<string, LeadVars>> {
+  const out = new Map<string, LeadVars>()
+  if (!leadIds.length) return out
+  const leads = await this.prisma.outreachLead.findMany({
+   where: { id: { in: leadIds } },
+   select: { id: true, domain: true, importId: true, competitors: true },
+  })
+  const domainsByImport = new Map<string, Set<string>>()
+  for (const l of leads) if (l.importId) {
+   if (!domainsByImport.has(l.importId)) domainsByImport.set(l.importId, new Set())
+   domainsByImport.get(l.importId)!.add(l.domain)
+  }
+  const rowsByLead = new Map<string, MessageKeyword[]>()
+  for (const [importId, domains] of domainsByImport) {
+   const rows = await this.prisma.serpRow.findMany({
+    where: { importId, domain: { in: [...domains] } },
+    orderBy: { position: 'asc' },
+    select: { keyword: true, position: true, domain: true },
+   })
+   for (const l of leads) if (l.importId === importId) {
+    // Лучшая позиция по каждому запросу, и только те, где есть что улучшать.
+    const best = new Map<string, MessageKeyword>()
+    for (const row of rows) if (row.domain === l.domain && !best.has(row.keyword)) best.set(row.keyword, row)
+    rowsByLead.set(l.id, [...best.values()].filter(k => k.position >= MESSAGE_POSITION_MIN && k.position <= MESSAGE_POSITION_MAX))
+   }
+  }
+  for (const l of leads) {
+   const competitors = (Array.isArray(l.competitors) ? l.competitors : []) as MessageCompetitor[]
+   out.set(l.id, buildLeadVars(rowsByLead.get(l.id) ?? [], competitors))
+  }
+  return out
+ }
+ /**
+  * Дописать фразы по выдаче тем, кто в очереди и пришёл из базы лидов.
+  * Пустой объект тоже запись: «данных нет» не пересчитываем при каждом проходе.
+  */
+ private async fillLeadVars(campaignId: string) {
+  const rows = await this.prisma.tgRecipient.findMany({
+   where: { campaignId, status: 'QUEUED', leadId: { not: null }, leadVars: { equals: Prisma.DbNull } },
+   select: { id: true, leadId: true },
+  })
+  if (!rows.length) return
+  const vars = await this.leadVarsFor([...new Set(rows.map(r => r.leadId!))])
+  for (let i = 0; i < rows.length; i += 200) {
+   await this.prisma.$transaction(rows.slice(i, i + 200).map(r =>
+    this.prisma.tgRecipient.update({ where: { id: r.id }, data: { leadVars: vars.get(r.leadId!) ?? {} } })))
+  }
+ }
  previewHypothesis(body: any) {
   if (typeof body?.text !== 'string' || body.text.length > 4000 || (body.hasSecondMessage && (typeof body.secondMessage !== 'string' || body.secondMessage.length > 4000))) throw new BadRequestException('Некорректный текст предпросмотра')
-  const sample = { firstName: 'Иван', middleName: 'Петрович', lastName: 'Сидоров', company: 'ООО «Пример»', domain: 'example.ru' }
+  const sample = { firstName: 'Иван', middleName: 'Петрович', lastName: 'Сидоров', company: 'ООО «Пример»', domain: 'example.ru',
+   leadVars: buildLeadVars([{ keyword: 'септик под ключ', position: 25 }, { keyword: 'монтаж септика', position: 15 }], [{ domain: 'septik-pro.ru', position: 9 }, { domain: 'eco-stok.ru', position: 10 }]) }
   return { first: fillTemplate(body.text, sample), second: body.hasSecondMessage ? fillTemplate(body.secondMessage, sample) : null, sample }
  }
 
@@ -1951,6 +2006,10 @@ export class CampaignService {
 
 		// Данных не хватает — не отправляем вовсе. Обезличенное «Здравствуйте»
 		// сжигает адресата навсегда, а второго шанса написать не будет.
+		if (recipient.leadId && recipient.leadVars == null) {
+			recipient.leadVars = (await this.leadVarsFor([recipient.leadId])).get(recipient.leadId) ?? {}
+			await this.prisma.tgRecipient.update({ where: { id: recipient.id }, data: { leadVars: recipient.leadVars } })
+		}
 		const variantText = await this.hypothesisText(campaign.id, recipient.id, campaign.firstMessage)
 		const missing = missingPlaceholders(variantText, recipient)
 		if (missing.length) {
@@ -3185,12 +3244,13 @@ export class CampaignService {
 
 		const now = new Date()
         c.hypotheses = await this.activeHypotheses()
+		await this.fillLeadVars(campaignId)
 
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
 			orderBy: { createdAt: 'asc' },
 			select: {
-				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true, hypothesis: { select: { text: true } },
+				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true, leadVars: true, hypothesis: { select: { text: true } },
 				scheduleLocked: true, plannedAccountId: true, scheduledAt: true,
 			},
 		})
@@ -3258,10 +3318,11 @@ export class CampaignService {
 		if (!c) throw new NotFoundException('Кампания не найдена')
 
         c.hypotheses = await this.activeHypotheses()
+        await this.fillLeadVars(campaignId)
 
 		const pick = {
 			id: true, username: true, phone: true, status: true,
-			firstName: true, middleName: true, lastName: true, company: true, domain: true, hypothesis: { select: { text: true } },
+			firstName: true, middleName: true, lastName: true, company: true, domain: true, leadVars: true, hypothesis: { select: { text: true } },
 			scheduledAt: true, plannedAccountId: true, sentAt: true, accountId: true, error: true,
 			scheduleLocked: true,
 		}
@@ -3433,12 +3494,13 @@ export class CampaignService {
 		if (!c) return empty
 
         c.hypotheses = await this.activeHypotheses()
+        await this.fillLeadVars(campaignId)
 
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
 			orderBy: { createdAt: 'asc' },
 			select: {
-				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true, hypothesis: { select: { text: true } },
+				id: true, firstName: true, middleName: true, lastName: true, company: true, domain: true, leadVars: true, hypothesis: { select: { text: true } },
 				scheduledAt: true, plannedAccountId: true,
 			},
 		})
@@ -4311,7 +4373,7 @@ export class CampaignService {
 	async preflight(campaignId: string, template: string) {
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
-			select: { firstName: true, middleName: true, lastName: true, company: true, domain: true, hypothesis: { select: { text: true } } },
+			select: { firstName: true, middleName: true, lastName: true, company: true, domain: true, leadVars: true, hypothesis: { select: { text: true } } },
 		})
 		const byField = new Map<string, number>()
 		let ready = 0

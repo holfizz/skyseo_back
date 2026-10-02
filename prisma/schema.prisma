@@ -1483,6 +1483,9 @@ model TgRecipient {
   lastName   String?
   company    String?
   domain     String?
+  // Фразы по выдаче лида для текстов гипотез: {позиции}, {конкуренты} и др.
+  // null — ещё не считали, {} — считали, данных нет.
+  leadVars   Json?
 
   status    TgRecipientStatus @default(QUEUED)
   // Аккаунт, с которого писали. Закрепляется при первой отправке и больше не
