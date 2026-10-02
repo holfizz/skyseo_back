@@ -6,6 +6,7 @@
 // поэтому ссылки в сообщении нет.
 
 import { normalizeName } from '../common/normalize-name'
+import { displayDomain } from '../common/domain'
 
 export type MessageKeyword = { keyword: string; position: number }
 export type MessageCompetitor = { domain: string; position: number }
@@ -93,10 +94,10 @@ export function buildOutreachMessage(input: MessageInput): string {
 	const rivals = input.competitors.slice(0, 2)
 	if (rivals.length >= 2) {
 		blocks.push(
-			`Выше вас ${rivals[0].domain} и ${rivals[1].domain}, почти весь трафик по этим запросам уходит к ним.`,
+			`Выше вас ${displayDomain(rivals[0].domain)} и ${displayDomain(rivals[1].domain)}, почти весь трафик по этим запросам уходит к ним.`,
 		)
 	} else if (rivals.length === 1) {
-		blocks.push(`Выше вас ${rivals[0].domain}, почти весь трафик по этим запросам уходит к нему.`)
+		blocks.push(`Выше вас ${displayDomain(rivals[0].domain)}, почти весь трафик по этим запросам уходит к нему.`)
 	}
 
 	blocks.push(
@@ -125,7 +126,7 @@ const SECOND_LEVEL = ['com', 'co', 'net', 'org']
  * огрызку конкурента лид его не узнает.
  */
 export function siteName(domain: string): string {
-	const clean = (domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '')
+	const clean = displayDomain(domain)
 	const parts = clean.split('.')
 	if (parts.length < 2) return clean
 	parts.pop()

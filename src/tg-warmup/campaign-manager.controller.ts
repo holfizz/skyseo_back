@@ -135,6 +135,18 @@ export class CampaignManagerController {
 		return this.svc.dialog(id)
 	}
 
+	/** Итог разговора и напоминание «написать позже». */
+	@Patch('recipients/:id/outcome')
+	setOutcome(@Param('id') id: string, @Body() body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {
+		return this.svc.setOutcome(id, body ?? {})
+	}
+
+	/** Календарь напоминаний. */
+	@Get('follow-ups')
+	followUps() {
+		return this.svc.followUps()
+	}
+
 	/**
 	 * Написать адресату: текст, картинки и ответ на сообщение.
 	 *

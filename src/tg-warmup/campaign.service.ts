@@ -12,6 +12,8 @@ import { call, classifyError, TgError, withClient } from './tg-client'
 import { fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { buildLeadVars, type LeadVars } from './lead-vars'
+import { OUTCOME_KEYS, outcomeLabel } from './outcomes'
+import { pickCompetitors } from '../outreach/competitors'
 import {
 	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
 	type MessageCompetitor, type MessageKeyword,
@@ -434,9 +436,10 @@ export class CampaignService {
   const settings = await this.prisma.tgHypothesisSettings.findUnique({ where: { id: 'main' } })
   const variants = await this.prisma.tgHypothesis.findMany({
    orderBy: [{ position: 'asc' }, { id: 'asc' }],
-   include: { recipients: { select: { sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true, status: true, _count: { select: { messages: { where: { out: false } } } } } } },
+   include: { recipients: { select: { outcome: true, sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true, status: true, _count: { select: { messages: { where: { out: false } } } } } } },
   })
   return { enabled: settings?.enabled ?? true, variants: variants.map(({ recipients: rows, ...v }) => ({ ...v,
+   outcomes: rows.reduce((acc: Record<string, number>, r) => { if (r.outcome) acc[r.outcome] = (acc[r.outcome] ?? 0) + 1; return acc }, {}),
    assigned: rows.length, sent: rows.filter(r => r.sentAt).length,
    read: rows.filter(r => r.readAt).length, readNoReply: rows.filter(r => r.readAt && !r.repliedAt).length,
    replied: rows.filter(r => r.repliedAt).length, second: rows.filter(r => r.secondSentAt).length,
@@ -541,10 +544,24 @@ export class CampaignService {
    }
   }
   for (const l of leads) {
-   const competitors = (Array.isArray(l.competitors) ? l.competitors : []) as MessageCompetitor[]
-   out.set(l.id, buildLeadVars(rowsByLead.get(l.id) ?? [], competitors))
+   const kws = rowsByLead.get(l.id) ?? []
+   out.set(l.id, buildLeadVars(kws, await this.competitorsFor(l, kws)))
   }
   return out
+ }
+ /**
+  * Конкуренты для текста: из карточки лида без сайтов всей страны (Авито и
+  * подобных). Не хватило, добираем из выдачи тех, кто выше лида по его запросам.
+  */
+ private async competitorsFor(lead: { domain: string; importId: string | null; competitors: unknown }, kws: MessageKeyword[]): Promise<MessageCompetitor[]> {
+  const stored = (Array.isArray(lead.competitors) ? lead.competitors : []) as MessageCompetitor[]
+  const first = pickCompetitors(stored, [], lead.domain, kws)
+  if (first.length >= 2 || !lead.importId || !kws.length) return first
+  const pool = await this.prisma.serpRow.findMany({
+   where: { importId: lead.importId, keyword: { in: kws.map(k => k.keyword) } },
+   select: { keyword: true, position: true, domain: true },
+  })
+  return pickCompetitors(stored, pool, lead.domain, kws)
  }
  /**
   * Дописать фразы по выдаче тем, кто в очереди и пришёл из базы лидов.
@@ -2794,6 +2811,7 @@ export class CampaignService {
 			status: r.status,
 			sentAt: r.sentAt, readAt: r.readAt, repliedAt: r.repliedAt,
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
+			outcome: r.outcome, outcomeAt: r.outcomeAt, followUpAt: r.followUpAt, followUpNote: r.followUpNote,
 			deliveryUnknown: r.deliveryUnknown,
 			// Для галочек и «был в сети» в шапке.
 			readOutboxMaxId: r.readOutboxMaxId,
@@ -2835,8 +2853,12 @@ export class CampaignService {
 	 */
  private async secondMessageFor(r: any): Promise<string | null> {
   if (r.hypothesis) {
-   return r.hypothesis.hasSecondMessage && r.hypothesis.secondMessage
-    ? fillTemplate(r.hypothesis.secondMessage, r) : null
+   if (!r.hypothesis.hasSecondMessage || !r.hypothesis.secondMessage) return null
+   // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
+   if (r.leadId && r.leadVars == null) r = { ...r, leadVars: (await this.leadVarsFor([r.leadId])).get(r.leadId) ?? {} }
+   // Без данных заготовка вышла бы с пустыми местами. Лучше без неё: напишет человек.
+   if (missingPlaceholders(r.hypothesis.secondMessage, r).length) return null
+   return fillTemplate(r.hypothesis.secondMessage, r)
   }
   // The variant is not assigned until sending. Do not show a different variant's follow-up.
   if (!r.sentAt && (await this.activeHypotheses()).length) return null
@@ -2874,7 +2896,7 @@ export class CampaignService {
 			)
 		}
 
-		const competitors = (Array.isArray(lead.competitors) ? lead.competitors : []) as MessageCompetitor[]
+		const competitors = await this.competitorsFor(lead, keywords)
 		// Ни позиций, ни конкурентов — значит рассказать нечего, и полный текст
 		// выродится в ту же заготовку. Тогда честнее её и оставить.
 		if (!keywords.length && !competitors.length) return fallback
@@ -4474,6 +4496,82 @@ export class CampaignService {
 			account: r.account?.label ?? null,
 			messages: r._count.messages,
 		}))
+	}
+
+	/**
+	 * Итог разговора и напоминание «написать позже».
+	 *
+	 * Поля независимы: итог можно сменить, не трогая дату, и наоборот. Не
+	 * переданное поле не меняется, null очищает. Дата приходит как «ГГГГ-ММ-ДД»
+	 * (или полный момент) и для дня без времени ставится на 10:00 по Москве.
+	 * При новой дате отметка «уведомили» сбрасывается, иначе бот промолчит.
+	 */
+	async setOutcome(id: string, body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {
+		const r = await this.prisma.tgRecipient.findUnique({ where: { id }, select: { id: true, outcome: true } })
+		if (!r) throw new NotFoundException('Адресат не найден')
+		const data: Prisma.TgRecipientUpdateInput = {}
+
+		if (body.outcome !== undefined) {
+			if (body.outcome !== null && !OUTCOME_KEYS.includes(body.outcome)) throw new BadRequestException('Неизвестный итог')
+			data.outcome = body.outcome
+			if (body.outcome !== r.outcome) data.outcomeAt = body.outcome ? new Date() : null
+		}
+		if (body.followUpAt !== undefined) {
+			if (body.followUpAt === null || body.followUpAt === '') {
+				data.followUpAt = null
+				data.followUpNote = null
+			} else {
+				const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(body.followUpAt)
+				// 10:00 по Москве = 07:00 UTC, смещение у Москвы постоянное.
+				const at = day ? new Date(Date.UTC(+day[1], +day[2] - 1, +day[3], 7, 0)) : new Date(body.followUpAt)
+				if (Number.isNaN(at.getTime())) throw new BadRequestException('Некорректная дата')
+				data.followUpAt = at
+			}
+			data.followUpNotifiedAt = null
+		}
+		if (body.followUpNote !== undefined && body.followUpAt !== null && body.followUpAt !== '') {
+			const note = String(body.followUpNote ?? '').trim().slice(0, 300)
+			data.followUpNote = note || null
+		}
+		await this.prisma.tgRecipient.update({ where: { id }, data })
+		return { ok: true }
+	}
+
+	/** Все напоминания: когда и кому написать. Просроченные тоже, пока их не закрыли. */
+	async followUps() {
+		const rows = await this.prisma.tgRecipient.findMany({
+			where: { followUpAt: { not: null } },
+			orderBy: { followUpAt: 'asc' },
+			select: {
+				id: true, firstName: true, middleName: true, lastName: true, username: true, phone: true,
+				domain: true, company: true, outcome: true, followUpAt: true, followUpNote: true,
+			},
+		})
+		return rows.map(r => ({
+			...r,
+			who: [r.firstName, r.middleName].filter(Boolean).join(' ') || (r.username ? `@${r.username}` : r.phone) || 'Без имени',
+			outcomeLabel: outcomeLabel(r.outcome),
+		}))
+	}
+
+	/** Раз в минуту: подошла дата напоминания, и бот ещё не сообщал. */
+	async followUpTick(): Promise<number> {
+		const due = await this.prisma.tgRecipient.findMany({
+			where: { followUpAt: { lte: new Date() }, followUpNotifiedAt: null },
+			select: { id: true, firstName: true, middleName: true, username: true, phone: true, domain: true, followUpNote: true, outcome: true },
+			take: 20,
+		})
+		for (const r of due) {
+			const who = [r.firstName, r.middleName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone) || ''
+			await this.notifyAdmin(
+				`⏰ <b>Пора написать</b>\n\n<b>${esc(who)}</b>${r.domain ? ` · ${esc(r.domain)}` : ''}\n` +
+					`${r.outcome ? `Итог: ${esc(outcomeLabel(r.outcome) ?? '')}\n` : ''}` +
+					`${r.followUpNote ? `Заметка: ${esc(r.followUpNote)}\n` : ''}\n` +
+					`<a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${r.id}">Открыть переписку</a>`,
+			)
+			await this.prisma.tgRecipient.update({ where: { id: r.id }, data: { followUpNotifiedAt: new Date() } })
+		}
+		return due.length
 	}
 
 	private async notifyAdmin(html: string) {

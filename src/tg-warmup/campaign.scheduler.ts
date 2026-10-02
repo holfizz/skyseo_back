@@ -52,5 +52,11 @@ export class CampaignScheduler implements OnModuleInit {
 		} finally {
 			this.polling = false
 		}
+		try {
+			const due = await this.svc.followUpTick()
+			if (due) this.logger.log(`Напоминаний отправлено: ${due}`)
+		} catch (e: any) {
+			this.logger.error(`Тик напоминаний упал: ${e?.message ?? e}`)
+		}
 	}
 }

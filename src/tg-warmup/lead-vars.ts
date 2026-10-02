@@ -11,6 +11,7 @@
  * соперника не узнает.
  */
 
+import { displayDomain } from '../common/domain'
 import type { MessageCompetitor, MessageKeyword } from '../outreach/outreach-message'
 
 export type LeadVars = Record<string, string>
@@ -31,7 +32,7 @@ export function buildLeadVars(keywords: MessageKeyword[], competitors: MessageCo
 		vars['позиция'] = String(shown[0].position)
 	}
 
-	const rivals = competitors.slice(0, SHOWN_COMPETITORS).map(c => c.domain).filter(Boolean)
+	const rivals = competitors.slice(0, SHOWN_COMPETITORS).map(c => displayDomain(c.domain)).filter(Boolean)
 	if (rivals.length) {
 		vars['конкуренты'] = rivals.join(' и ')
 		vars['конкурент'] = rivals[0]

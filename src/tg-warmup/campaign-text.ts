@@ -15,6 +15,7 @@
  */
 
 import { normalizeName } from '../common/normalize-name'
+import { displayDomain } from '../common/domain'
 
 export type Placeholders = {
 	firstName?: string | null
@@ -29,8 +30,7 @@ export type Placeholders = {
 
 /** Имя сайта без зоны: адрес с точкой Telegram превращает в ссылку. */
 function siteName(domain?: string | null): string {
-	const clean = String(domain ?? '').trim().toLowerCase()
-		.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '')
+	const clean = displayDomain(domain)
 	const parts = clean.split('.')
 	if (parts.length < 2) return clean
 	parts.pop()
