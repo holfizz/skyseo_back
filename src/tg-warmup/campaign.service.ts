@@ -14,6 +14,8 @@ import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { buildLeadVars, type LeadVars } from './lead-vars'
 import { OUTCOME_KEYS, outcomeLabel } from './outcomes'
 import { pickCompetitors } from '../outreach/competitors'
+import { displayDomain } from '../common/domain'
+import { domainToASCII } from 'node:url'
 import {
 	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
 	type MessageCompetitor, type MessageKeyword,
@@ -324,6 +326,19 @@ function forceable(acc: any): { ok: boolean; why?: string } {
 	if (spam === 'temporary') return { ok: false, why: 'временный спамблок — сообщения не дойдут' }
 	if ((acc?.peerFloods ?? 0) >= 2) return { ok: false, why: 'дважды PEER_FLOOD — писать нельзя даже принудительно' }
 	return { ok: true }
+}
+
+/**
+ * Ответил, а итог так и не поставили. Просрочено через сутки после ответа,
+ * но не дальше двух недель назад: иначе вся история переписок до появления
+ * итогов горела бы красным, и по такому счётчику уже ничего не понять.
+ */
+const OUTCOME_DUE_MS = 24 * 3600_000
+const OUTCOME_STALE_MS = 14 * 24 * 3600_000
+export function isOutcomeOverdue(r: { repliedAt?: Date | null; outcome?: string | null }, now = Date.now()): boolean {
+	if (!r.repliedAt || r.outcome) return false
+	const age = now - r.repliedAt.getTime()
+	return age >= OUTCOME_DUE_MS && age <= OUTCOME_STALE_MS
 }
 
 /**
@@ -818,6 +833,25 @@ export class CampaignService {
 				campaignId, username, phone,
 				firstName: first || null, middleName: middle || null, domain: domain || null,
 			})
+		}
+		// Сайт нормализуем так же, как у лидов (punycode, без www). Если такой лид
+		// уже есть в базе, связываем: тогда у контакта появляются запросы,
+		// позиции и конкуренты, без которых тексты гипотез не собрать.
+		const ascii = (d: string | null) => {
+			const clean = displayDomain(d)
+			try { return clean ? (domainToASCII(clean) || clean) : null } catch { return clean || null }
+		}
+		for (const r of rows) r.domain = ascii(r.domain)
+		const domains = [...new Set(rows.map(r => r.domain).filter(Boolean))] as string[]
+		if (domains.length) {
+			const leads = await this.prisma.outreachLead.findMany({
+				where: { domain: { in: [...domains, ...domains.map(d => `www.${d}`)] } },
+				orderBy: { createdAt: 'desc' },
+				select: { id: true, domain: true },
+			})
+			const byDomain = new Map<string, string>()
+			for (const l of leads) { const k = l.domain.replace(/^www\./, ''); if (!byDomain.has(k)) byDomain.set(k, l.id) }
+			for (const r of rows) if (r.domain && byDomain.has(r.domain)) r.leadId = byDomain.get(r.domain)
 		}
 		const res = await this.insertRecipients(campaignId, rows)
 		if (res.added) await this.buildSchedule(campaignId)
@@ -2764,6 +2798,7 @@ export class CampaignService {
 		// Пишем в бот о КАЖДОМ новом сообщении клиента, а не только о первом
 		// ответе: дальше идёт живой разговор, и без уведомления его пропускают.
 		if (incoming.length) {
+			await this.prisma.tgRecipient.update({ where: { id: r.id }, data: { unreadIn: { increment: incoming.length } } })
 			const who = [r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone)
 			// Показываем ВСЕ пришедшие реплики, а не последнюю: человек часто
 			// пишет «Здравствуйте» и следом суть, и по одной последней строке
@@ -2788,6 +2823,8 @@ export class CampaignService {
 	// ── переписка и второе сообщение ─────────────────────────────────────────
 
 	async dialog(recipientId: string) {
+		// Переписку открыли: всё, что в ней есть, прочитано.
+		await this.prisma.tgRecipient.updateMany({ where: { id: recipientId, unreadIn: { gt: 0 } }, data: { unreadIn: 0 } })
 		const r = await this.prisma.tgRecipient.findUnique({
 			where: { id: recipientId },
 			include: {
@@ -2812,6 +2849,7 @@ export class CampaignService {
 			sentAt: r.sentAt, readAt: r.readAt, repliedAt: r.repliedAt,
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
 			outcome: r.outcome, outcomeAt: r.outcomeAt, followUpAt: r.followUpAt, followUpNote: r.followUpNote,
+			outcomeOverdue: isOutcomeOverdue(r),
 			deliveryUnknown: r.deliveryUnknown,
 			// Для галочек и «был в сети» в шапке.
 			readOutboxMaxId: r.readOutboxMaxId,
@@ -4572,6 +4610,91 @@ export class CampaignService {
 			await this.prisma.tgRecipient.update({ where: { id: r.id }, data: { followUpNotifiedAt: new Date() } })
 		}
 		return due.length
+	}
+
+	/**
+	 * Что требует внимания, для красных кружков в админке: непрочитанные
+	 * сообщения, напоминания на сегодня и просроченное, ответившие без итога.
+	 */
+	async attention() {
+		const now = new Date()
+		const startOfDay = mskAt(now, 0)
+		const endOfDay = mskAt(now, 0, 1)
+		const [unread, followUpsToday, followUpsOverdue, noOutcome] = await Promise.all([
+			this.prisma.tgRecipient.aggregate({ where: { unreadIn: { gt: 0 } }, _sum: { unreadIn: true }, _count: true }),
+			this.prisma.tgRecipient.count({ where: { followUpAt: { gte: startOfDay, lt: endOfDay } } }),
+			this.prisma.tgRecipient.count({ where: { followUpAt: { lt: startOfDay } } }),
+			this.prisma.tgRecipient.count({
+				where: {
+					outcome: null,
+					repliedAt: { lte: new Date(now.getTime() - OUTCOME_DUE_MS), gte: new Date(now.getTime() - OUTCOME_STALE_MS) },
+				},
+			}),
+		])
+		return {
+			unreadMessages: unread._sum.unreadIn ?? 0,
+			unreadChats: unread._count,
+			followUpsToday,
+			followUpsOverdue,
+			noOutcomeOverdue: noOutcome,
+		}
+	}
+
+	/**
+	 * Итоги суток в бот: кто ответил, что с итогами и что просрочено. Раз в
+	 * день после 9:00 по Москве; день отмечаем в базе, чтобы перезапуск не
+	 * отправил то же самое второй раз.
+	 */
+	async dailyDigestTick(): Promise<boolean> {
+		const now = new Date()
+		if (mskHour(now) < 9) return false
+		const today = mskDayKey(now)
+		const settings = await this.prisma.workspaceSettings.upsert({ where: { id: 'main' }, create: { id: 'main' }, update: {} })
+		if (settings.tgDigestDay === today) return false
+
+		const since = new Date(now.getTime() - 24 * 3600_000)
+		const incoming = await this.prisma.tgDialogMessage.findMany({
+			where: { out: false, date: { gte: since } },
+			orderBy: { date: 'asc' },
+			select: { text: true, recipient: { select: { id: true, firstName: true, middleName: true, username: true, phone: true, domain: true, outcome: true } } },
+		})
+		const byClient = new Map<string, { r: any; texts: string[] }>()
+		for (const m of incoming) {
+			const e = byClient.get(m.recipient.id) ?? { r: m.recipient, texts: [] }
+			e.texts.push(m.text)
+			byClient.set(m.recipient.id, e)
+		}
+		const outcomes = await this.prisma.tgRecipient.groupBy({
+			by: ['outcome'], where: { outcomeAt: { gte: since }, outcome: { not: null } }, _count: true,
+		})
+		const att = await this.attention()
+
+		const lines: string[] = [`📊 <b>Итоги за сутки</b>`, '']
+		if (byClient.size) {
+			lines.push(`Ответили клиенты: <b>${byClient.size}</b>`)
+			for (const { r, texts } of [...byClient.values()].slice(0, 12)) {
+				const who = [r.firstName, r.middleName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone) || 'Без имени'
+				const last = esc(texts[texts.length - 1].replace(/\s+/g, ' ').slice(0, 140))
+				lines.push(`• <a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${r.id}">${esc(who)}</a>${r.domain ? ` · ${esc(r.domain)}` : ''}${r.outcome ? ` · ${esc(outcomeLabel(r.outcome) ?? '')}` : ''}\n  «${last}»`)
+			}
+			if (byClient.size > 12) lines.push(`…и ещё ${byClient.size - 12}`)
+		} else {
+			lines.push('Новых ответов за сутки не было')
+		}
+		if (outcomes.length) {
+			lines.push('', 'Итоги разговоров: ' + outcomes.map(o => `${esc(outcomeLabel(o.outcome) ?? '')} ${o._count}`).join(', '))
+		}
+		const todo = [
+			att.followUpsToday ? `написать сегодня: <b>${att.followUpsToday}</b>` : '',
+			att.followUpsOverdue ? `напоминаний просрочено: <b>${att.followUpsOverdue}</b>` : '',
+			att.noOutcomeOverdue ? `ответили, итог не поставлен: <b>${att.noOutcomeOverdue}</b>` : '',
+			att.unreadMessages ? `непрочитанных сообщений: <b>${att.unreadMessages}</b>` : '',
+		].filter(Boolean)
+		if (todo.length) lines.push('', '⏰ ' + todo.join(' · '))
+
+		await this.notifyAdmin(lines.join('\n'))
+		await this.prisma.workspaceSettings.update({ where: { id: 'main' }, data: { tgDigestDay: today } })
+		return true
 	}
 
 	private async notifyAdmin(html: string) {

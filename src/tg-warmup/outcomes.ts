@@ -13,6 +13,8 @@ export const OUTCOMES = [
 	{ key: 'REFUSED', label: 'Отказ' },
 	{ key: 'NOT_TARGET', label: 'Не целевой' },
 	{ key: 'WON', label: 'Клиент' },
+	// Вопрос закрыт, чем бы ни кончилось: по нему больше ничего не ждём.
+	{ key: 'CLOSED', label: 'Вопрос закрыт' },
 ] as const
 
 export const OUTCOME_KEYS: string[] = OUTCOMES.map(o => o.key)

@@ -1495,6 +1495,9 @@ model TgRecipient {
   followUpAt         DateTime?
   followUpNote       String?
   followUpNotifiedAt DateTime?
+  // Сколько сообщений собеседника ещё не открыто в админке. Растёт, когда
+  // опросник записывает ответ, обнуляется при открытии переписки.
+  unreadIn           Int       @default(0)
 
   status    TgRecipientStatus @default(QUEUED)
   // Аккаунт, с которого писали. Закрепляется при первой отправке и больше не
@@ -1700,6 +1703,8 @@ model WorkspaceSettings {
   dailyGoal Int @default(200)
   interestedAfter Int @default(3)
   planningPerAccount Int @default(20)
+  // День (МСК, ГГГГ-ММ-ДД), за который итоги уже отправлены в бот: чтобы не слать дважды.
+  tgDigestDay String?
   @@map("workspace_settings")
 }
 model TgHypothesisSettings {

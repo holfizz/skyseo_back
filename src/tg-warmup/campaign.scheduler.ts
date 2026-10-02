@@ -58,5 +58,10 @@ export class CampaignScheduler implements OnModuleInit {
 		} catch (e: any) {
 			this.logger.error(`Тик напоминаний упал: ${e?.message ?? e}`)
 		}
+		try {
+			if (await this.svc.dailyDigestTick()) this.logger.log('Итоги суток отправлены в бот')
+		} catch (e: any) {
+			this.logger.error(`Итоги суток не ушли: ${e?.message ?? e}`)
+		}
 	}
 }

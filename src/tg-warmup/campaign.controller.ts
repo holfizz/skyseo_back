@@ -245,6 +245,12 @@ export class CampaignController {
 		return this.svc.setOutcome(id, body ?? {})
 	}
 
+	/** Счётчики для красных кружков: непрочитанное, напоминания, просрочено. */
+	@Get('attention')
+	attention() {
+		return this.svc.attention()
+	}
+
 	/** Календарь напоминаний. */
 	@Get('follow-ups')
 	followUps() {
