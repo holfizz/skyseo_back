@@ -595,6 +595,28 @@ export class TelegramService implements OnModuleDestroy {
 	 *                приходит прямо под исходной тревогой, а не отдельной строкой в ленте.
 	 * @returns message_id отправленного сообщения (нужен, чтобы потом на него ответить)
 	 */
+	/**
+	 * Уведомление админу о рассылке: ответ клиента, отказ, бан аккаунта.
+	 *
+	 * Прямой запрос к Bot API, а не через this.bot. Сам бот в конструкторе
+	 * отключён владельцем (вместе с командами и остальными уведомлениями старого
+	 * продукта), и включать его целиком ради этого не нужно: достаточно одного
+	 * sendMessage. Опроса сообщений и команд здесь нет.
+	 */
+	async sendOutreachNotification(html: string): Promise<void> {
+		const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN')
+		const chatId = this.configService.get<string>('TELEGRAM_ADMIN_ID')
+		if (!token || token === 'dummy-token' || !chatId) throw new Error('не заданы TELEGRAM_BOT_TOKEN или TELEGRAM_ADMIN_ID')
+		const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ chat_id: chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true }),
+			signal: AbortSignal.timeout(8000),
+		})
+		const body: any = await res.json().catch(() => ({}))
+		if (!res.ok || body?.ok === false) throw new Error(`Telegram ${res.status}: ${body?.description ?? 'нет ответа'}`)
+	}
+
 	async sendAdminNotification(message: string, threadId?: number, replyTo?: number): Promise<number | null> {
 		if (!this.isEnabled || !this.bot) {
 			console.log('[Telegram disabled]:', message)

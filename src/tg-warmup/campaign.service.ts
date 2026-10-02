@@ -4478,7 +4478,7 @@ export class CampaignService {
 
 	private async notifyAdmin(html: string) {
 		try {
-			await this.telegram.sendAdminNotification(html)
+			await this.telegram.sendOutreachNotification(html)
 		} catch (e: any) {
 			this.logger.warn(`Уведомление админу не ушло: ${e?.message ?? e}`)
 		}
