@@ -15,3 +15,6 @@ latest-mac.yml
 latest.yml
 .env.prodclean
 prisma/_prod_leads_backup.json
+
+# Локальная сборка для проверки (не коммитим)
+.local-check-dist/

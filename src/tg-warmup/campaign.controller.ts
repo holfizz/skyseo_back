@@ -251,6 +251,24 @@ export class CampaignController {
 		return this.svc.attention()
 	}
 
+	/** База клиентов: лиды из парсинга и их контакты. */
+	@Get('leads')
+	leads(@Query('filter') filter?: string, @Query('q') q?: string, @Query('limit') limit?: string, @Query('offset') offset?: string) {
+		return this.svc.leadsBase({ filter, q, limit: limit ? Number(limit) : undefined, offset: offset ? Number(offset) : undefined })
+	}
+
+	/** Вписать ФИО и личку в Telegram. */
+	@Patch('leads/:id')
+	updateLead(@Param('id') id: string, @Body() body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+		return this.svc.updateLeadContact(id, body ?? {})
+	}
+
+	/** Вставить список контактов: «сайт; имя; отчество; фамилия; @телеграм». */
+	@Post('leads/bulk')
+	bulkLeads(@Body() body: { text?: string }) {
+		return this.svc.bulkLeadContacts(body?.text ?? '')
+	}
+
 	/** Календарь напоминаний. */
 	@Get('follow-ups')
 	followUps() {

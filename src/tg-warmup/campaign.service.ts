@@ -4697,6 +4697,130 @@ export class CampaignService {
 		return true
 	}
 
+	// ── база клиентов: лиды из парсинга и их контакты ─────────────────────────
+
+	/**
+	 * Лиды из парсинга поиска, у которых контакт вписывают руками: ФИО и личка
+	 * в Telegram. Сначала парсят выдачу, потом ищут людей, поэтому у новых лидов
+	 * контакта нет, и здесь его дописывают. Всё хранится в самом лиде.
+	 */
+	async leadsBase(opts: { filter?: string; q?: string; limit?: number; offset?: number }) {
+		const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+		const where: Prisma.OutreachLeadWhereInput = { OR: [{ notes: null }, { NOT: { notes: { contains: 'дев-сид' } } }] }
+		const and: Prisma.OutreachLeadWhereInput[] = []
+		// Считается только то, что вписано руками. Спарсенный со страниц телеграм
+		// чаще всего канал или бот компании: в базе клиентов он не контакт.
+		const manual: Prisma.OutreachLeadWhereInput = { AND: [{ telegramManual: true }, { telegram: { not: null } }, { telegram: { not: '' } }] }
+		if (opts.filter === 'empty') and.push({ NOT: manual })
+		if (opts.filter === 'filled') and.push(manual)
+		const q = String(opts.q ?? '').trim()
+		if (q) {
+			const ascii = (() => { try { return domainToASCII(displayDomain(q)) } catch { return '' } })()
+			and.push({
+				OR: [
+					{ domain: { contains: q, mode: 'insensitive' } },
+					...(ascii ? [{ domain: { contains: ascii, mode: 'insensitive' as const } }] : []),
+					{ companyName: { contains: q, mode: 'insensitive' } },
+					{ firstName: { contains: q, mode: 'insensitive' } },
+					{ lastName: { contains: q, mode: 'insensitive' } },
+					{ telegram: { contains: q, mode: 'insensitive' } },
+				],
+			})
+		}
+		const full: Prisma.OutreachLeadWhereInput = { AND: [where, ...and] }
+		const [rows, total, filled, all] = await Promise.all([
+			this.prisma.outreachLead.findMany({
+				where: full, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: limit, skip: Math.max(opts.offset ?? 0, 0),
+				select: {
+					id: true, domain: true, companyName: true, city: true, firstName: true, middleName: true, lastName: true,
+					telegram: true, telegramManual: true, bestPosition: true, keywordsCount: true, createdAt: true,
+				},
+			}),
+			this.prisma.outreachLead.count({ where: full }),
+			this.prisma.outreachLead.count({ where: { AND: [where, manual] } }),
+			this.prisma.outreachLead.count({ where }),
+		])
+		const used = await this.prisma.tgRecipient.findMany({
+			where: { leadId: { in: rows.map(r => r.id) } }, select: { leadId: true }, distinct: ['leadId'],
+		})
+		const inCampaign = new Set(used.map(u => u.leadId))
+		return {
+			total, limit, filled, empty: all - filled,
+			// telegram отдаём только вписанный руками; спарсенный идёт отдельным полем,
+			// чтобы его было видно, но он не подставлялся как контакт.
+			rows: rows.map(({ telegramManual, telegram, ...r }) => ({
+				...r, site: displayDomain(r.domain), inCampaign: inCampaign.has(r.id),
+				telegram: telegramManual ? telegram : null,
+				parsedTelegram: telegramManual ? null : telegram || null,
+			})),
+		}
+	}
+
+	private cleanLeadContact(body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+		const data: Prisma.OutreachLeadUpdateInput = {}
+		for (const k of ['firstName', 'middleName', 'lastName'] as const) {
+			if (body[k] === undefined) continue
+			const v = normalizeName(body[k] ?? '')
+			// Первая буква заглавная: в сообщении имя идёт как есть, «петрович» выдаст рассылку.
+			data[k] = v ? (v.charAt(0).toUpperCase() + v.slice(1)).slice(0, 80) : null
+		}
+		if (body.telegram !== undefined) {
+			const raw = String(body.telegram ?? '').trim()
+			if (!raw) {
+				data.telegram = null
+				data.telegramManual = false
+			} else {
+				const c = parseContact(raw)
+				if (!c) throw new BadRequestException('Не похоже ни на юзернейм, ни на телефон. Пример: @ivan_petrov или +79001234567')
+				// Юзернейм храним с «@», телефон цифрами: так их читают и менеджер, и набор в рассылку.
+				data.telegram = c.username ? `@${c.username}` : c.phone
+				// Вписан руками: только такие лиды попадают в рассылку (см. addRecipientsFromLeads).
+				data.telegramManual = true
+			}
+		}
+		return data
+	}
+
+	async updateLeadContact(id: string, body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+		const data = this.cleanLeadContact(body ?? {})
+		try {
+			await this.prisma.outreachLead.update({ where: { id }, data })
+		} catch {
+			throw new NotFoundException('Лид не найден')
+		}
+		return { ok: true, telegram: data.telegram ?? undefined }
+	}
+
+	/**
+	 * Вставить список: по строке на человека, «сайт; имя; отчество; фамилия; @телеграм».
+	 * Строка находит лида по сайту и дописывает ему контакт. Не нашли сайт или
+	 * не разобрали телеграм — строка вернётся в ответе с причиной.
+	 */
+	async bulkLeadContacts(text: string) {
+		const lines = String(text ?? '').split(/\r?\n/)
+		const result = { updated: 0, rejected: [] as Array<{ line: number; text: string; reason: string }> }
+		for (let i = 0; i < lines.length; i++) {
+			const raw = lines[i].trim()
+			if (!raw || raw.startsWith('#')) continue
+			const [site, first, middle, last, tg] = raw.split(';').map(x => x.trim())
+			const clean = displayDomain(site)
+			let ascii = clean
+			try { ascii = domainToASCII(clean) || clean } catch { /* оставляем как есть */ }
+			if (!ascii) { result.rejected.push({ line: i + 1, text: raw, reason: 'нет сайта' }); continue }
+			const lead = await this.prisma.outreachLead.findFirst({
+				where: { domain: { in: [ascii, `www.${ascii}`] } }, orderBy: { createdAt: 'desc' }, select: { id: true },
+			})
+			if (!lead) { result.rejected.push({ line: i + 1, text: raw, reason: 'такого сайта нет среди лидов' }); continue }
+			try {
+				await this.prisma.outreachLead.update({ where: { id: lead.id }, data: this.cleanLeadContact({ firstName: first || undefined, middleName: middle || undefined, lastName: last || undefined, telegram: tg || undefined }) })
+				result.updated++
+			} catch (e: any) {
+				result.rejected.push({ line: i + 1, text: raw, reason: e?.message ?? 'не сохранилось' })
+			}
+		}
+		return result
+	}
+
 	private async notifyAdmin(html: string) {
 		try {
 			await this.telegram.sendOutreachNotification(html)
