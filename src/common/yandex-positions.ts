@@ -210,7 +210,9 @@ export async function checkYandexPositions(opts: {
 	const topN = opts.topN && opts.topN > 0 ? opts.topN : 50
 	const maxPages = Math.max(1, Math.ceil(topN / RESULTS_PER_PAGE))
 	// Мало каналов на аккаунте XMLRiver — параллелим осторожно (2), перегрузку добираем ретраями.
-	const concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : 2
+	// Подняли число каналов в кабинете XMLRiver — задайте XMLRIVER_CONCURRENCY (например 8): быстрее станет без правки кода.
+	const envLimit = Number(process.env.XMLRIVER_CONCURRENCY)
+	const concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : (envLimit > 0 ? Math.min(envLimit, 20) : 2)
 	const raw = await mapPool(opts.keywords, concurrency, kw =>
 		checkOne({ user: opts.user, key: opts.key, lr: opts.lr }, domainHost, kw, maxPages),
 	)
@@ -279,7 +281,8 @@ export async function getWordstatVolumes(opts: {
 	lr?: number
 	concurrency?: number
 }): Promise<Map<string, { value: number | null; error?: string }>> {
-	const concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : 3
+	const envLimit = Number(process.env.XMLRIVER_CONCURRENCY)
+	const concurrency = opts.concurrency && opts.concurrency > 0 ? opts.concurrency : (envLimit > 0 ? Math.min(envLimit, 20) : 3)
 	const map = new Map<string, { value: number | null; error?: string }>()
 	await mapPool(opts.keywords, concurrency, async kw => {
 		map.set(kw, await fetchWordstatOne(opts.user, opts.key, kw, opts.lr))
