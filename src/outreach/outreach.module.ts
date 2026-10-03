@@ -14,6 +14,6 @@ import { SiteLeadService } from './site-lead.service'
 	imports: [MulterModule.register({ limits: { fileSize: 20 * 1024 * 1024 } }), NotificationsModule, ReportModule],
 	controllers: [OutreachController, AdminOutreachController, ReportController, SiteLeadController],
 	providers: [OutreachService, OutreachImportService, SiteLeadService],
-	exports: [OutreachService], // нужен кабинету менеджера для текстов сообщений
+	exports: [OutreachService, OutreachImportService], // менеджеру: тексты сообщений; вкладке «База клиентов»: загрузка import.json
 })
 export class OutreachModule {}

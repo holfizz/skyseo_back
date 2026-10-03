@@ -164,7 +164,8 @@ export class OutreachImportService {
 					email: c.email ?? prev.email,
 					phone: c.phone ?? prev.phone,
 					whatsapp: c.whatsapp ?? prev.whatsapp,
-					telegram: c.telegram ?? prev.telegram,
+					// Телеграм, вписанный руками, парсер не подменяет спарсенным со страниц сайта.
+					telegram: prev.telegramManual ? prev.telegram : (c.telegram ?? prev.telegram),
 					inn: c.inn ?? prev.inn,
 					ogrn: c.ogrn ?? prev.ogrn,
 					ogrnip: c.ogrnip ?? prev.ogrnip,
