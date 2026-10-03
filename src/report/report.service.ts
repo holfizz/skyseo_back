@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { AppConfigService } from '../app-config/app-config.service'
 import { OutreachLead } from '@prisma/client'
-import { domainToUnicode } from 'node:url'
+import { domainToASCII, domainToUnicode } from 'node:url'
 import { PrismaService } from '../prisma/prisma.service'
 import { renderPdf } from './report.pdf'
 import { renderReportHtml } from './report.template'
@@ -208,13 +208,16 @@ export class ReportService {
 	// Основной источник: сохранённый топ-50 того прогона, из которого пришёл лид.
 	private async keywordsFromSerp(importId: string, domain: string): Promise<ReportKeyword[]> {
 		const target = normalizeDomain(domain)
+		// Кириллический сайт в выдаче бывает записан и в punycode, и по-русски
+		// (зависит от того, чем снимали): ищем оба написания, иначе отчёт теряет запросы.
+		const variants = [...new Set([target, domainToASCII(target) || target, domainToUnicode(target) || target])]
 		const own = await this.prisma.serpRow.findMany({
 			where: {
 				importId,
-				OR: [
-					{ domain: { equals: target, mode: 'insensitive' } },
-					{ domain: { equals: `www.${target}`, mode: 'insensitive' } },
-				],
+				OR: variants.flatMap(v => [
+					{ domain: { equals: v, mode: 'insensitive' as const } },
+					{ domain: { equals: `www.${v}`, mode: 'insensitive' as const } },
+				]),
 			},
 			select: { keyword: true, position: true },
 			orderBy: { position: 'asc' },
@@ -246,7 +249,7 @@ export class ReportService {
 			const ownPos = best.get(row.keyword)
 			if (ownPos === undefined || row.position >= ownPos) continue // ниже нас — не конкурент
 			const rivalDomain = normalizeDomain(row.domain)
-			if (rivalDomain === target || !isRealCompetitor(rivalDomain)) continue
+			if (variants.includes(rivalDomain) || !isRealCompetitor(rivalDomain)) continue
 			const dedupe = seen.get(row.keyword) ?? new Set<string>()
 			if (dedupe.has(rivalDomain)) continue // один домен на нескольких url
 			dedupe.add(rivalDomain)
