@@ -4706,7 +4706,11 @@ export class CampaignService {
 	 */
 	async leadsBase(opts: { filter?: string; q?: string; limit?: number; offset?: number }) {
 		const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
-		const where: Prisma.OutreachLeadWhereInput = { OR: [{ notes: null }, { NOT: { notes: { contains: 'дев-сид' } } }] }
+		// Без ИНН в базе клиентов лид не показываем: нечем проверить, что это настоящая
+		// организация, и искать контакт по такому незачем.
+		const where: Prisma.OutreachLeadWhereInput = {
+			AND: [{ inn: { not: null } }, { inn: { not: '' } }, { OR: [{ notes: null }, { NOT: { notes: { contains: 'дев-сид' } } }] }],
+		}
 		const and: Prisma.OutreachLeadWhereInput[] = []
 		// Считается только то, что вписано руками. Спарсенный со страниц телеграм
 		// чаще всего канал или бот компании: в базе клиентов он не контакт.
