@@ -179,18 +179,44 @@ export class TgWarmupService {
 		}
 	}
 
+	/**
+	 * Занять аккаунт под задачу.
+	 *
+	 * by = 'manual' — ручное действие в уже идущей переписке (ответ, правка,
+	 * удаление, проверка доставки). Для него не требуем возраста аккаунта, снятого
+	 * ограничения и свежей проверки Premium: эти запреты защищают от ПИСЬМА НОВОМУ
+	 * человеку (за него и ограничивает Telegram), а ответить тому, кто уже написал
+	 * или с кем идёт разговор, можно и с ограниченного аккаунта. Занятость при этом
+	 * остаётся: два входа в один аккаунт разом Telegram разрывает.
+	 */
 	async claimAccount(accountId: string, by: string, seconds: number): Promise<boolean> {
 		const now = new Date()
+		const gates = by === 'manual'
+			? {}
+			: {
+				purchasedAt: { lte: new Date(now.getTime() - DAY_MS) },
+				AND: [{ OR: [{ restrictedUntil: null }, { restrictedUntil: { lte: now } }] }, ...(by === 'send' ? [{ probe: { path: ['premium'], equals: true }, premiumCheckedAt: { gt: new Date(now.getTime()-DAY_MS) } }] : [])],
+			}
 		const claimed = await this.prisma.tgAccount.updateMany({
 			where: {
 				id: accountId,
-                purchasedAt: { lte: new Date(now.getTime() - DAY_MS) },
-                AND: [{ OR: [{ restrictedUntil: null }, { restrictedUntil: { lte: now } }] }, ...(by === 'send' ? [{ probe: { path: ['premium'], equals: true }, premiumCheckedAt: { gt: new Date(now.getTime()-DAY_MS) } }] : [])],
+				...gates,
 				OR: [{ busyUntil: null }, { busyUntil: { lt: now } }],
 			},
 			data: { busyUntil: new Date(now.getTime() + seconds * 1000), busyBy: by },
 		})
 		return claimed.count === 1
+	}
+
+	/** Почему аккаунт сейчас нельзя занять для ручного действия: текст для человека. */
+	async busyReason(accountId: string): Promise<string> {
+		const a = await this.prisma.tgAccount.findUnique({ where: { id: accountId }, select: { busyUntil: true, busyBy: true } })
+		if (a?.busyUntil && a.busyUntil > new Date()) {
+			const what: Record<string, string> = { warmup: 'прогрев', send: 'рассылка', poll: 'опрос переписки', check: 'проверка', manual: 'другая отправка' }
+			const until = a.busyUntil.toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' })
+			return `Аккаунт занят: ${what[a.busyBy ?? ''] ?? 'другая задача'}, освободится примерно в ${until} МСК. Пока он занят, писать с него нельзя: два входа разом Telegram разрывает`
+		}
+		return 'Аккаунт сейчас недоступен, попробуйте через минуту'
 	}
 
 	async releaseAccount(accountId: string): Promise<void> {

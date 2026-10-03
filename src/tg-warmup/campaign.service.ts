@@ -3028,8 +3028,8 @@ export class CampaignService {
 		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла переписка')
 		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — с него уже ничего не сделать')
 
-		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
-			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')
+		if (!(await this.warmup.claimAccount(r.account.id, 'manual', 120))) {
+			throw new BadRequestException(await this.warmup.busyReason(r.account.id))
 		}
 		const opts = this.warmup.clientOptions(r.account)
 		try {
@@ -3129,8 +3129,8 @@ export class CampaignService {
 			...(pdf ? [{ kind: 'document' as const, name: pdf.name, mime: 'application/pdf', buffer: pdf.buffer }] : []),
 		]
 
-		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
-			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')
+		if (!(await this.warmup.claimAccount(r.account.id, 'manual', 120))) {
+			throw new BadRequestException(await this.warmup.busyReason(r.account.id))
 		}
 		const opts = this.warmup.clientOptions(r.account)
 		try {
@@ -4308,8 +4308,8 @@ export class CampaignService {
 		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла отправка')
 		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — переписку с него уже не прочитать')
 
-		if (!(await this.warmup.claimAccount(r.account.id, 'send', 120))) {
-			throw new BadRequestException('Аккаунт сейчас занят, попробуйте через минуту')
+		if (!(await this.warmup.claimAccount(r.account.id, 'manual', 120))) {
+			throw new BadRequestException(await this.warmup.busyReason(r.account.id))
 		}
 		const opts = this.warmup.clientOptions(r.account)
 		try {
