@@ -259,7 +259,7 @@ export class CampaignController {
 
 	/** Вписать ФИО и личку в Telegram. */
 	@Patch('leads/:id')
-	updateLead(@Param('id') id: string, @Body() body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+	updateLead(@Param('id') id: string, @Body() body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null; phone?: string | null }) {
 		return this.svc.updateLeadContact(id, body ?? {})
 	}
 

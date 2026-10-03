@@ -4733,7 +4733,7 @@ export class CampaignService {
 				where: full, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: limit, skip: Math.max(opts.offset ?? 0, 0),
 				select: {
 					id: true, domain: true, companyName: true, city: true, firstName: true, middleName: true, lastName: true,
-					telegram: true, telegramManual: true, bestPosition: true, keywordsCount: true, createdAt: true,
+					telegram: true, telegramManual: true, inn: true, phone: true, bestPosition: true, keywordsCount: true, createdAt: true,
 				},
 			}),
 			this.prisma.outreachLead.count({ where: full }),
@@ -4756,13 +4756,18 @@ export class CampaignService {
 		}
 	}
 
-	private cleanLeadContact(body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+	private cleanLeadContact(body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null; phone?: string | null }) {
 		const data: Prisma.OutreachLeadUpdateInput = {}
 		for (const k of ['firstName', 'middleName', 'lastName'] as const) {
 			if (body[k] === undefined) continue
 			const v = normalizeName(body[k] ?? '')
 			// Первая буква заглавная: в сообщении имя идёт как есть, «петрович» выдаст рассылку.
 			data[k] = v ? (v.charAt(0).toUpperCase() + v.slice(1)).slice(0, 80) : null
+		}
+		if (body.phone !== undefined) {
+			// Телефон хранится как ввели: его читает человек, а не набор в рассылку.
+			const v = String(body.phone ?? '').trim().slice(0, 40)
+			data.phone = v || null
 		}
 		if (body.telegram !== undefined) {
 			const raw = String(body.telegram ?? '').trim()
@@ -4781,7 +4786,7 @@ export class CampaignService {
 		return data
 	}
 
-	async updateLeadContact(id: string, body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null }) {
+	async updateLeadContact(id: string, body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null; phone?: string | null }) {
 		const data = this.cleanLeadContact(body ?? {})
 		try {
 			await this.prisma.outreachLead.update({ where: { id }, data })
