@@ -4715,8 +4715,9 @@ export class CampaignService {
 		// Считается только то, что вписано руками. Спарсенный со страниц телеграм
 		// чаще всего канал или бот компании: в базе клиентов он не контакт.
 		const manual: Prisma.OutreachLeadWhereInput = { AND: [{ telegramManual: true }, { telegram: { not: null } }, { telegram: { not: '' } }] }
-		if (opts.filter === 'empty') and.push({ NOT: manual })
-		if (opts.filter === 'filled') and.push(manual)
+		if (opts.filter === 'empty') and.push({ NOT: manual }, { parkedAt: null })
+		if (opts.filter === 'filled') and.push(manual, { parkedAt: null })
+		if (opts.filter === 'parked') and.push({ parkedAt: { not: null } })
 		const q = String(opts.q ?? '').trim()
 		if (q) {
 			const ascii = (() => { try { return domainToASCII(displayDomain(q)) } catch { return '' } })()
@@ -4732,28 +4733,30 @@ export class CampaignService {
 			})
 		}
 		const full: Prisma.OutreachLeadWhereInput = { AND: [where, ...and] }
-		const [rows, total, filled, all] = await Promise.all([
+		const [rows, total, filled, empty, parked] = await Promise.all([
 			this.prisma.outreachLead.findMany({
-				where: full, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: limit, skip: Math.max(opts.offset ?? 0, 0),
+				// Убранные вниз идут после всех остальных, среди них последний убранный самый нижний.
+				where: full, orderBy: [{ parkedAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'desc' }, { id: 'asc' }], take: limit, skip: Math.max(opts.offset ?? 0, 0),
 				select: {
 					id: true, domain: true, companyName: true, city: true, firstName: true, middleName: true, lastName: true,
-					telegram: true, telegramManual: true, inn: true, phone: true, bestPosition: true, keywordsCount: true, createdAt: true,
+					telegram: true, telegramManual: true, inn: true, phone: true, bestPosition: true, keywordsCount: true, createdAt: true, parkedAt: true,
 				},
 			}),
 			this.prisma.outreachLead.count({ where: full }),
-			this.prisma.outreachLead.count({ where: { AND: [where, manual] } }),
-			this.prisma.outreachLead.count({ where }),
+			this.prisma.outreachLead.count({ where: { AND: [where, manual, { parkedAt: null }] } }),
+			this.prisma.outreachLead.count({ where: { AND: [where, { NOT: manual }, { parkedAt: null }] } }),
+			this.prisma.outreachLead.count({ where: { AND: [where, { parkedAt: { not: null } }] } }),
 		])
 		const used = await this.prisma.tgRecipient.findMany({
 			where: { leadId: { in: rows.map(r => r.id) } }, select: { leadId: true }, distinct: ['leadId'],
 		})
 		const inCampaign = new Set(used.map(u => u.leadId))
 		return {
-			total, limit, filled, empty: all - filled,
+			total, limit, filled, empty, parked,
 			// telegram отдаём только вписанный руками; спарсенный идёт отдельным полем,
 			// чтобы его было видно, но он не подставлялся как контакт.
-			rows: rows.map(({ telegramManual, telegram, ...r }) => ({
-				...r, site: displayDomain(r.domain), inCampaign: inCampaign.has(r.id),
+			rows: rows.map(({ telegramManual, telegram, parkedAt, ...r }) => ({
+				...r, site: displayDomain(r.domain), inCampaign: inCampaign.has(r.id), parked: !!parkedAt,
 				telegram: telegramManual ? telegram : null,
 				parsedTelegram: telegramManual ? null : telegram || null,
 			})),
@@ -4790,8 +4793,12 @@ export class CampaignService {
 		return data
 	}
 
-	async updateLeadContact(id: string, body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null; phone?: string | null }) {
+	async updateLeadContact(id: string, body: { firstName?: string | null; middleName?: string | null; lastName?: string | null; telegram?: string | null; phone?: string | null; park?: boolean }) {
 		const data = this.cleanLeadContact(body ?? {})
+		if (body?.park !== undefined) {
+			if (typeof body.park !== 'boolean') throw new BadRequestException('park должен быть boolean')
+			data.parkedAt = body.park ? new Date() : null
+		}
 		try {
 			await this.prisma.outreachLead.update({ where: { id }, data })
 		} catch {
