@@ -21,7 +21,7 @@ import {
 	type MessageCompetitor, type MessageKeyword,
 } from '../outreach/outreach-message'
 import { distributeDaily } from './warmup-plan'
-import { planQueue, startCursor, windowStart, type PlanSlot } from './campaign-plan'
+import { planQueue, startCursor, windowStart, slotCapacity, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
@@ -1045,7 +1045,7 @@ export class CampaignService {
 				select: { plannedAccountId: true, campaign: { select: { accounts: { select: { accountId: true } } } } },
 			}),
 		])
-		const perAccount = last?.perAccountPerDay ?? 20
+		const perAccount = 15
 		const allowances = await this.warmup.allowancesFor(accounts, 0)
 		const reservations = new Map<string, number>()
 		for (const r of pending) {
@@ -1138,7 +1138,7 @@ export class CampaignService {
 					name: opts?.norm ? `Норма · ${opts.norm.date}` : new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
 					firstMessage: FIRST_MESSAGE,
 					secondMessage: SECOND_MESSAGE,
-					dailyGoal: last?.dailyGoal ?? null,
+					dailyGoal: opts?.norm ? null : last?.dailyGoal ?? null,
 					...(last
 						? {
 								perAccountPerDay: last.perAccountPerDay,
@@ -1148,6 +1148,7 @@ export class CampaignService {
 								windowTo: last.windowTo,
 							}
 						: {}),
+					...(opts?.norm ? { perAccountPerDay: opts.norm.perAccount } : {}),
 					accounts: { create: pool.map(accountId => ({ accountId, ...(opts?.norm ? { dailyLimit: opts.norm.rows.find(r => r.id === accountId)!.available } : {}) })) },
 				},
 			})
@@ -1291,7 +1292,7 @@ export class CampaignService {
 		if (queued > fits) {
 			return `в окно ${campaign.windowFrom}:00-${campaign.windowTo}:00 при паузах около ${Math.round(avgPauseMin)} мин помещается примерно ${fits} — расширьте окно или сократите паузы`
 		}
-		return 'окно на сегодня почти закончилось — остаток уйдёт завтра'
+		return 'оставшегося времени или свободной нормы аккаунтов не хватает — остаток нужно назначить на другой день'
 	}
 
 	/**
@@ -3259,7 +3260,7 @@ export class CampaignService {
 			slots.push({
 				id: acc.id,
 				quota: cap,
-				left: Math.max(0, cap - sent),
+				left: Math.max(0, Math.min(cap - sent, dayShift === 0 ? allow.maxMessagesPerDay : cap)),
 				cursor: startCursor(now, c, floor, dayShift),
 				floor,
 				day: dayShift,
@@ -3326,6 +3327,7 @@ export class CampaignService {
 			s.left = Math.max(0, s.left - taken)
 			s.quota = Math.max(0, s.quota - taken)
 		}
+		const capacity = locked.length + slots.reduce((n, s) => n + slotCapacity(s, c, now), 0)
 		const plan = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null })
 
 		// Сначала снимаем прежний план со всей очереди, потом раскладываем
@@ -3358,7 +3360,7 @@ export class CampaignService {
 			accounts: slots.length,
 			// Сколько всего влезает в выбранный день: по этому числу видно, надо
 			// ли поднимать нормы или добавлять аккаунты.
-			capacity: slots.reduce((n, s) => n + s.left, 0),
+			capacity,
 			sendDate: dayString(c.sendDate),
 		}
 	}
@@ -4715,8 +4717,34 @@ export class CampaignService {
 		// Считается только то, что вписано руками. Спарсенный со страниц телеграм
 		// чаще всего канал или бот компании: в базе клиентов он не контакт.
 		const manual: Prisma.OutreachLeadWhereInput = { AND: [{ telegramManual: true }, { telegram: { not: null } }, { telegram: { not: '' } }] }
+		// Один и тот же контакт может быть у нескольких лидов или добавлен в
+		// кампанию вручную, без leadId. Сверяем и связь, и нормализованный контакт.
+		const [candidates, written] = await Promise.all([
+			this.prisma.outreachLead.findMany({
+				where: { AND: [where, manual, { parkedAt: null }] },
+				select: { id: true, telegram: true },
+			}),
+			this.prisma.tgRecipient.findMany({
+				where: { OR: [
+					{ sentAt: { not: null } }, { secondSentAt: { not: null } },
+					{ messages: { some: { out: true } } },
+					// Неизвестный результат отправки тоже не считаем новым контактом.
+					{ deliveryUnknown: true },
+				] },
+				select: { leadId: true, username: true, phone: true },
+			}),
+		])
+		const writtenIds = new Set(written.map(r => r.leadId).filter(Boolean))
+		const writtenUsernames = new Set(written.map(r => parseContact(r.username)?.username).filter(Boolean))
+		const writtenPhones = new Set(written.map(r => parseContact(r.phone)?.phone).filter(Boolean))
+		const unwritten: Prisma.OutreachLeadWhereInput = { id: { in: candidates.filter(lead => {
+			const contact = parseContact(lead.telegram)
+			return !writtenIds.has(lead.id)
+				&& !(contact?.username && writtenUsernames.has(contact.username))
+				&& !(contact?.phone && writtenPhones.has(contact.phone))
+		}).map(lead => lead.id) } }
 		if (opts.filter === 'empty') and.push({ NOT: manual }, { parkedAt: null })
-		if (opts.filter === 'filled') and.push(manual, { parkedAt: null })
+		if (opts.filter === 'filled') and.push(manual, { parkedAt: null }, unwritten)
 		if (opts.filter === 'parked') and.push({ parkedAt: { not: null } })
 		const q = String(opts.q ?? '').trim()
 		if (q) {
@@ -4743,7 +4771,7 @@ export class CampaignService {
 				},
 			}),
 			this.prisma.outreachLead.count({ where: full }),
-			this.prisma.outreachLead.count({ where: { AND: [where, manual, { parkedAt: null }] } }),
+			this.prisma.outreachLead.count({ where: { AND: [where, manual, { parkedAt: null }, unwritten] } }),
 			this.prisma.outreachLead.count({ where: { AND: [where, { NOT: manual }, { parkedAt: null }] } }),
 			this.prisma.outreachLead.count({ where: { AND: [where, { parkedAt: { not: null } }] } }),
 		])

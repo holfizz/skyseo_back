@@ -111,36 +111,8 @@ export function planQueue(
 	const out = new Map<string, { at: Date; accountId: string }>()
 	if (!slots.length) return out
 
-	/**
-	 * Шаг до следующего сообщения аккаунта — чтобы сообщения растянулись на всё
-	 * окно, а не жались в начало.
-	 *
-	 * Раньше это был случайный интервал min..max: пять сообщений при шаге ~12 мин
-	 * занимали первый час, а остаток дня простаивал. Растягивать по s.left тоже
-	 * неверно — это ДНЕВНАЯ НОРМА (обычно 20), а не сколько аккаунту реально
-	 * достанется (очередь короче нормы), и шаг всё равно выходил мелким.
-	 *
-	 * Считаем от реального числа сообщений: общий темп = остаток окна ÷ сколько
-	 * всего разложим сегодня; на один аккаунт множим на число работающих
-	 * аккаунтов (они пишут параллельно). Ниже минимального интервала не
-	 * опускаемся — это анти-флуд; выше можно, крупные паузы и есть заполнение дня.
-	 * Переполнение на следующие дни (редкий хвост) оставляем на прежнем
-	 * случайном интервале — там равномерность не так важна.
-	 */
-	const toPlace = Math.min(ids.length, slots.reduce((n, s) => n + Math.max(0, s.left), 0))
-	const activeCount = slots.filter(s => s.left > 0).length || 1
-	const day0Beg = Math.max(now.getTime(), windowStart(now, c.windowFrom, 0).getTime())
-	const day0Avail = Math.max(0, windowStart(now, c.windowTo, 0).getTime() - day0Beg)
-	const perAccountStep0 = toPlace > 0 ? (day0Avail / toPlace) * activeCount : 0
-
-	const pause = (s: PlanSlot) => {
-		const minMs = Math.max(30, c.minIntervalSec) * 1000
-		const stepMs = s.day === 0
-			? perAccountStep0
-			: (Math.max(30, c.minIntervalSec) + Math.random() * Math.max(0, c.maxIntervalSec - c.minIntervalSec)) * 1000
-		return Math.max(minMs, stepMs * (0.85 + Math.random() * 0.3))
-	}
-	const usable = () => slots.filter(s => s.left > 0 && s.cursor < windowStart(now, c.windowTo, s.day).getTime())
+	const minMs = Math.max(30, c.minIntervalSec) * 1000
+	const capacity = (s: PlanSlot) => slotCapacity(s, c, now)
 
 	/**
 	 * Случайный сдвиг начала дня — свой у каждого аккаунта.
@@ -175,33 +147,54 @@ export function planQueue(
 		return pool[pool.length - 1]
 	}
 
-	for (const id of ids) {
-		let ready = usable()
-		while (!ready.length) {
-			// В режиме одного дня переезжать некуда: остаток очереди остаётся
-			// без времени, и в календаре про него написано, почему.
-			if (opts.singleDay) break
-			// Норму выбрали все или окно кончилось — вся очередь переезжает на
-			// следующий день. Пауза после ошибки при этом сохраняется: floor
-			// может отбросить аккаунт и через начало окна.
-			const day = Math.max(...slots.map(s => s.day)) + 1
-			if (day > maxDays) break
-			if (!slots.some(s => s.quota > 0)) break
-			for (const s of slots) {
-				s.day = day
-				s.cursor = Math.max(windowStart(now, c.windowFrom, day).getTime() + jitter(), s.floor)
-				s.left = s.quota
-			}
-			ready = usable()
+	let offset = 0
+	while (offset < ids.length) {
+		// Сначала распределяем адресатов с учётом реального остатка окна.
+		// Потом растягиваем сообщения каждого аккаунта на его доступное время:
+		// случайные паузы не могут вытолкнуть последний контакт за конец дня.
+		const available = slots.map(s => ({ ...s, left: capacity(s) }))
+		const batches = new Map<string, string[]>()
+		while (offset < ids.length) {
+			const ready = available.filter(s => s.left > 0)
+			if (!ready.length) break
+			const chosen = weighted(ready)
+			const batch = batches.get(chosen.id) ?? []
+			batch.push(ids[offset++])
+			batches.set(chosen.id, batch)
+			chosen.left--
 		}
-		// Планировать больше некуда: либо ни у кого нет нормы, либо упёрлись в
-		// предел по дням. Остаток очереди останется без времени — и это видно.
-		if (!ready.length) break
-
-		const s = weighted(ready)
-		out.set(id, { at: new Date(s.cursor), accountId: s.id })
-		s.cursor += pause(s)
-		s.left--
+		for (const s of slots) {
+			const batch = batches.get(s.id) ?? []
+			const end = windowStart(now, c.windowTo, s.day).getTime() - 1
+			const step = batch.length ? (end - s.cursor) / batch.length : 0
+			for (let i = 0; i < batch.length; i++) {
+				out.set(batch[i], { at: new Date(s.cursor), accountId: s.id })
+				s.left--
+				if (i < batch.length - 1) {
+					const remainingGaps = batch.length - i - 2
+					const latestNext = end - remainingGaps * minMs
+					s.cursor = Math.min(latestNext, s.cursor + Math.max(minMs, step * (0.85 + Math.random() * 0.3)))
+				}
+			}
+		}
+		if (offset >= ids.length || opts.singleDay) break
+		const day = Math.max(...slots.map(s => s.day)) + 1
+		if (day > maxDays || !slots.some(s => s.quota > 0)) break
+		for (const s of slots) {
+			s.day = day
+			s.cursor = Math.max(windowStart(now, c.windowFrom, day).getTime() + jitter(), s.floor)
+			s.left = s.quota
+		}
 	}
 	return out
+}
+
+/** Число доступных мест с учётом нормы, конца окна и минимальной паузы. */
+export function slotCapacity(
+	s: PlanSlot,
+	c: { windowTo: number; minIntervalSec: number },
+	now: Date,
+): number {
+	const remainingMs = windowStart(now, c.windowTo, s.day).getTime() - s.cursor
+	return Math.max(0, Math.min(s.left, Math.ceil(remainingMs / (Math.max(30, c.minIntervalSec) * 1000))))
 }
