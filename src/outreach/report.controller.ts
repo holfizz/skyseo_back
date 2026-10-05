@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { ReportService } from '../report/report.service'
 import { OutreachService } from './outreach.service'
 
-// Публичная ссылка из письма/сообщения — без авторизации.
+// Публичная ссылка для презентации после созвона — без авторизации.
 // Из-за глобального префикса реальный путь: /v1/api/r/:token.
 // Токен и счётчик открытий держит OutreachService, вёрстку PDF — ReportService.
 @Controller('r')
@@ -40,5 +40,5 @@ export class ReportController {
 // на всякий случай нормализуем.
 function fileName(domain: string): string {
 	const safe = domain.replace(/[^a-zA-Z0-9.-]/g, '_')
-	return `skyseo-${safe}.pdf`
+	return `skyseo-presentation-${safe}.pdf`
 }

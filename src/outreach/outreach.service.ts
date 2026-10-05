@@ -259,7 +259,7 @@ export class OutreachService {
 			await this.notifications.sendRawEmail(
 				lead.email,
 				'SkySEO — поднимите сайт в топ Яндекса',
-				text ?? lead.message,
+				text ?? await this.buildMessage(lead),
 			)
 		} catch (err: any) {
 			throw new Error(`SMTP ошибка: ${err.message}`)

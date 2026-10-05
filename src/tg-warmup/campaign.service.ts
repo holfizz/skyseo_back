@@ -1437,7 +1437,7 @@ export class CampaignService {
 		if (!r) throw new NotFoundException('Адресат не найден')
 
 		r.campaign.hypotheses = await this.activeHypotheses()
-		const firstTemplate = r.hypothesis?.text ?? r.campaign.hypotheses[0]?.text ?? r.campaign.firstMessage
+		const firstTemplate = refreshOpeningTemplate(r.hypothesis?.text ?? r.campaign.hypotheses[0]?.text ?? r.campaign.firstMessage)
 		const missing = r.hypothesis ? missingPlaceholders(firstTemplate, r) : missingForCampaign(r.campaign, r)
 
 		/*
@@ -2062,7 +2062,7 @@ export class CampaignService {
 			recipient.leadVars = (await this.leadVarsFor([recipient.leadId])).get(recipient.leadId) ?? {}
 			await this.prisma.tgRecipient.update({ where: { id: recipient.id }, data: { leadVars: recipient.leadVars } })
 		}
-		const variantText = await this.hypothesisText(campaign.id, recipient.id, campaign.firstMessage)
+		const variantText = refreshOpeningTemplate(await this.hypothesisText(campaign.id, recipient.id, campaign.firstMessage))
 		const missing = missingPlaceholders(variantText, recipient)
 		if (missing.length) {
 			await this.prisma.tgRecipient.update({
@@ -2896,12 +2896,14 @@ export class CampaignService {
    // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
    if (r.leadId && r.leadVars == null) r = { ...r, leadVars: (await this.leadVarsFor([r.leadId])).get(r.leadId) ?? {} }
    // Без данных заготовка вышла бы с пустыми местами. Лучше без неё: напишет человек.
-   if (missingPlaceholders(r.hypothesis.secondMessage, r).length) return null
-   return fillTemplate(r.hypothesis.secondMessage, r)
+   const template = usesLegacyReportOffer(r.hypothesis.secondMessage) ? SECOND_MESSAGE : r.hypothesis.secondMessage
+   if (missingPlaceholders(template, r).length) return null
+   return fillTemplate(template, r)
   }
   // The variant is not assigned until sending. Do not show a different variant's follow-up.
   if (!r.sentAt && (await this.activeHypotheses()).length) return null
-  return this.fullSecondMessage(r, r.campaign.secondMessage ? fillTemplate(r.campaign.secondMessage, r) : null)
+  const stored = r.campaign.secondMessage || SECOND_MESSAGE
+  return this.fullSecondMessage(r, fillTemplate(usesLegacyReportOffer(stored) ? SECOND_MESSAGE : stored, r))
  }
 
 	private async fullSecondMessage(r: {
@@ -3045,7 +3047,7 @@ export class CampaignService {
 		}
 	}
 
-	/** PDF-отчёт адресата — посмотреть перед тем, как приложить к ответу. */
+	/** Презентация для звонка: доступна отдельно от отправки сообщений. */
 	async reportPdf(recipientId: string) {
 		const r = await this.prisma.tgRecipient.findUnique({ where: { id: recipientId }, select: { leadId: true, domain: true } })
 		if (!r) throw new NotFoundException('Адресат не найден')
@@ -3076,10 +3078,11 @@ export class CampaignService {
 		withReport = false,
 		extra?: { photos?: OutPhoto[]; replyToTgId?: number | null },
 	) {
+		if (withReport) throw new BadRequestException('Отправка PDF в переписке отключена')
 		const body = String(text ?? '').trim()
 		const photos = extra?.photos ?? []
 		const replyToTgId = extra?.replyToTgId ?? null
-		if (!body && !withReport && !photos.length) throw new BadRequestException('Пустое сообщение')
+		if (!body && !photos.length) throw new BadRequestException('Пустое сообщение')
 		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
 		if (photos.length > PHOTO_COUNT_LIMIT) {
 			throw new BadRequestException(`За раз можно приложить не больше ${PHOTO_COUNT_LIMIT} фото`)
@@ -3110,16 +3113,7 @@ export class CampaignService {
 			if (!target) throw new NotFoundException('Сообщения, на которое отвечаем, в этой переписке нет')
 		}
 
-		// PDF собираем до захвата аккаунта: рендер занимает секунды, и держать
-		// аккаунт всё это время незачем.
-		let pdf: { name: string; buffer: Buffer } | null = null
-		if (withReport) {
-			if (!r.leadId) throw new BadRequestException('У этого адресата нет отчёта: он не из базы лидов')
-			pdf = { name: reportFileName(r.domain), buffer: await this.report.renderPdf(r.leadId) }
-		}
-
-		// Вложения одним списком: порядок отправки = порядок в ленте, подпись
-		// достаётся первому. Отчёт идёт последним — к нему текст относится реже.
+		// Ручной ответ может содержать только текст и фотографии.
 		const files: OutFile[] = [
 			...photos.map((p, i) => ({
 				kind: 'photo' as const,
@@ -3127,7 +3121,6 @@ export class CampaignService {
 				mime: p.mime ?? null,
 				buffer: p.buffer,
 			})),
-			...(pdf ? [{ kind: 'document' as const, name: pdf.name, mime: 'application/pdf', buffer: pdf.buffer }] : []),
 		]
 
 		if (!(await this.warmup.claimAccount(r.account.id, 'manual', 120))) {
@@ -4394,7 +4387,7 @@ export class CampaignService {
 			// Кто из аккаунтов ещё не готов к холодным исходящим и что доделать.
 			notWarm: readiness.filter(r => !r.coldReady),
 			today: plan.today,
-			firstMessage: c.firstMessage, secondMessage: c.secondMessage,
+			firstMessage: refreshOpeningTemplate(c.firstMessage), secondMessage: usesLegacyReportOffer(c.secondMessage) ? SECOND_MESSAGE : c.secondMessage,
             activeHypotheses: activeHypotheses.map(v => ({ id: v.id, name: v.name, text: v.text })),
 			dailyGoal: c.dailyGoal,
 			// День, на который назначена вся очередь.
@@ -4882,7 +4875,15 @@ function esc(s: string): string {
 
 // Имя файла — латиницей: так его одинаково покажут Telegram и браузер.
 function reportFileName(domain: string | null): string {
-	return `skyseo-${String(domain ?? 'report').replace(/[^a-zA-Z0-9.-]/g, '_')}.pdf`
+	return `skyseo-presentation-${String(domain ?? 'site').replace(/[^a-zA-Z0-9.-]/g, '_')}.pdf`
+}
+
+function usesLegacyReportOffer(text: string | null | undefined): boolean {
+	return !!text && text.includes('Первые 10 дней') && text.includes('Могу прислать отчет')
+}
+
+function refreshOpeningTemplate(text: string): string {
+	return text === '{фио}, здравствуйте\nМогу с вами пообщаться по поводу {сайт} ?' ? FIRST_MESSAGE : text
 }
 
 type Presence = { status: string; at: Date | null }

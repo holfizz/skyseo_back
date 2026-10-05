@@ -50,9 +50,10 @@ export async function renderPdf(html: string): Promise<Buffer> {
 		const page = await browser.newPage()
 		await page.setContent(html, { waitUntil: 'load' })
 		const pdf = await page.pdf({
-			format: 'A4',
+			width: '297mm',
+			height: '167mm',
 			printBackground: true,
-			margin: { top: '14mm', right: '12mm', bottom: '14mm', left: '12mm' },
+			margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
 		})
 		return Buffer.from(pdf)
 	} finally {

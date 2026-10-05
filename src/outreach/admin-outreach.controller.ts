@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common'
+import type { Response } from 'express'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
 import { AdminGuard } from '../admin/admin.guard'
 import { CurrentUser } from '../common/decorators/user.decorator'
 import { OutreachStatus } from '@prisma/client'
 import { OutreachImportService, SerpImportPayload, SerpImportRow } from './outreach-import.service'
 import { OutreachService } from './outreach.service'
+import { ReportService } from '../report/report.service'
 
 // Аутрич по выдаче Яндекса: приём прогона парсера и работа с лидом.
 // Список лидов и воронка остались на /outreach (outreach.controller.ts).
@@ -14,6 +16,7 @@ export class AdminOutreachController {
 	constructor(
 		private imports: OutreachImportService,
 		private outreach: OutreachService,
+		private report: ReportService,
 	) {}
 
 	// Приём import.json из yandex-leads: строки топ-50 + контакты по доменам.
@@ -37,6 +40,14 @@ export class AdminOutreachController {
 	@Get(':id/message')
 	getMessage(@Param('id') id: string) {
 		return this.outreach.getMessage(id)
+	}
+
+	@Get(':id/presentation')
+	async presentation(@Param('id') id: string, @Res() res: Response) {
+		const pdf = await this.report.renderPdf(id)
+		res.setHeader('Content-Type', 'application/pdf')
+		res.setHeader('Content-Disposition', 'attachment; filename="skyseo-presentation.pdf"')
+		res.send(pdf)
 	}
 
 	/**
