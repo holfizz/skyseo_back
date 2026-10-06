@@ -18,3 +18,13 @@ prisma/_prod_leads_backup.json
 
 # Локальная сборка для проверки (не коммитим)
 .local-check-dist/
+
+# Локальные материалы и генераторы SEO-презентаций
+docs/SKYSEO_*.html
+docs/SKYSEO_*.pdf
+scripts/build-client-presentation-from-data.cjs
+scripts/build-owner-deck-from-data.cjs
+scripts/build-seo-sales-pdfs.cjs
+scripts/export-prod-presentation-data.cjs
+scripts/fetch-presentation-wordstat.cjs
+scripts/find-prod-presentation-lead.cjs
