@@ -34,7 +34,8 @@ export class CrmReminderScheduler implements OnModuleInit {
 		try {
 			const now = new Date()
 			const dueRows = await this.prisma.crmReminder.findMany({
-				where: { sent: false, remindAt: { lte: now } },
+				// Telegram-origin follow-ups are delivered by the existing outreach bot.
+				where: { sent: false, remindAt: { lte: now }, task: { followUpRecipientId: null } },
 				select: { id: true },
 				orderBy: { remindAt: 'asc' },
 				take: 50,

@@ -3,6 +3,7 @@ import { Api } from 'teleproto'
 import bigInt from 'big-integer'
 import { Prisma, type TgCampaignStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import { FollowUpService } from '../crm/follow-up.service'
 import { normalizeName } from '../common/normalize-name'
 import { TelegramService } from '../telegram/telegram.service'
 import { ReportService } from '../report/report.service'
@@ -413,6 +414,7 @@ export class CampaignService {
 		private warmup: TgWarmupService,
 		private telegram: TelegramService,
 		private report: ReportService,
+		private followUp: FollowUpService,
 	) {
 		// Прогрев в паузах между действиями проверяет переписку через своё
 		// подключение — иначе ответы ждали бы конца захода, до двадцати минут.
@@ -999,13 +1001,30 @@ export class CampaignService {
 			lastName: normalizeName(r.lastName) || null,
 		}))
 		if (chosen.length) {
+			const linkedLeads = await this.prisma.crmLead.findMany({
+				where: { outreachLeadId: { in: chosen.map(r => r.leadId).filter(Boolean) } },
+				select: { id: true, outreachLeadId: true },
+			})
+			const crmByOutreach = new Map(linkedLeads.map(l => [l.outreachLeadId, l.id]))
+			for (const r of chosen) if (r.leadId) r.crmLeadId = crmByOutreach.get(r.leadId) ?? null
 			const move = chosen.filter(r => abandoned.has(r.username ?? r.phone))
 			const create = chosen.filter(r => !abandoned.has(r.username ?? r.phone))
+			if (move.length) {
+				const previous = await this.prisma.tgRecipient.findMany({
+					where: { id: { in: move.map(r => abandoned.get(r.username ?? r.phone)!) } },
+					select: { id: true, crmLeadId: true },
+				})
+				for (const r of move) {
+					const existing = previous.find(p => p.id === abandoned.get(r.username ?? r.phone))
+					if (existing?.crmLeadId && existing.crmLeadId !== r.crmLeadId)
+						throw new BadRequestException('Повторно добавляемый диалог уже связан с другим CRM-лидом')
+				}
+			}
 			await this.prisma.$transaction([
 				...move.map(r => this.prisma.tgRecipient.update({
 					where: { id: abandoned.get(r.username ?? r.phone)! },
 					data: {
-						campaignId, leadId: r.leadId,
+						campaignId, leadId: r.leadId, crmLeadId: r.crmLeadId,
 						firstName: r.firstName, middleName: r.middleName, lastName: r.lastName,
 						company: r.company, domain: r.domain,
 						scheduledAt: null, plannedAccountId: null, scheduleLocked: false, error: null,
@@ -2832,16 +2851,10 @@ export class CampaignService {
 				hypothesis: true,
 				campaign: { select: { id: true, name: true, secondMessage: true } },
 				account: { select: { id: true, label: true, username: true, status: true } },
-				// По id, а не по дате: у Telegram дата с точностью до секунды, и
-				// сообщения одной секунды выстраивались бы как попало. Внутри
-				// личной переписки id строго возрастают.
-				messages: { orderBy: { tgId: 'asc' } },
 			},
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
-		// Цитаты собираем по своей же ленте: лишнего запроса не нужно, вся
-		// переписка уже здесь.
-		const byTgId = new Map(r.messages.map(m => [m.tgId, m]))
+		const page = await this.dialogMessages(recipientId)
 		return {
 			id: r.id,
 			who: [r.firstName, r.middleName, r.lastName].filter(Boolean).join(' ') || null,
@@ -2863,16 +2876,34 @@ export class CampaignService {
 			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
 			// кода остаётся хвостом, а начало собирается по его выдаче.
 			secondPreview: await this.secondMessageFor(r),
-			messages: r.messages.map(m => ({
+			messages: page.messages,
+			hasMore: page.hasMore,
+		}
+	}
+
+	/** Cursor pagination by Telegram id, stable when several messages share one second. */
+	async dialogMessages(recipientId: string, before?: number) {
+		if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0))
+			throw new BadRequestException('Некорректный курсор переписки')
+		const batch = await this.prisma.tgDialogMessage.findMany({
+			where: { recipientId, ...(before ? { tgId: { lt: before } } : {}) },
+			orderBy: { tgId: 'desc' }, take: 51,
+		})
+		const hasMore = batch.length > 50
+		const rows = batch.slice(0, 50).reverse()
+		const loadedIds = new Set(rows.map(m => m.tgId))
+		const quoteIds = rows.map(m => m.replyToTgId).filter((v): v is number => v != null && !loadedIds.has(v))
+		const quotes = quoteIds.length ? await this.prisma.tgDialogMessage.findMany({
+			where: { recipientId, tgId: { in: quoteIds } },
+			select: { id: true, tgId: true, out: true, text: true, mediaKind: true },
+		}) : []
+		const byTgId = new Map([...rows, ...quotes].map(m => [m.tgId, m]))
+		return {
+			hasMore,
+			messages: rows.map(m => ({
 				id: m.id, tgId: m.tgId, out: m.out, text: m.text, date: m.date,
-				// Вложение: вид нужен всегда, содержимое — только если мелкое
-				// и мы его забрали.
 				mediaKind: m.mediaKind, mediaData: m.mediaData,
 				mediaName: m.mediaName, mediaSize: m.mediaSize,
-				// Цитата: на что это ответ. Сам текст тоже отдаём, хотя он есть
-				// и в своей строке ленты, — иначе цитату нельзя показать, пока
-				// то сообщение не подгрузилось. Обрезаем: в цитате всё равно
-				// видна только первая строка.
 				replyTo: replyQuote(m.replyToTgId, byTgId),
 			})),
 		}
@@ -4540,34 +4571,25 @@ export class CampaignService {
 	 * При новой дате отметка «уведомили» сбрасывается, иначе бот промолчит.
 	 */
 	async setOutcome(id: string, body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {
-		const r = await this.prisma.tgRecipient.findUnique({ where: { id }, select: { id: true, outcome: true } })
-		if (!r) throw new NotFoundException('Адресат не найден')
-		const data: Prisma.TgRecipientUpdateInput = {}
-
-		if (body.outcome !== undefined) {
-			if (body.outcome !== null && !OUTCOME_KEYS.includes(body.outcome)) throw new BadRequestException('Неизвестный итог')
-			data.outcome = body.outcome
-			if (body.outcome !== r.outcome) data.outcomeAt = body.outcome ? new Date() : null
-		}
+		if (body.outcome !== undefined && body.outcome !== null && !OUTCOME_KEYS.includes(body.outcome))
+			throw new BadRequestException('Неизвестный итог')
+		let dueAt: Date | null | undefined
 		if (body.followUpAt !== undefined) {
 			if (body.followUpAt === null || body.followUpAt === '') {
-				data.followUpAt = null
-				data.followUpNote = null
+				dueAt = null
 			} else {
 				const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(body.followUpAt)
 				// 10:00 по Москве = 07:00 UTC, смещение у Москвы постоянное.
 				const at = day ? new Date(Date.UTC(+day[1], +day[2] - 1, +day[3], 7, 0)) : new Date(body.followUpAt)
 				if (Number.isNaN(at.getTime())) throw new BadRequestException('Некорректная дата')
-				data.followUpAt = at
+				dueAt = at
 			}
-			data.followUpNotifiedAt = null
 		}
-		if (body.followUpNote !== undefined && body.followUpAt !== null && body.followUpAt !== '') {
-			const note = String(body.followUpNote ?? '').trim().slice(0, 300)
-			data.followUpNote = note || null
-		}
-		await this.prisma.tgRecipient.update({ where: { id }, data })
-		return { ok: true }
+		return this.followUp.saveRecipient({
+			recipientId: id, dueAt,
+			note: body.followUpNote,
+			outcome: body.outcome,
+		})
 	}
 
 	/** Все напоминания: когда и кому написать. Просроченные тоже, пока их не закрыли. */
@@ -4591,7 +4613,7 @@ export class CampaignService {
 	async followUpTick(): Promise<number> {
 		const due = await this.prisma.tgRecipient.findMany({
 			where: { followUpAt: { lte: new Date() }, followUpNotifiedAt: null },
-			select: { id: true, firstName: true, middleName: true, username: true, phone: true, domain: true, followUpNote: true, outcome: true },
+			select: { id: true, firstName: true, middleName: true, username: true, phone: true, domain: true, followUpAt: true, followUpNote: true, outcome: true },
 			take: 20,
 		})
 		for (const r of due) {
@@ -4602,7 +4624,19 @@ export class CampaignService {
 					`${r.followUpNote ? `Заметка: ${esc(r.followUpNote)}\n` : ''}\n` +
 					`<a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${r.id}">Открыть переписку</a>`,
 			)
-			await this.prisma.tgRecipient.update({ where: { id: r.id }, data: { followUpNotifiedAt: new Date() } })
+			const notifiedAt = new Date()
+			await this.prisma.$transaction(async tx => {
+				// A manager may have rescheduled while Telegram was accepting this alert.
+				// Never mark the new date/reminder as sent for the old notification.
+				const marked = await tx.tgRecipient.updateMany({
+					where: { id: r.id, followUpAt: r.followUpAt, followUpNotifiedAt: null },
+					data: { followUpNotifiedAt: notifiedAt },
+				})
+				if (marked.count) await tx.crmReminder.updateMany({
+					where: { task: { followUpRecipientId: r.id, dueAt: r.followUpAt }, offsetLabel: 'follow-up', sent: false },
+					data: { sent: true, sentAt: notifiedAt },
+				})
+			})
 		}
 		return due.length
 	}

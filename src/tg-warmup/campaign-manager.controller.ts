@@ -135,6 +135,11 @@ export class CampaignManagerController {
 		return this.svc.dialog(id)
 	}
 
+	@Get('recipients/:id/dialog/messages')
+	dialogMessages(@Param('id') id: string, @Query('before') before?: string) {
+		return this.svc.dialogMessages(id, before ? Number(before) : undefined)
+	}
+
 	/** Итог разговора и напоминание «написать позже». */
 	@Patch('recipients/:id/outcome')
 	setOutcome(@Param('id') id: string, @Body() body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {

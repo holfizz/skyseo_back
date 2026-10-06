@@ -8,6 +8,7 @@ import { rolesOf } from '../common/roles'
 import { CrmTaskStatus, CrmUser, Prisma } from '@prisma/client'
 import { ManagerService } from '../manager/manager.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { mskAt } from '../tg-warmup/msk'
 import {
 	CreateClientDto,
 	CreateDealDto,
@@ -364,9 +365,13 @@ export class CrmService {
 	}
 
 	async createTask(user: CrmUser, dto: CreateTaskDto) {
+		if (dto.kind === 'FOLLOW_UP') throw new BadRequestException('Создавайте follow-up через карточку лида')
 		const dueAt = this.parseFutureDate(dto.dueAt, 'Дедлайн')
+		if (dto.kind === 'CALL' && !dueAt) throw new BadRequestException('Для созвона укажите дату и время')
 		if (dto.assigneeId) await this.assertAssignee(dto.assigneeId)
 		if (dto.clientId) await this.assertClient(dto.clientId)
+		if (dto.leadId && !(await this.prisma.crmLead.findUnique({ where: { id: dto.leadId }, select: { id: true } })))
+			throw new BadRequestException('Лид не найден')
 		const status = dto.status ?? 'TODO'
 
 		// В конец колонки.
@@ -379,6 +384,7 @@ export class CrmService {
 
 		const task = await this.prisma.crmTask.create({
 			data: {
+				kind: dto.kind ?? 'GENERAL',
 				title: dto.title.trim(),
 				description: dto.description,
 				status,
@@ -386,7 +392,8 @@ export class CrmService {
 				dueAt,
 				position,
 				clientId: dto.clientId || null,
-				assigneeId: dto.assigneeId || null,
+				leadId: dto.leadId || null,
+				assigneeId: dto.assigneeId || user.id,
 				createdById: user.id,
 				completedAt: status === 'DONE' ? new Date() : null,
 			},
@@ -403,6 +410,7 @@ export class CrmService {
 	async updateTask(user: CrmUser, id: string, dto: UpdateTaskDto) {
 		const existing = await this.prisma.crmTask.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Задача не найдена')
+		if (existing.kind === 'FOLLOW_UP') throw new BadRequestException('Изменяйте follow-up через карточку лида')
 		if (dto.assigneeId) await this.assertAssignee(dto.assigneeId)
 		if (dto.clientId) await this.assertClient(dto.clientId)
 
@@ -424,12 +432,19 @@ export class CrmService {
 					: null
 		}
 
-		await this.prisma.crmTask.update({ where: { id }, data })
 		const suspicious =
 			existing.assigneeId != null &&
 			existing.assigneeId !== user.id &&
 			existing.createdById !== user.id
-		this.logActivity(user.id, 'task.update', 'task', id, `Изменена задача «${existing.title}»`, suspicious)
+		await this.prisma.$transaction(async tx => {
+			await tx.crmTask.update({ where: { id }, data })
+			if (dto.status === 'DONE')
+				await tx.crmReminder.deleteMany({ where: { taskId: id, sent: false } })
+			await tx.crmActivity.create({ data: {
+				actorId: user.id, action: dto.status === 'DONE' ? 'task.complete' : 'task.update',
+				entityType: 'task', entityId: id, summary: `Изменена задача «${existing.title}»`, suspicious,
+			} })
+		})
 		return this.getTask(id)
 	}
 
@@ -437,6 +452,7 @@ export class CrmService {
 	async moveTask(user: CrmUser, id: string, dto: MoveTaskDto) {
 		const task = await this.prisma.crmTask.findUnique({ where: { id } })
 		if (!task) throw new NotFoundException('Задача не найдена')
+		if (task.kind === 'FOLLOW_UP') throw new BadRequestException('Изменяйте follow-up через карточку лида')
 
 		await this.prisma.$transaction(async tx => {
 			// Сериализуем одновременные перемещения в одну колонку: блокируем её строки,
@@ -476,6 +492,7 @@ export class CrmService {
 	async deleteTask(user: CrmUser, id: string) {
 		const existing = await this.prisma.crmTask.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Задача не найдена')
+		if (existing.kind === 'FOLLOW_UP') throw new BadRequestException('Закройте follow-up через карточку лида')
 		this.assertCanDelete(user, existing.createdById, 'задачу')
 		await this.prisma.crmTask.delete({ where: { id } })
 		const suspicious =
@@ -488,6 +505,7 @@ export class CrmService {
 	async addReminder(user: CrmUser, taskId: string, dto: ReminderInputDto) {
 		const task = await this.prisma.crmTask.findUnique({ where: { id: taskId } })
 		if (!task) throw new NotFoundException('Задача не найдена')
+		if (task.kind === 'FOLLOW_UP') throw new BadRequestException('Напоминание follow-up меняется вместе с датой')
 		const created = await this.createReminders(taskId, task.dueAt, [dto])
 		if (!created.length)
 			throw new BadRequestException('Напоминание в прошлом — время уже прошло')
@@ -498,6 +516,7 @@ export class CrmService {
 	async deleteReminder(user: CrmUser, id: string) {
 		const existing = await this.prisma.crmReminder.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Напоминание не найдено')
+		if (existing.offsetLabel === 'follow-up') throw new BadRequestException('Напоминание follow-up меняется вместе с датой')
 		await this.prisma.crmReminder.delete({ where: { id } })
 		this.logActivity(user.id, 'reminder.delete', 'reminder', id, 'Удалено напоминание')
 		return { ok: true }
@@ -606,9 +625,9 @@ export class CrmService {
 			include: {
 				stages: {
 					orderBy: { position: 'asc' },
-					include: { _count: { select: { clients: true } } },
+					include: { _count: { select: { clients: true, leads: true } } },
 				},
-				_count: { select: { clients: true } },
+				_count: { select: { clients: true, leads: true } },
 			},
 		})
 	}
@@ -720,7 +739,7 @@ export class CrmService {
 
 	// Перенос клиента на этап (drag-and-drop на доске воронки). Пустой stageId → убрать из воронки.
 	async moveClientStage(user: CrmUser, clientId: string, stageId?: string) {
-		const client = await this.prisma.crmClient.findUnique({ where: { id: clientId }, select: { id: true } })
+		const client = await this.prisma.crmClient.findUnique({ where: { id: clientId }, select: { id: true, funnelId: true } })
 		if (!client) throw new NotFoundException('Клиент не найден')
 		if (!stageId) {
 			await this.prisma.crmClient.update({ where: { id: clientId }, data: { stageId: null, funnelId: null } })
@@ -729,6 +748,8 @@ export class CrmService {
 		}
 		const stage = await this.prisma.crmFunnelStage.findUnique({ where: { id: stageId }, select: { id: true, funnelId: true, title: true } })
 		if (!stage) throw new BadRequestException('Этап не найден')
+		if (client.funnelId && client.funnelId !== stage.funnelId)
+			throw new BadRequestException('Этап относится к другой воронке')
 		await this.prisma.crmClient.update({
 			where: { id: clientId },
 			data: { stageId: stage.id, funnelId: stage.funnelId },
@@ -768,16 +789,271 @@ export class CrmService {
 	// Входящие заявки ДО превращения в клиента. Раньше заявки с сайта уходили только
 	// в личку владельцу и нигде не сохранялись.
 
+	async leadPage(query: { q?: string; status?: string; funnelId?: string; stageId?: string; page?: number; limit?: number }, user: CrmUser) {
+		const page = Number.isFinite(query.page) ? Math.max(1, Math.floor(query.page || 1)) : 1
+		const limit = Number.isFinite(query.limit) ? Math.min(100, Math.max(1, Math.floor(query.limit || 30))) : 30
+		const where: Prisma.CrmLeadWhereInput = {}
+		if (user.role !== 'ADMIN') where.AND = [{ OR: [{ assigneeId: user.id }, { assigneeId: null }] }]
+		if (query.status && ['NEW', 'IN_WORK', 'QUALIFIED', 'REJECTED'].includes(query.status))
+			where.status = query.status as any
+		if (query.funnelId) where.funnelId = query.funnelId
+		if (query.stageId) where.stageId = query.stageId
+		if (query.q?.trim()) {
+			const q = query.q.trim().slice(0, 160)
+			where.OR = [
+				{ title: { contains: q, mode: 'insensitive' } },
+				{ contact: { contains: q, mode: 'insensitive' } },
+				{ outreachLead: { domain: { contains: q, mode: 'insensitive' } } },
+				{ outreachLead: { companyName: { contains: q, mode: 'insensitive' } } },
+				{ outreachLead: { inn: { contains: q } } },
+				{ outreachLead: { telegram: { contains: q, mode: 'insensitive' } } },
+				{ outreachLead: { phone: { contains: q } } },
+				{ outreachLead: { email: { contains: q, mode: 'insensitive' } } },
+				{ recipients: { some: { username: { contains: q, mode: 'insensitive' } } } },
+				{ recipients: { some: { phone: { contains: q } } } },
+				{ client: { email: { contains: q, mode: 'insensitive' } } },
+				{ client: { phone: { contains: q } } },
+			]
+		}
+		const [total, rows] = await Promise.all([
+			this.prisma.crmLead.count({ where }),
+			this.prisma.crmLead.findMany({
+				where, skip: (page - 1) * limit, take: limit,
+				include: {
+					outreachLead: { select: { id: true, domain: true, companyName: true } },
+					stage: { select: { id: true, title: true } },
+					assignee: { select: { id: true, firstName: true, lastName: true } },
+					_count: { select: { recipients: true, tasks: true } },
+				},
+				orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+			}),
+		])
+		return { rows, total, page, limit }
+	}
+
+	async leadBoard(funnelId: string, user: CrmUser) {
+		const funnel = await this.prisma.crmFunnel.findUnique({
+			where: { id: funnelId }, include: { stages: { orderBy: { position: 'asc' } } },
+		})
+		if (!funnel) throw new NotFoundException('Воронка не найдена')
+		const stages = await Promise.all(funnel.stages.map(async stage => {
+			const where: Prisma.CrmLeadWhereInput = {
+				stageId: stage.id, status: { not: 'REJECTED' },
+				...(user.role === 'ADMIN' ? {} : { OR: [{ assigneeId: user.id }, { assigneeId: null }] }),
+			}
+			const [total, leads] = await Promise.all([
+				this.prisma.crmLead.count({ where }),
+				this.prisma.crmLead.findMany({
+					where, take: 40, orderBy: { updatedAt: 'desc' },
+					include: { outreachLead: { select: { domain: true } }, _count: { select: { recipients: true } } },
+				}),
+			])
+			return { ...stage, total, leads }
+		}))
+		return { id: funnel.id, name: funnel.name, stages }
+	}
+
+	async today(user: CrmUser) {
+		const now = new Date()
+		const start = mskAt(now, 0)
+		const end = mskAt(now, 0, 1)
+		const threeDays = mskAt(now, 0, 3)
+		const where: Prisma.CrmTaskWhereInput = {
+			status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { lt: threeDays },
+			...(user.role === 'ADMIN' ? {} : { OR: [{ assigneeId: user.id }, { assigneeId: null }] }),
+		}
+		const tasks = await this.prisma.crmTask.findMany({
+			where,
+			include: {
+				lead: { select: { id: true, title: true, outreachLead: { select: { domain: true } } } },
+				followUpRecipient: { select: { id: true, domain: true } },
+				client: { select: { id: true, title: true } },
+			},
+			orderBy: [{ dueAt: 'asc' }, { priority: 'desc' }], take: 500,
+		})
+		return {
+			overdue: tasks.filter(t => t.dueAt && t.dueAt < start),
+			today: tasks.filter(t => t.dueAt && t.dueAt >= start && t.dueAt < end),
+			upcoming: tasks.filter(t => t.dueAt && t.dueAt >= end),
+		}
+	}
+
+	async salesAnalytics() {
+		const now = new Date()
+		const [byStage, byLeadStatus, dealStatus, lostReasons, followUps, overdue, calls, hypotheses] = await Promise.all([
+			this.prisma.crmLead.groupBy({ by: ['stageId'], _count: { _all: true } }),
+			this.prisma.crmLead.groupBy({ by: ['status'], _count: { _all: true } }),
+			this.prisma.crmDeal.groupBy({ by: ['status'], _count: { _all: true }, _sum: { amount: true }, where: { amount: { gt: 0 } } }),
+			this.prisma.crmDeal.groupBy({ by: ['lostReason'], _count: { _all: true }, where: { status: 'LOST' } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { not: 'DONE' } } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { not: 'DONE' }, dueAt: { lt: now } } }),
+			this.prisma.crmTask.count({ where: { kind: 'CALL', status: { not: 'DONE' } } }),
+			this.prisma.$queryRaw<Array<{ hypothesisId: string; name: string; recipients: number; crmLeads: number; wonDeals: number }>>`
+				SELECT h.id AS "hypothesisId", h.name,
+				  count(DISTINCT r.id)::int AS recipients,
+				  count(DISTINCT l.id)::int AS "crmLeads",
+				  count(DISTINCT CASE WHEN d.status = 'WON' THEN d.id END)::int AS "wonDeals"
+				FROM tg_hypotheses h
+				LEFT JOIN tg_recipients r ON r."hypothesisId" = h.id
+				LEFT JOIN crm_leads l ON l.id = r."crmLeadId"
+				LEFT JOIN crm_deals d ON d."leadId" = l.id
+				GROUP BY h.id, h.name
+				ORDER BY recipients DESC
+				LIMIT 30
+			`,
+		])
+		return { byStage, byLeadStatus, quotedDeals: dealStatus, lostReasons, followUps, overdue, calls, hypotheses }
+	}
+
 	async listLeads(query: { status?: string; mine?: boolean; userId?: string }) {
 		const where: Prisma.CrmLeadWhereInput = {}
 		if (query.status) where.status = query.status as any
 		if (query.mine && query.userId) where.assigneeId = query.userId
 		return this.prisma.crmLead.findMany({
 			where,
-			include: { assignee: { select: { id: true, firstName: true, username: true } } },
+			include: {
+				assignee: { select: { id: true, firstName: true, username: true } },
+				outreachLead: { select: { id: true, domain: true, companyName: true } },
+				stage: { select: { id: true, title: true, funnelId: true } },
+				_count: { select: { recipients: true, tasks: true } },
+			},
 			orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
 			take: 300,
 		})
+	}
+
+	async getLead(id: string) {
+		const lead = await this.prisma.crmLead.findUnique({
+			where: { id },
+			include: {
+				outreachLead: { select: {
+					id: true, domain: true, companyName: true, inn: true, city: true,
+					firstName: true, middleName: true, lastName: true,
+					phone: true, whatsapp: true, telegram: true, telegramId: true, email: true,
+					keywords: true, competitors: true, score: true, bestPosition: true,
+				} },
+				recipients: {
+					select: {
+						id: true, campaignId: true, domain: true, username: true, phone: true,
+						status: true, outcome: true, sentAt: true, readAt: true, repliedAt: true,
+						campaign: { select: { name: true } },
+						hypothesis: { select: { name: true } },
+						account: { select: { label: true, username: true } },
+						messages: { orderBy: { tgId: 'desc' }, take: 3, select: { id: true, out: true, text: true, date: true } },
+					},
+					orderBy: { createdAt: 'asc' },
+				},
+				tasks: { orderBy: { dueAt: 'asc' }, take: 100 },
+				deals: { orderBy: { createdAt: 'desc' }, take: 30 },
+				stage: true,
+			},
+		})
+		if (!lead) throw new NotFoundException('Лид не найден')
+		return lead
+	}
+
+	/** Explicit leadId only. Never infer identity from domain, name or phone. */
+	async ensureLeadFromRecipient(user: CrmUser, recipientId: string) {
+		const result = await this.prisma.$transaction(async tx => {
+			const recipient = await tx.tgRecipient.findUnique({ where: { id: recipientId } })
+			if (!recipient) throw new NotFoundException('Диалог не найден')
+			// Creation can start concurrently from different dialogs of one OutreachLead.
+			// Serialize the identity decision before reading existing CRM links.
+			await tx.$queryRaw`SELECT 1::int FROM pg_advisory_xact_lock(761902, hashtext(${recipient.leadId ?? recipient.id}))`
+			const currentRecipient = await tx.tgRecipient.findUniqueOrThrow({ where: { id: recipientId } })
+			if (currentRecipient.crmLeadId) {
+				const linked = await tx.crmLead.findUnique({ where: { id: currentRecipient.crmLeadId } })
+				if (!linked || (currentRecipient.leadId && linked.outreachLeadId !== currentRecipient.leadId))
+					throw new BadRequestException('Связь диалога с CRM-лидом противоречива')
+				if (user.role !== 'ADMIN' && linked.assigneeId && linked.assigneeId !== user.id)
+					throw new ForbiddenException('Лид закреплён за другим сотрудником')
+				return { id: linked.id, created: false }
+			}
+			const preferredStageId = recipient.outcome === 'MEETING' ? 'skyseo-sales-call-booked'
+				: recipient.outcome === 'INTERESTED' ? 'skyseo-sales-interested'
+				: recipient.outcome === 'WON' ? 'skyseo-sales-client'
+				: recipient.repliedAt ? 'skyseo-sales-replied'
+				: recipient.sentAt ? 'skyseo-sales-contacted' : 'skyseo-sales-new'
+			const defaultStage = await tx.crmFunnelStage.findUnique({
+				where: { id: preferredStageId }, select: { id: true, funnelId: true },
+			}) ?? await tx.crmFunnelStage.findUnique({
+				where: { id: 'skyseo-sales-new' }, select: { id: true, funnelId: true },
+			})
+			const stageData = defaultStage ? { funnelId: defaultStage.funnelId, stageId: defaultStage.id } : {}
+
+			if (!recipient.leadId) {
+				const existing = await tx.crmLead.findUnique({ where: { sourceRecipientId: recipient.id } })
+				if (existing && user.role !== 'ADMIN' && existing.assigneeId && existing.assigneeId !== user.id)
+					throw new ForbiddenException('Лид закреплён за другим сотрудником')
+				const lead = await tx.crmLead.upsert({
+					where: { sourceRecipientId: recipient.id },
+					create: {
+						title: recipient.company || recipient.domain || [recipient.firstName, recipient.middleName].filter(Boolean).join(' ') || 'Контакт Telegram',
+						contact: recipient.username ? `@${recipient.username}` : recipient.phone,
+						source: 'TELEGRAM', sourceRecipientId: recipient.id,
+						createdById: user.id, assigneeId: user.id, ...stageData,
+					},
+					update: {},
+				})
+				await tx.tgRecipient.update({ where: { id: recipient.id }, data: { crmLeadId: lead.id } })
+				await tx.crmTask.updateMany({ where: { followUpRecipientId: recipient.id }, data: { leadId: lead.id } })
+				if (!existing) await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.from_dialog', entityType: 'lead', entityId: lead.id, summary: 'Создан CRM-лид из диалога' } })
+				return { id: lead.id, created: !existing }
+			}
+
+			const outreach = await tx.outreachLead.findUnique({ where: { id: recipient.leadId } })
+			if (!outreach) throw new BadRequestException('Исходный лид из базы не найден')
+			const previous = await tx.crmLead.findUnique({ where: { outreachLeadId: outreach.id } })
+			if (previous && user.role !== 'ADMIN' && previous.assigneeId && previous.assigneeId !== user.id)
+				throw new ForbiddenException('Лид закреплён за другим сотрудником')
+			const lead = await tx.crmLead.upsert({
+				where: { outreachLeadId: outreach.id },
+				create: {
+					title: outreach.companyName || outreach.domain,
+					contact: outreach.telegram || outreach.phone || outreach.email || null,
+					source: 'OUTREACH', outreachLeadId: outreach.id,
+					sourceRecipientId: recipient.id, createdById: user.id, assigneeId: user.id,
+					...stageData,
+				},
+				update: {},
+			})
+			if (previous && !previous.sourceRecipientId)
+				await tx.crmLead.update({ where: { id: lead.id }, data: { sourceRecipientId: recipient.id } })
+			const others = await tx.tgRecipient.findMany({
+				where: { leadId: outreach.id }, select: { id: true, crmLeadId: true },
+			})
+			if (others.some(r => r.crmLeadId && r.crmLeadId !== lead.id))
+				throw new BadRequestException('У другого диалога этого лида уже есть иная CRM-связь')
+			await tx.tgRecipient.updateMany({ where: { leadId: outreach.id }, data: { crmLeadId: lead.id } })
+			await tx.crmTask.updateMany({
+				where: { followUpRecipientId: { in: others.map(r => r.id) } },
+				data: { leadId: lead.id },
+			})
+			if (!previous) await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.from_dialog', entityType: 'lead', entityId: lead.id, summary: 'Создан CRM-лид из диалога' } })
+			return { id: lead.id, created: !previous }
+		})
+		return this.getLead(result.id)
+	}
+
+	async moveLeadStage(user: CrmUser, id: string, stageId?: string | null) {
+		const lead = await this.prisma.crmLead.findUnique({ where: { id }, select: { id: true, funnelId: true } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		if (!stageId) {
+			await this.prisma.$transaction(async tx => {
+				await tx.crmLead.update({ where: { id }, data: { stageId: null } })
+				await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.stage', entityType: 'lead', entityId: id, summary: 'Лид снят с этапа' } })
+			})
+			return this.getLead(id)
+		}
+		const stage = await this.prisma.crmFunnelStage.findUnique({ where: { id: stageId }, select: { id: true, funnelId: true, title: true } })
+		if (!stage) throw new BadRequestException('Этап не найден')
+		if (lead.funnelId && lead.funnelId !== stage.funnelId)
+			throw new BadRequestException('Этап относится к другой воронке')
+		await this.prisma.$transaction(async tx => {
+			await tx.crmLead.update({ where: { id }, data: { stageId, funnelId: stage.funnelId } })
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.stage', entityType: 'lead', entityId: id, summary: `Лид → «${stage.title}»` } })
+		})
+		return this.getLead(id)
 	}
 
 	async createLead(user: CrmUser, dto: CreateLeadDto) {
@@ -798,33 +1074,92 @@ export class CrmService {
 	async updateLead(user: CrmUser, id: string, dto: UpdateLeadDto) {
 		const existing = await this.prisma.crmLead.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Лид не найден')
+		if (dto.assigneeId) await this.assertAssignee(dto.assigneeId)
+		const minBudget = dto.budgetMin === undefined ? existing.budgetMin : dto.budgetMin
+		const maxBudget = dto.budgetMax === undefined ? existing.budgetMax : dto.budgetMax
+		if (minBudget != null && maxBudget != null && minBudget > maxBudget)
+			throw new BadRequestException('Минимальный бюджет не может быть больше максимального')
 		const data: Prisma.CrmLeadUpdateInput = {}
 		if (dto.title !== undefined) data.title = dto.title.trim()
 		if (dto.contact !== undefined) data.contact = dto.contact
 		if (dto.status !== undefined) data.status = dto.status
 		if (dto.comment !== undefined) data.comment = dto.comment
 		if (dto.rejectReason !== undefined) data.rejectReason = dto.rejectReason
+		if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin
+		if (dto.budgetMax !== undefined) data.budgetMax = dto.budgetMax
+		if (dto.budgetComment !== undefined) data.budgetComment = dto.budgetComment?.trim() || null
+		if (dto.decisionMaker !== undefined) data.decisionMaker = dto.decisionMaker?.trim() || null
+		if (dto.qualification !== undefined) {
+			data.qualification = Object.fromEntries(
+				Object.entries(dto.qualification).map(([key, value]) => [key, value?.trim() || '']),
+			) as Prisma.InputJsonValue
+		}
 		if (dto.assigneeId !== undefined) {
 			data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
 		}
-		const lead = await this.prisma.crmLead.update({ where: { id }, data })
-		this.logActivity(user.id, 'lead.update', 'lead', id, `Изменён лид «${lead.title}»`)
+		const lead = await this.prisma.$transaction(async tx => {
+			const changed = await tx.crmLead.update({ where: { id }, data })
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.update', entityType: 'lead', entityId: id, summary: `Изменён лид «${changed.title}»` } })
+			return changed
+		})
 		return lead
 	}
 
-	/**
-	 * Квалификация: лид превращается в клиента, и — если указана сумма — сразу в сделку.
-	 * Всё в одной транзакции: иначе при сбое остался бы клиент без сделки или наоборот.
-	 */
-	async qualifyLead(user: CrmUser, id: string, dto: QualifyLeadDto) {
-		const lead = await this.prisma.crmLead.findUnique({ where: { id } })
+	async scheduleCall(user: CrmUser, leadId: string, dto: CreateTaskDto) {
+		const lead = await this.prisma.crmLead.findUnique({ where: { id: leadId }, select: { id: true, title: true, assigneeId: true } })
 		if (!lead) throw new NotFoundException('Лид не найден')
-		if (lead.status === 'QUALIFIED') throw new BadRequestException('Лид уже квалифицирован')
+		return this.prisma.$transaction(async tx => {
+			if (dto.requestId) {
+				await tx.$queryRaw`SELECT 1::int FROM pg_advisory_xact_lock(761903, hashtext(${dto.requestId}))`
+				const existing = await tx.crmTask.findUnique({ where: { id: dto.requestId } })
+				if (existing) {
+					if (existing.kind !== 'CALL' || existing.leadId !== leadId)
+						throw new BadRequestException('Идентификатор созвона уже используется')
+					return existing
+				}
+			}
+			const dueAt = this.parseFutureDate(dto.dueAt, 'Созвон')
+			if (!dueAt) throw new BadRequestException('Для созвона укажите дату и время')
+			const task = await tx.crmTask.create({ data: {
+				...(dto.requestId ? { id: dto.requestId } : {}),
+				kind: 'CALL', title: dto.title?.trim() || `Созвон: ${lead.title}`,
+				description: dto.description?.trim() || null, status: 'TODO',
+				dueAt, leadId, assigneeId: lead.assigneeId || user.id, createdById: user.id,
+			} })
+			const remindAt = new Date(dueAt.getTime() - 60 * 60_000)
+			if (remindAt.getTime() > Date.now())
+				await tx.crmReminder.create({ data: { taskId: task.id, remindAt, offsetLabel: 'за 1 час' } })
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'call.schedule', entityType: 'task', entityId: task.id, summary: `Назначен созвон по «${lead.title}»` } })
+			return task
+		})
+	}
 
-		const result = await this.prisma.$transaction(async tx => {
+	/** Qualification is idempotent; a quote can be priced later. */
+	async qualifyLead(user: CrmUser, id: string, dto: QualifyLeadDto) {
+		return this.prisma.$transaction(async tx => {
+			await tx.$queryRaw`SELECT id FROM crm_leads WHERE id = ${id} FOR UPDATE`
+			const lead = await tx.crmLead.findUnique({
+				where: { id }, include: { outreachLead: { select: { domain: true, companyName: true } } },
+			})
+			if (!lead) throw new NotFoundException('Лид не найден')
+			if (lead.status === 'QUALIFIED' && lead.clientId) {
+				const [client, deal] = await Promise.all([
+					tx.crmClient.findUnique({ where: { id: lead.clientId } }),
+					tx.crmDeal.findFirst({ where: { leadId: id }, orderBy: { createdAt: 'asc' } }),
+				])
+				if (client) return { client, deal }
+			}
+			const stage = dto.stageId
+				? await tx.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
+				: null
+			if (dto.stageId && !stage) throw new BadRequestException('Этап не найден')
+			if (stage && lead.funnelId && stage.funnelId !== lead.funnelId)
+				throw new BadRequestException('Этап относится к другой воронке')
 			const client = await tx.crmClient.create({
 				data: {
 					title: lead.title,
+					company: lead.outreachLead?.companyName || null,
+					website: lead.outreachLead?.domain || null,
 					notes: lead.comment,
 					assigneeId: lead.assigneeId ?? user.id,
 					createdById: user.id,
@@ -838,34 +1173,20 @@ export class CrmService {
 				},
 			})
 
-			let deal: any = null
-			if (dto.amount != null || dto.stageId) {
-				const stage = dto.stageId
-					? await tx.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
-					: null
-				deal = await tx.crmDeal.create({
-					data: {
-						clientId: client.id,
-						title: lead.title,
-						amount: dto.amount ?? 0,
-						tariffId: dto.tariffId || null,
-						stageId: stage?.id ?? null,
-						funnelId: stage?.funnelId ?? null,
-						assigneeId: lead.assigneeId ?? user.id,
-						createdById: user.id,
-					},
-				})
-			}
+			const deal = await tx.crmDeal.create({ data: {
+				clientId: client.id, leadId: lead.id, title: lead.title,
+				amount: dto.amount ?? 0, tariffId: dto.tariffId || null,
+				stageId: stage?.id ?? null, funnelId: stage?.funnelId ?? lead.funnelId,
+				assigneeId: lead.assigneeId ?? user.id, createdById: user.id,
+			} })
 
 			await tx.crmLead.update({
 				where: { id },
 				data: { status: 'QUALIFIED', clientId: client.id },
 			})
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.qualify', entityType: 'lead', entityId: id, summary: `Лид «${lead.title}» стал клиентом` } })
 			return { client, deal }
 		})
-
-		this.logActivity(user.id, 'lead.qualify', 'lead', id, `Лид «${lead.title}» стал клиентом`)
-		return result
 	}
 
 	async deleteLead(user: CrmUser, id: string) {
@@ -928,9 +1249,20 @@ export class CrmService {
 		const stage = dto.stageId
 			? await this.prisma.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
 			: null
+		if (dto.stageId && !stage) throw new BadRequestException('Этап не найден')
+		const client = await this.prisma.crmClient.findUnique({ where: { id: dto.clientId }, select: { funnelId: true } })
+		if (!client) throw new NotFoundException('Клиент не найден')
+		if (stage && client.funnelId && stage.funnelId !== client.funnelId)
+			throw new BadRequestException('Этап относится к другой воронке клиента')
+		if (dto.leadId) {
+			const lead = await this.prisma.crmLead.findUnique({ where: { id: dto.leadId }, select: { clientId: true } })
+			if (!lead || lead.clientId !== dto.clientId)
+				throw new BadRequestException('Лид не связан с этим клиентом')
+		}
 		const deal = await this.prisma.crmDeal.create({
 			data: {
 				clientId: dto.clientId,
+				leadId: dto.leadId || null,
 				title: dto.title.trim(),
 				amount: dto.amount ?? 0,
 				tariffId: dto.tariffId || null,
@@ -949,11 +1281,21 @@ export class CrmService {
 	async updateDeal(user: CrmUser, id: string, dto: UpdateDealDto) {
 		const existing = await this.prisma.crmDeal.findUnique({ where: { id } })
 		if (!existing) throw new NotFoundException('Сделка не найдена')
+		const nextStatus = dto.status ?? existing.status
+		const nextLostReason = dto.lostReason === undefined ? existing.lostReason : dto.lostReason?.trim()
+		if (nextStatus === 'LOST' && !nextLostReason)
+			throw new BadRequestException('Для отказа укажите причину')
 		const data: Prisma.CrmDealUpdateInput = {}
 		if (dto.title !== undefined) data.title = dto.title.trim()
 		if (dto.amount !== undefined) data.amount = dto.amount
 		if (dto.status !== undefined) data.status = dto.status
-		if (dto.lostReason !== undefined) data.lostReason = dto.lostReason
+		if (nextStatus !== 'LOST' && dto.status !== undefined) {
+			data.lostReason = null
+			data.lostComment = null
+		} else {
+			if (dto.lostReason !== undefined) data.lostReason = nextLostReason
+			if (dto.lostComment !== undefined) data.lostComment = dto.lostComment?.trim() || null
+		}
 		if (dto.probability !== undefined) data.probability = dto.probability
 		if (dto.expectedCloseAt !== undefined) {
 			data.expectedCloseAt = dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : null
@@ -964,24 +1306,31 @@ export class CrmService {
 		if (dto.assigneeId !== undefined) {
 			data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
 		}
-		const deal = await this.prisma.crmDeal.update({ where: { id }, data })
 		const changedMoney = dto.amount !== undefined && dto.amount !== existing.amount
-		this.logActivity(
-			user.id,
-			'deal.update',
-			'deal',
-			id,
-			changedMoney
-				? `Сумма сделки «${deal.title}»: ${existing.amount} → ${deal.amount} ₽`
-				: `Изменена сделка «${deal.title}»`,
-			existing.createdById != null && existing.createdById !== user.id,
-		)
-		return deal
+		return this.prisma.$transaction(async tx => {
+			const deal = await tx.crmDeal.update({ where: { id }, data })
+			if (nextStatus === 'WON' && existing.status !== 'WON')
+				await tx.crmClient.update({ where: { id: deal.clientId }, data: { status: 'ACTIVE' } })
+			await tx.crmActivity.create({ data: {
+				actorId: user.id,
+				action: nextStatus !== existing.status ? `deal.${nextStatus.toLowerCase()}` : 'deal.update',
+				entityType: 'deal', entityId: id,
+				summary: changedMoney
+					? `Сумма сделки «${deal.title}»: ${existing.amount} → ${deal.amount} ₽`
+					: `Изменена сделка «${deal.title}»`,
+				suspicious: existing.createdById != null && existing.createdById !== user.id,
+			} })
+			return deal
+		})
 	}
 
 	async moveDeal(user: CrmUser, id: string, stageId: string) {
 		const stage = await this.prisma.crmFunnelStage.findUnique({ where: { id: stageId } })
 		if (!stage) throw new NotFoundException('Этап не найден')
+		const current = await this.prisma.crmDeal.findUnique({ where: { id }, select: { funnelId: true } })
+		if (!current) throw new NotFoundException('Сделка не найдена')
+		if (current.funnelId && current.funnelId !== stage.funnelId)
+			throw new BadRequestException('Этап относится к другой воронке')
 		const deal = await this.prisma.crmDeal.update({
 			where: { id },
 			data: { stageId: stage.id, funnelId: stage.funnelId },

@@ -1,4 +1,4 @@
-import { CrmClientStatus, CrmDealStatus, CrmLeadSource, CrmLeadStatus, CrmTaskStatus } from '@prisma/client'
+import { CrmClientStatus, CrmDealStatus, CrmLeadSource, CrmLeadStatus, CrmTaskKind, CrmTaskStatus } from '@prisma/client'
 import { Type } from 'class-transformer'
 import {
 	ArrayMaxSize,
@@ -8,6 +8,7 @@ import {
 	IsISO8601,
 	IsOptional,
 	IsString,
+	IsUUID,
 	Max,
 	MaxLength,
 	Min,
@@ -90,10 +91,15 @@ export class UpdateClientDto {
 }
 
 export class CreateTaskDto {
+	@IsOptional() @IsUUID()
+	requestId?: string
+
 	@IsString()
 	@MinLength(1)
 	@MaxLength(200)
 	title: string
+
+	@IsOptional() @IsEnum(CrmTaskKind) kind?: CrmTaskKind
 
 	@IsOptional() @IsString() @MaxLength(4000) description?: string
 	@IsOptional() @IsEnum(CrmTaskStatus) status?: CrmTaskStatus
@@ -102,6 +108,7 @@ export class CreateTaskDto {
 
 	@IsOptional() @IsISO8601() dueAt?: string
 	@IsOptional() @IsString() clientId?: string
+	@IsOptional() @IsString() leadId?: string
 	@IsOptional() @IsString() assigneeId?: string
 
 	@IsOptional()
@@ -186,6 +193,20 @@ export class CreateLeadDto {
 	assigneeId?: string
 }
 
+export class QualificationNotesDto {
+	@IsOptional() @IsString() @MaxLength(1000) need?: string
+	@IsOptional() @IsString() @MaxLength(1000) desiredResult?: string
+	@IsOptional() @IsString() @MaxLength(1000) priorityCategories?: string
+	@IsOptional() @IsString() @MaxLength(1000) currentSources?: string
+	@IsOptional() @IsString() @MaxLength(1000) currentSeo?: string
+	@IsOptional() @IsString() @MaxLength(1000) seoIssues?: string
+	@IsOptional() @IsString() @MaxLength(300) currentLeads?: string
+	@IsOptional() @IsString() @MaxLength(300) targetLeads?: string
+	@IsOptional() @IsString() @MaxLength(1000) vendorCriteria?: string
+	@IsOptional() @IsString() @MaxLength(1000) objection?: string
+	@IsOptional() @IsString() @MaxLength(1000) nextStep?: string
+}
+
 export class UpdateLeadDto {
 	@IsOptional() @IsString() @MinLength(1) @MaxLength(160)
 	title?: string
@@ -204,6 +225,40 @@ export class UpdateLeadDto {
 
 	@IsOptional() @IsString()
 	assigneeId?: string
+
+	@IsOptional() @IsInt() @Min(0)
+	budgetMin?: number | null
+
+	@IsOptional() @IsInt() @Min(0)
+	budgetMax?: number | null
+
+	@IsOptional() @IsString() @MaxLength(500)
+	budgetComment?: string | null
+
+	@IsOptional() @IsString() @MaxLength(160)
+	decisionMaker?: string | null
+
+	@IsOptional() @ValidateNested() @Type(() => QualificationNotesDto)
+	qualification?: QualificationNotesDto
+}
+
+export class MoveLeadStageDto {
+	@IsOptional() @IsString()
+	stageId?: string | null
+}
+
+export class SaveFollowUpDto {
+	@IsOptional() @IsString()
+	taskId?: string
+
+	@IsOptional() @IsString()
+	recipientId?: string | null
+
+	@IsOptional() @IsISO8601()
+	dueAt?: string | null
+
+	@IsOptional() @IsString() @MaxLength(300)
+	note?: string | null
 }
 
 // Квалификация: лид становится клиентом и, если указана сумма, сразу сделкой.
@@ -222,6 +277,8 @@ export class QualifyLeadDto {
 export class CreateDealDto {
 	@IsString()
 	clientId: string
+
+	@IsOptional() @IsString() leadId?: string
 
 	@IsString() @MinLength(1) @MaxLength(160)
 	title: string
@@ -260,6 +317,9 @@ export class UpdateDealDto {
 
 	@IsOptional() @IsString() @MaxLength(300)
 	lostReason?: string
+
+	@IsOptional() @IsString() @MaxLength(1000)
+	lostComment?: string
 
 	@IsOptional() @IsInt() @Min(0) @Max(100)
 	probability?: number

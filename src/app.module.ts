@@ -45,6 +45,7 @@ import { TrialModule } from './trial/trial.module'
 		WorkspaceModule,
 		HealthModule,
 		AuthModule,
+		CrmModule,
 		RewardsModule,
 		UsersModule,
 		WebsitesModule,

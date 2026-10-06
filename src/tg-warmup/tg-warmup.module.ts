@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { OutreachModule } from '../outreach/outreach.module'
+import { FollowUpModule } from '../crm/follow-up.module'
 import { PrismaModule } from '../prisma/prisma.module'
 import { ReportModule } from '../report/report.module'
 import { TelegramModule } from '../telegram/telegram.module'
@@ -19,7 +20,7 @@ import { TgWarmupService } from './tg-warmup.service'
 	// TelegramModule — ради уведомлений админу в бот, когда кто-то ответил.
 	// ReportModule — чтобы прикладывать PDF-отчёт к ответу в переписке.
 	// OutreachModule — загрузка import.json парсера из вкладки «База клиентов».
-	imports: [PrismaModule, TelegramModule.forRoot(), ReportModule, OutreachModule],
+	imports: [PrismaModule, TelegramModule.forRoot(), ReportModule, OutreachModule, FollowUpModule],
 	controllers: [TgWarmupController, CampaignController, CampaignManagerController, LeadImportController],
 	exports: [TgWarmupService],
 	providers: [TgWarmupService, TgWarmupScheduler, CampaignService, CampaignScheduler],
