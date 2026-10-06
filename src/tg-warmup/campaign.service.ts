@@ -4608,15 +4608,19 @@ export class CampaignService {
 	}
 
 	/**
-	 * Что требует внимания, для красных кружков в админке: непрочитанные
-	 * сообщения, напоминания на сегодня и просроченное, ответившие без итога.
+	 * Что требует внимания в админке. Для вкладки напоминаний отдельно отдаём
+	 * общее число активных дат и число дат на ближайшие три московских дня:
+	 * переписки без итога не являются напоминаниями и в эти счётчики не входят.
 	 */
 	async attention() {
 		const now = new Date()
 		const startOfDay = mskAt(now, 0)
 		const endOfDay = mskAt(now, 0, 1)
-		const [unread, followUpsToday, followUpsOverdue, noOutcome] = await Promise.all([
+		const endOfThirdDay = mskAt(now, 0, 3)
+		const [unread, followUpsTotal, followUpsNext3Days, followUpsToday, followUpsOverdue, noOutcome] = await Promise.all([
 			this.prisma.tgRecipient.aggregate({ where: { unreadIn: { gt: 0 } }, _sum: { unreadIn: true }, _count: true }),
+			this.prisma.tgRecipient.count({ where: { followUpAt: { not: null } } }),
+			this.prisma.tgRecipient.count({ where: { followUpAt: { gte: startOfDay, lt: endOfThirdDay } } }),
 			this.prisma.tgRecipient.count({ where: { followUpAt: { gte: startOfDay, lt: endOfDay } } }),
 			this.prisma.tgRecipient.count({ where: { followUpAt: { lt: startOfDay } } }),
 			this.prisma.tgRecipient.count({
@@ -4629,6 +4633,8 @@ export class CampaignService {
 		return {
 			unreadMessages: unread._sum.unreadIn ?? 0,
 			unreadChats: unread._count,
+			followUpsTotal,
+			followUpsNext3Days,
 			followUpsToday,
 			followUpsOverdue,
 			noOutcomeOverdue: noOutcome,
