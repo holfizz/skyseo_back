@@ -759,6 +759,7 @@ model OutreachLead {
   import SerpImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
 
   touches OutreachTouch[]
+  crmLead CrmLead?
 
   @@index([status])
   @@index([score])
@@ -790,6 +791,14 @@ enum CrmTaskStatus {
   TODO // к выполнению
   IN_PROGRESS // в работе
   DONE // готово
+}
+
+enum CrmTaskKind {
+  GENERAL
+  CALL
+  FOLLOW_UP
+  SEO_EVALUATION
+  PROPOSAL
 }
 
 // Участник CRM. Заводится автоматически при первом входе через Telegram Mini App,
@@ -849,6 +858,7 @@ model CrmClient {
   stage     CrmFunnelStage? @relation("ClientStage", fields: [stageId], references: [id], onDelete: SetNull)
   tasks     CrmTask[]
   deals     CrmDeal[]
+  leads     CrmLead[]
 
   @@index([status])
   @@index([assigneeId])
@@ -870,6 +880,7 @@ model CrmFunnel {
 
   stages  CrmFunnelStage[]
   clients CrmClient[]      @relation("ClientFunnel")
+  leads   CrmLead[]        @relation("LeadFunnel")
 
   @@map("crm_funnels")
 }
@@ -885,6 +896,7 @@ model CrmFunnelStage {
   funnel  CrmFunnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
   clients CrmClient[] @relation("ClientStage")
   deals   CrmDeal[]   @relation("DealStage")
+  leads   CrmLead[]   @relation("LeadStage")
 
   @@index([funnelId, position])
   @@map("crm_funnel_stages")
@@ -893,28 +905,35 @@ model CrmFunnelStage {
 // Задача CRM. clientId = null → задача команды (не привязана к клиенту).
 // position — порядок внутри колонки канбана (для drag-and-drop).
 model CrmTask {
-  id          String        @id @default(uuid())
-  title       String
-  description String?
-  status      CrmTaskStatus @default(TODO)
-  priority    Int           @default(0) // -1 низкий, 0 обычный, 1 высокий, 2 срочный
-  dueAt       DateTime? // дедлайн
-  position    Int           @default(0) // порядок в колонке (DnD)
-  clientId    String?
-  assigneeId  String?
-  createdById String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  completedAt DateTime?
+  id                  String        @id @default(uuid())
+  kind                CrmTaskKind   @default(GENERAL)
+  title               String
+  description         String?
+  status              CrmTaskStatus @default(TODO)
+  priority            Int           @default(0) // -1 низкий, 0 обычный, 1 высокий, 2 срочный
+  dueAt               DateTime? // дедлайн
+  position            Int           @default(0) // порядок в колонке (DnD)
+  clientId            String?
+  leadId              String?
+  followUpRecipientId String?       @unique
+  assigneeId          String?
+  createdById         String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  completedAt         DateTime?
 
-  client    CrmClient?    @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  assignee  CrmUser?      @relation("CrmTaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy CrmUser?      @relation("CrmTaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  reminders CrmReminder[]
+  client            CrmClient?    @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  lead              CrmLead?      @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  followUpRecipient TgRecipient?  @relation("RecipientFollowUpTask", fields: [followUpRecipientId], references: [id], onDelete: SetNull)
+  assignee          CrmUser?      @relation("CrmTaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy         CrmUser?      @relation("CrmTaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  reminders         CrmReminder[]
 
   @@index([status, position])
   @@index([assigneeId])
   @@index([clientId])
+  @@index([leadId, dueAt])
+  @@index([kind, status, dueAt])
   @@index([dueAt])
   @@map("crm_tasks")
 }
@@ -955,6 +974,7 @@ model CrmActivity {
 
   @@index([createdAt])
   @@index([actorId, createdAt])
+  @@index([entityType, entityId, createdAt])
   @@map("crm_activity")
 }
 
@@ -985,24 +1005,42 @@ enum CrmDealStatus {
 }
 
 model CrmLead {
-  id           String        @id @default(uuid())
-  title        String // имя / название
-  contact      String? // телефон, email или @telegram — одним полем
-  source       CrmLeadSource @default(MANUAL)
-  utm          Json? // метки, если пришёл с рекламы
-  status       CrmLeadStatus @default(NEW)
-  comment      String? // первое касание
-  rejectReason String? // почему отвалился — для аналитики
-  assigneeId   String?
-  createdById  String?
-  clientId     String? // заполняется при квалификации
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                String        @id @default(uuid())
+  title             String // имя / название
+  contact           String? // телефон, email или @telegram — одним полем
+  source            CrmLeadSource @default(MANUAL)
+  utm               Json? // метки, если пришёл с рекламы
+  status            CrmLeadStatus @default(NEW)
+  comment           String? // первое касание
+  rejectReason      String? // почему отвалился — для аналитики
+  assigneeId        String?
+  createdById       String?
+  clientId          String? // заполняется при квалификации
+  outreachLeadId    String?       @unique
+  sourceRecipientId String?       @unique
+  funnelId          String?
+  stageId           String?
+  budgetMin         Int?
+  budgetMax         Int?
+  budgetComment     String?
+  decisionMaker     String?
+  qualification     Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
-  assignee CrmUser? @relation("CrmLeadAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignee        CrmUser?        @relation("CrmLeadAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  outreachLead    OutreachLead?   @relation(fields: [outreachLeadId], references: [id], onDelete: SetNull)
+  sourceRecipient TgRecipient?    @relation("LeadOriginRecipient", fields: [sourceRecipientId], references: [id], onDelete: SetNull)
+  recipients      TgRecipient[]   @relation("LeadRecipients")
+  client          CrmClient?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  funnel          CrmFunnel?      @relation("LeadFunnel", fields: [funnelId], references: [id], onDelete: SetNull)
+  stage           CrmFunnelStage? @relation("LeadStage", fields: [stageId], references: [id], onDelete: SetNull)
+  tasks           CrmTask[]
+  deals           CrmDeal[]
 
   @@index([status, createdAt])
   @@index([assigneeId])
+  @@index([funnelId, stageId])
   @@map("crm_leads")
 }
 
@@ -1011,6 +1049,7 @@ model CrmLead {
 model CrmDeal {
   id              String        @id @default(uuid())
   clientId        String
+  leadId          String?
   title           String
   amount          Int           @default(0) // ₽
   tariffId        String?
@@ -1020,6 +1059,7 @@ model CrmDeal {
   expectedCloseAt DateTime?
   status          CrmDealStatus @default(OPEN)
   lostReason      String?
+  lostComment     String?
   assigneeId      String?
   createdById     String?
   position        Int           @default(0) // порядок внутри колонки
@@ -1027,11 +1067,13 @@ model CrmDeal {
   updatedAt       DateTime      @updatedAt
 
   client   CrmClient       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  lead     CrmLead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
   assignee CrmUser?        @relation("CrmDealAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   stage    CrmFunnelStage? @relation("DealStage", fields: [stageId], references: [id], onDelete: SetNull)
   tariff   Tariff?         @relation(fields: [tariffId], references: [id], onDelete: SetNull)
 
   @@index([clientId])
+  @@index([leadId])
   @@index([stageId, position])
   @@index([status, createdAt])
   @@map("crm_deals")
@@ -1470,16 +1512,17 @@ model TgCampaignAccount {
 
 model TgRecipient {
   hypothesisId String?
-  hypothesis TgHypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: Restrict)
-  id         String @id @default(uuid())
-  campaignId String
+  hypothesis   TgHypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: Restrict)
+  id           String        @id @default(uuid())
+  campaignId   String
 
   // Кому пишем. Юзернейм или телефон — что-то одно обязательно.
-  username String?
-  phone    String?
-  tgUserId String?
+  username  String?
+  phone     String?
+  tgUserId  String?
   // Откуда взяли: лид из базы аутрича, если пришёл оттуда.
-  leadId   String?
+  leadId    String?
+  crmLeadId String?
 
   // Для подстановки в шаблон.
   firstName  String?
@@ -1540,24 +1583,29 @@ model TgRecipient {
 
   // Докуда собеседник прочитал НАШИ сообщения (readOutboxMaxId диалога):
   // по нему у каждого исходящего ставится «прочитано», а не только у первого.
-  readOutboxMaxId Int @default(0)
+  readOutboxMaxId Int       @default(0)
   // Был ли в сети, как показывает Telegram: online | offline | recently |
   // week | month | long. peerSeenAt — когда был (или до когда онлайн),
   // peerCheckedAt — когда мы это узнали.
-  peerStatus    String?
-  peerSeenAt    DateTime?
-  peerCheckedAt DateTime?
+  peerStatus      String?
+  peerSeenAt      DateTime?
+  peerCheckedAt   DateTime?
 
   createdAt DateTime @default(now())
 
-  campaign       TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  account        TgAccount?        @relation("RecipientSender", fields: [accountId], references: [id], onDelete: SetNull)
-  plannedAccount TgAccount?        @relation("RecipientPlanned", fields: [plannedAccountId], references: [id], onDelete: SetNull)
-  messages       TgDialogMessage[]
+  campaign          TgCampaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  account           TgAccount?        @relation("RecipientSender", fields: [accountId], references: [id], onDelete: SetNull)
+  plannedAccount    TgAccount?        @relation("RecipientPlanned", fields: [plannedAccountId], references: [id], onDelete: SetNull)
+  messages          TgDialogMessage[]
+  crmLead           CrmLead?          @relation("LeadRecipients", fields: [crmLeadId], references: [id], onDelete: SetNull)
+  originatedCrmLead CrmLead?          @relation("LeadOriginRecipient")
+  followUpTask      CrmTask?          @relation("RecipientFollowUpTask")
 
   @@index([campaignId, status])
   @@index([status])
   @@index([followUpAt])
+  @@index([leadId])
+  @@index([crmLeadId])
   // Расчёт дневной нормы аккаунта каждую минуту спрашивает, сколько с него
   // ушло за сутки и за двое. Запросы фильтруют по accountId, а индекса по нему
   // не было вовсе — каждый читал таблицу целиком. Второй индекс нужен потому,
