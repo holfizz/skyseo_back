@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
 import { CrmService } from '../crm/crm.service'
 import { FollowUpService } from '../crm/follow-up.service'
+import { QualificationService } from '../crm/qualification.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { ManagerService } from '../manager/manager.service'
 
@@ -17,6 +18,7 @@ if (!parsed.pathname.split('/').pop()?.endsWith('_test'))
 const prisma = new PrismaClient({ datasources: { db: { url } } })
 const crm = new CrmService(prisma as PrismaService, {} as ManagerService)
 const followUp = new FollowUpService(prisma as PrismaService)
+const qualification = new QualificationService(prisma as PrismaService)
 
 async function main() {
 	const defaultStage = await prisma.crmFunnelStage.findUnique({ where: { id: 'skyseo-sales-new' } })
@@ -77,8 +79,49 @@ async function main() {
 	await crm.updateTask(actor, call.id, { status: 'DONE' })
 	assert.equal(await prisma.crmReminder.count({ where: { taskId: call.id, sent: false } }), 0)
 
+	const custom = await qualification.createField({
+		key: `smoke_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+		name: 'Есть маркетолог?', type: 'BOOLEAN', required: true,
+	})
+	await assert.rejects(() => crm.qualifyLead(actor, lead.id, {}), /Есть маркетолог/)
+	await qualification.saveValue(lead.id, custom.id, false, actor.id)
+	assert.equal((await qualification.leadFields(lead.id)).values.find(v => v.fieldId === custom.id)?.valueBoolean, false)
+	const filtered = await crm.leadPage({ customFieldId: custom.id, customValue: 'false' }, actor)
+	assert.ok(filtered.rows.some(row => row.id === lead.id))
+	await qualification.updateField(custom.id, { isActive: false })
+	assert.equal((await prisma.crmCustomFieldValue.findUniqueOrThrow({ where: { fieldId_leadId: { fieldId: custom.id, leadId: lead.id } } })).valueBoolean, false)
+	await qualification.updateField(custom.id, { isActive: true })
+	const select = await qualification.createField({
+		key: `smoke_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+		name: 'Срок ожидания', type: 'SELECT', options: ['1 месяц', '3 месяца'],
+	})
+	await qualification.saveValue(lead.id, select.id, '3 месяца', actor.id)
+	assert.ok((await crm.leadPage({ customFieldId: select.id, customValue: '3 месяца' }, actor)).rows.some(row => row.id === lead.id))
+	await assert.rejects(() => qualification.updateField(select.id, { options: ['1 месяц'] }), /сохранённые ответы/)
+	const number = await qualification.createField({
+		key: `smoke_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+		name: 'Средний чек', type: 'NUMBER',
+	})
+	await qualification.saveValue(lead.id, number.id, 75000, actor.id)
+	assert.ok((await crm.leadPage({ customFieldId: number.id, customValue: '50000' }, actor)).rows.some(row => row.id === lead.id))
+	const multi = await qualification.createField({
+		key: `smoke_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+		name: 'Каналы', type: 'MULTI_SELECT', options: ['Поиск', 'Рекомендации'],
+	})
+	await qualification.saveValue(lead.id, multi.id, ['Поиск', 'Рекомендации'], actor.id)
+	assert.ok((await crm.leadPage({ customFieldId: multi.id, customValue: 'Поиск' }, actor)).rows.some(row => row.id === lead.id))
+	await Promise.all([
+		crm.updateLead(actor, lead.id, { qualification: { hasSeo: 'YES' } }),
+		crm.updateLead(actor, lead.id, { qualification: { needsSeo: 'YES' } }),
+	])
+	const answers = (await prisma.crmLead.findUniqueOrThrow({ where: { id: lead.id } })).qualification as Record<string, string>
+	assert.equal(answers.hasSeo, 'YES')
+	assert.equal(answers.needsSeo, 'YES')
+	assert.ok((await crm.leadPage({ isDecisionMaker: undefined, hasSeo: 'YES' }, actor)).rows.some(row => row.id === lead.id))
+
 	const qualified = await crm.qualifyLead(actor, lead.id, {})
 	const again = await crm.qualifyLead(actor, lead.id, {})
+	await qualification.updateField(custom.id, { isActive: false })
 	assert.equal(qualified.client.id, again.client.id)
 	assert.equal(qualified.deal?.id, again.deal?.id)
 	assert.equal(await prisma.crmDeal.count({ where: { leadId: lead.id } }), 1)
@@ -86,7 +129,7 @@ async function main() {
 	await crm.updateDeal(actor, qualified.deal!.id, { status: 'LOST', lostReason: 'NOT_NOW' })
 	await crm.updateDeal(actor, qualified.deal!.id, { status: 'WON' })
 	assert.equal((await prisma.crmClient.findUniqueOrThrow({ where: { id: qualified.client.id } })).status, 'ACTIVE')
-	console.log('CRM integration smoke passed: one lead, three dialogs, follow-up sync, stage/permission checks, one qualified deal')
+	console.log('CRM integration smoke passed: relations, follow-ups, qualification, custom fields, filters, permissions, one deal')
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => prisma.$disconnect())

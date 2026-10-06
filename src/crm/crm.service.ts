@@ -789,11 +789,59 @@ export class CrmService {
 	// Входящие заявки ДО превращения в клиента. Раньше заявки с сайта уходили только
 	// в личку владельцу и нигде не сохранялись.
 
-	async leadPage(query: { q?: string; status?: string; funnelId?: string; stageId?: string; page?: number; limit?: number }, user: CrmUser) {
+	async leadPage(query: {
+		q?: string; status?: string; funnelId?: string; stageId?: string; page?: number; limit?: number;
+		budgetFrom?: string; isDecisionMaker?: string; hasSeo?: string; needsSeo?: string;
+		objectionCode?: string; nextStepCode?: string; customFieldId?: string; customValue?: string;
+	}, user: CrmUser) {
 		const page = Number.isFinite(query.page) ? Math.max(1, Math.floor(query.page || 1)) : 1
 		const limit = Number.isFinite(query.limit) ? Math.min(100, Math.max(1, Math.floor(query.limit || 30))) : 30
 		const where: Prisma.CrmLeadWhereInput = {}
-		if (user.role !== 'ADMIN') where.AND = [{ OR: [{ assigneeId: user.id }, { assigneeId: null }] }]
+		const and: Prisma.CrmLeadWhereInput[] = []
+		if (user.role !== 'ADMIN') and.push({ OR: [{ assigneeId: user.id }, { assigneeId: null }] })
+		const qualificationFilters: Record<string, string[]> = {
+			isDecisionMaker: ['YES', 'NO', 'PARTIAL', 'UNKNOWN'], hasSeo: ['YES', 'NO'],
+			needsSeo: ['YES', 'NO', 'UNCLEAR'],
+			objectionCode: ['PRICE', 'TRUST', 'RESULT', 'CONTRACTOR', 'NO_BUDGET', 'NOT_NOW', 'NO_NEED', 'NEEDS_APPROVAL', 'OTHER'],
+			nextStepCode: ['CALL_BOOK', 'CALL_HOLD', 'SEO_REVIEW', 'PREPARE_PROPOSAL', 'SEND_PROPOSAL', 'TEST', 'FOLLOW_UP', 'CONTRACT', 'LOST'],
+		}
+		for (const [key, options] of Object.entries(qualificationFilters)) {
+			const value = query[key as keyof typeof query]
+			if (!value) continue
+			if (typeof value !== 'string' || !options.includes(value)) throw new BadRequestException(`Некорректный фильтр ${key}`)
+			and.push({ qualification: { path: [key], equals: value } })
+		}
+		if (query.budgetFrom) {
+			const amount = Number(query.budgetFrom)
+			if (!Number.isSafeInteger(amount) || amount < 0) throw new BadRequestException('Некорректный бюджет')
+			and.push({ OR: [{ budgetMax: { gte: amount } }, { budgetMax: null, budgetMin: { gte: amount } }] })
+		}
+		if (query.customFieldId) {
+			const field = await this.prisma.crmCustomFieldDefinition.findUnique({ where: { id: query.customFieldId } })
+			if (!field || !field.isActive || field.entityType !== 'LEAD') throw new BadRequestException('Поле фильтра не найдено')
+			const value = query.customValue
+			if (!value) throw new BadRequestException('Укажите значение пользовательского поля')
+			const filter: Prisma.CrmCustomFieldValueWhereInput = { fieldId: field.id }
+			if (field.type === 'BOOLEAN') {
+				if (!['true', 'false'].includes(value)) throw new BadRequestException('Некорректное значение фильтра')
+				filter.valueBoolean = value === 'true'
+			} else if (field.type === 'NUMBER') {
+				const number = Number(value)
+				if (!Number.isFinite(number)) throw new BadRequestException('Некорректное число')
+				filter.valueNumber = { gte: new Prisma.Decimal(number) }
+			} else if (field.type === 'DATE') {
+				if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new BadRequestException('Некорректная дата')
+				filter.valueDate = new Date(`${value}T00:00:00.000Z`)
+			} else if (field.type === 'MULTI_SELECT') {
+				if (!field.options.includes(value)) throw new BadRequestException('Неизвестный вариант')
+				filter.valueOptions = { has: value }
+			} else if (field.type === 'SELECT') {
+				if (!field.options.includes(value)) throw new BadRequestException('Неизвестный вариант')
+				filter.valueText = value
+			} else filter.valueText = { contains: value.slice(0, 100), mode: 'insensitive' }
+			and.push({ customValues: { some: filter } })
+		}
+		if (and.length) where.AND = and
 		if (query.status && ['NEW', 'IN_WORK', 'QUALIFIED', 'REJECTED'].includes(query.status))
 			where.status = query.status as any
 		if (query.funnelId) where.funnelId = query.funnelId
@@ -1072,37 +1120,40 @@ export class CrmService {
 	}
 
 	async updateLead(user: CrmUser, id: string, dto: UpdateLeadDto) {
-		const existing = await this.prisma.crmLead.findUnique({ where: { id } })
-		if (!existing) throw new NotFoundException('Лид не найден')
 		if (dto.assigneeId) await this.assertAssignee(dto.assigneeId)
-		const minBudget = dto.budgetMin === undefined ? existing.budgetMin : dto.budgetMin
-		const maxBudget = dto.budgetMax === undefined ? existing.budgetMax : dto.budgetMax
-		if (minBudget != null && maxBudget != null && minBudget > maxBudget)
-			throw new BadRequestException('Минимальный бюджет не может быть больше максимального')
-		const data: Prisma.CrmLeadUpdateInput = {}
-		if (dto.title !== undefined) data.title = dto.title.trim()
-		if (dto.contact !== undefined) data.contact = dto.contact
-		if (dto.status !== undefined) data.status = dto.status
-		if (dto.comment !== undefined) data.comment = dto.comment
-		if (dto.rejectReason !== undefined) data.rejectReason = dto.rejectReason
-		if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin
-		if (dto.budgetMax !== undefined) data.budgetMax = dto.budgetMax
-		if (dto.budgetComment !== undefined) data.budgetComment = dto.budgetComment?.trim() || null
-		if (dto.decisionMaker !== undefined) data.decisionMaker = dto.decisionMaker?.trim() || null
-		if (dto.qualification !== undefined) {
-			data.qualification = Object.fromEntries(
-				Object.entries(dto.qualification).map(([key, value]) => [key, value?.trim() || '']),
-			) as Prisma.InputJsonValue
-		}
-		if (dto.assigneeId !== undefined) {
-			data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
-		}
-		const lead = await this.prisma.$transaction(async tx => {
+		return this.prisma.$transaction(async tx => {
+			// Partial autosaves must merge against the latest JSON, not a stale read.
+			await tx.$queryRaw`SELECT id FROM crm_leads WHERE id = ${id} FOR UPDATE`
+			const existing = await tx.crmLead.findUnique({ where: { id } })
+			if (!existing) throw new NotFoundException('Лид не найден')
+			const minBudget = dto.budgetMin === undefined ? existing.budgetMin : dto.budgetMin
+			const maxBudget = dto.budgetMax === undefined ? existing.budgetMax : dto.budgetMax
+			if (minBudget != null && maxBudget != null && minBudget > maxBudget)
+				throw new BadRequestException('Минимальный бюджет не может быть больше максимального')
+			const data: Prisma.CrmLeadUpdateInput = {}
+			if (dto.title !== undefined) data.title = dto.title.trim()
+			if (dto.contact !== undefined) data.contact = dto.contact
+			if (dto.status !== undefined) data.status = dto.status
+			if (dto.comment !== undefined) data.comment = dto.comment
+			if (dto.rejectReason !== undefined) data.rejectReason = dto.rejectReason
+			if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin
+			if (dto.budgetMax !== undefined) data.budgetMax = dto.budgetMax
+			if (dto.budgetComment !== undefined) data.budgetComment = dto.budgetComment?.trim() || null
+			if (dto.decisionMaker !== undefined) data.decisionMaker = dto.decisionMaker?.trim() || null
+			if (dto.qualification !== undefined) {
+				const previous = existing.qualification && typeof existing.qualification === 'object' && !Array.isArray(existing.qualification)
+					? existing.qualification as Record<string, Prisma.JsonValue> : {}
+				const changed = Object.fromEntries(Object.entries(dto.qualification).map(([key, value]) => [
+					key, typeof value === 'string' ? value.trim() : Array.isArray(value) ? [...new Set(value)] : value,
+				]))
+				data.qualification = { ...previous, ...changed } as Prisma.InputJsonValue
+			}
+			if (dto.assigneeId !== undefined)
+				data.assignee = dto.assigneeId ? { connect: { id: dto.assigneeId } } : { disconnect: true }
 			const changed = await tx.crmLead.update({ where: { id }, data })
 			await tx.crmActivity.create({ data: { actorId: user.id, action: 'lead.update', entityType: 'lead', entityId: id, summary: `Изменён лид «${changed.title}»` } })
 			return changed
 		})
-		return lead
 	}
 
 	async scheduleCall(user: CrmUser, leadId: string, dto: CreateTaskDto) {
@@ -1149,6 +1200,20 @@ export class CrmService {
 				])
 				if (client) return { client, deal }
 			}
+			const requiredFields = await tx.crmCustomFieldDefinition.findMany({
+				where: { entityType: 'LEAD', isActive: true, required: true },
+				include: { values: { where: { leadId: id } } },
+			})
+			const missing = requiredFields.find(field => {
+				const value = field.values[0]
+				if (!value) return true
+				if (field.type === 'BOOLEAN') return value.valueBoolean === null
+				if (field.type === 'NUMBER') return value.valueNumber === null
+				if (field.type === 'DATE') return value.valueDate === null
+				if (field.type === 'MULTI_SELECT') return !value.valueOptions.length
+				return !value.valueText?.trim()
+			})
+			if (missing) throw new BadRequestException(`Заполните обязательное поле «${missing.name}»`)
 			const stage = dto.stageId
 				? await tx.crmFunnelStage.findUnique({ where: { id: dto.stageId } })
 				: null

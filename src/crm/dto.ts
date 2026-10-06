@@ -4,6 +4,7 @@ import {
 	ArrayMaxSize,
 	IsArray,
 	IsEnum,
+	IsIn,
 	IsInt,
 	IsISO8601,
 	IsOptional,
@@ -205,6 +206,27 @@ export class QualificationNotesDto {
 	@IsOptional() @IsString() @MaxLength(1000) vendorCriteria?: string
 	@IsOptional() @IsString() @MaxLength(1000) objection?: string
 	@IsOptional() @IsString() @MaxLength(1000) nextStep?: string
+	@IsOptional() @IsString() @MaxLength(1000) seoGoal?: string
+
+	@IsOptional() @IsIn(['YES', 'NO']) hasSeo?: string
+	@IsOptional() @IsIn(['IN_HOUSE', 'AGENCY', 'FREELANCER', 'UNKNOWN']) seoProvider?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'PARTIAL']) seoSatisfied?: string
+	@IsOptional() @IsIn(['YES', 'NO']) hasAds?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'UNKNOWN']) websiteLeads?: string
+	@IsOptional() @IsIn(['YES', 'NO']) tracksOrganicLeads?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'UNKNOWN']) hasCrm?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'PARTIAL', 'UNKNOWN']) isDecisionMaker?: string
+	@IsOptional() @IsIn(['YES', 'NO']) budgetDiscussed?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'UNCLEAR']) needsSeo?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'UNCLEAR']) openToContractor?: string
+	@IsOptional() @IsIn(['YES', 'NO']) hasContractor?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'PARTIAL']) dissatisfied?: string
+	@IsOptional() @IsIn(['NOW', 'MONTH', 'LATER', 'UNKNOWN']) startTiming?: string
+	@IsOptional() @IsIn(['NOT_OFFERED', 'INTERESTED', 'NOT_INTERESTED', 'ONLY_IF_UNSURE']) testInterest?: string
+	@IsOptional() @IsIn(['PRICE', 'TRUST', 'RESULT', 'CONTRACTOR', 'NO_BUDGET', 'NOT_NOW', 'NO_NEED', 'NEEDS_APPROVAL', 'OTHER']) objectionCode?: string
+	@IsOptional() @IsIn(['CALL_BOOK', 'CALL_HOLD', 'SEO_REVIEW', 'PREPARE_PROPOSAL', 'SEND_PROPOSAL', 'TEST', 'FOLLOW_UP', 'CONTRACT', 'LOST']) nextStepCode?: string
+	@IsOptional() @IsArray() @ArrayMaxSize(9) @IsIn(['PRICE', 'EXPERIENCE', 'CASES', 'FORECAST', 'TRANSPARENCY', 'SPEED', 'TURNKEY', 'NICHE', 'OTHER'], { each: true }) vendorCriteriaCodes?: string[]
+	@IsOptional() @IsArray() @ArrayMaxSize(7) @IsIn(['DIRECT', 'ORGANIC', 'REFERRALS', 'TELEGRAM', 'SOCIAL', 'AVITO', 'OTHER'], { each: true }) leadSources?: string[]
 }
 
 export class UpdateLeadDto {

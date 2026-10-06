@@ -801,6 +801,16 @@ enum CrmTaskKind {
   PROPOSAL
 }
 
+enum CrmCustomFieldType {
+  BOOLEAN
+  TEXT
+  TEXTAREA
+  NUMBER
+  SELECT
+  MULTI_SELECT
+  DATE
+}
+
 // Участник CRM. Заводится автоматически при первом входе через Telegram Mini App,
 // если его telegramId есть в вайтлисте env (CRM_ADMIN_TELEGRAM_IDS / CRM_MEMBER_TELEGRAM_IDS).
 // Профиль сотрудника в CRM. С переходом на общий вход платформы (email+пароль)
@@ -1037,11 +1047,56 @@ model CrmLead {
   stage           CrmFunnelStage? @relation("LeadStage", fields: [stageId], references: [id], onDelete: SetNull)
   tasks           CrmTask[]
   deals           CrmDeal[]
+  customValues    CrmCustomFieldValue[]
 
   @@index([status, createdAt])
   @@index([assigneeId])
   @@index([funnelId, stageId])
   @@map("crm_leads")
+}
+
+// Определения управляются администратором; выключение не удаляет сохранённые ответы.
+model CrmCustomFieldDefinition {
+  id         String             @id @default(uuid())
+  key        String             @unique
+  name       String
+  entityType String             @default("LEAD")
+  type       CrmCustomFieldType
+  options    String[]           @default([])
+  position   Int                @default(0)
+  isActive   Boolean            @default(true)
+  required   Boolean            @default(false)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  values CrmCustomFieldValue[]
+
+  @@index([entityType, isActive, position])
+  @@map("crm_custom_field_definitions")
+}
+
+model CrmCustomFieldValue {
+  id           String    @id @default(uuid())
+  fieldId      String
+  leadId       String
+  valueBoolean Boolean?
+  valueText    String?   @db.Text
+  valueNumber  Decimal? @db.Decimal(18, 2)
+  valueDate    DateTime?
+  valueOptions String[]  @default([])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  field CrmCustomFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+  lead  CrmLead                  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([fieldId, leadId])
+  @@index([leadId])
+  @@index([fieldId, valueBoolean])
+  @@index([fieldId, valueNumber])
+  @@index([fieldId, valueText])
+  @@index([fieldId, valueDate])
+  @@map("crm_custom_field_values")
 }
 
 // Сделка — деньги в воронке. Раньше воронка была, а сумм в ней не было:

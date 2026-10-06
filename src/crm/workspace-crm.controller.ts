@@ -1,6 +1,6 @@
 import {
 	Body, Controller, ForbiddenException, Get, NotFoundException,
-	Param, Patch, Post, Query, UseGuards,
+	Param, Patch, Post, Put, Query, UseGuards,
 } from '@nestjs/common'
 import { CrmUser, User } from '@prisma/client'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
@@ -10,6 +10,8 @@ import { PrismaService } from '../prisma/prisma.service'
 import { SprintGuard } from '../sprint/sprint.guard'
 import { CrmService } from './crm.service'
 import { FollowUpService } from './follow-up.service'
+import { QualificationService } from './qualification.service'
+import { CreateCustomFieldDto, SaveCustomValueDto, UpdateCustomFieldDto } from './qualification.dto'
 import {
 	CreateFunnelDto, CreateStageDto, CreateTaskDto, MoveLeadStageDto,
 	QualifyLeadDto, SaveFollowUpDto, UpdateDealDto, UpdateLeadDto,
@@ -23,6 +25,7 @@ export class WorkspaceCrmController {
 		private readonly prisma: PrismaService,
 		private readonly crm: CrmService,
 		private readonly followUp: FollowUpService,
+		private readonly qualification: QualificationService,
 	) {}
 
 	private actor(user: User): Promise<CrmUser> {
@@ -53,6 +56,24 @@ export class WorkspaceCrmController {
 	@Get('funnels')
 	funnels() { return this.crm.listFunnels() }
 
+	@Get('qualification/fields')
+	async customFields(@CurrentUser() user: User, @Query('all') all?: string) {
+		const actor = await this.actor(user)
+		return this.qualification.fields(actor.role === 'ADMIN' && all === '1')
+	}
+
+	@Post('qualification/fields')
+	async addCustomField(@CurrentUser() user: User, @Body() dto: CreateCustomFieldDto) {
+		if ((await this.actor(user)).role !== 'ADMIN') throw new ForbiddenException('Поля настраивает администратор')
+		return this.qualification.createField(dto)
+	}
+
+	@Patch('qualification/fields/:id')
+	async updateCustomField(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateCustomFieldDto) {
+		if ((await this.actor(user)).role !== 'ADMIN') throw new ForbiddenException('Поля настраивает администратор')
+		return this.qualification.updateField(id, dto)
+	}
+
 	@Post('funnels')
 	async createFunnel(@CurrentUser() user: User, @Body() dto: CreateFunnelDto) {
 		const actor = await this.actor(user)
@@ -76,14 +97,40 @@ export class WorkspaceCrmController {
 		@Query('q') q?: string, @Query('status') status?: string,
 		@Query('funnelId') funnelId?: string, @Query('stageId') stageId?: string,
 		@Query('page') page?: string, @Query('limit') limit?: string,
+		@Query('budgetFrom') budgetFrom?: string,
+		@Query('isDecisionMaker') isDecisionMaker?: string,
+		@Query('hasSeo') hasSeo?: string,
+		@Query('needsSeo') needsSeo?: string,
+		@Query('objectionCode') objectionCode?: string,
+		@Query('nextStepCode') nextStepCode?: string,
+		@Query('customFieldId') customFieldId?: string,
+		@Query('customValue') customValue?: string,
 	) {
-		return this.crm.leadPage({ q, status, funnelId, stageId, page: Number(page) || 1, limit: Number(limit) || 30 }, await this.actor(user))
+		return this.crm.leadPage({
+			q, status, funnelId, stageId, page: Number(page) || 1, limit: Number(limit) || 30,
+			budgetFrom, isDecisionMaker, hasSeo, needsSeo, objectionCode, nextStepCode, customFieldId, customValue,
+		}, await this.actor(user))
 	}
 
 	@Get('leads/:id')
 	async lead(@CurrentUser() user: User, @Param('id') id: string) {
 		await this.viewable(user, id)
 		return this.crm.getLead(id)
+	}
+
+	@Get('leads/:id/custom-fields')
+	async leadCustomFields(@CurrentUser() user: User, @Param('id') id: string) {
+		await this.viewable(user, id)
+		return this.qualification.leadFields(id)
+	}
+
+	@Put('leads/:id/custom-fields/:fieldId')
+	async saveCustomValue(
+		@CurrentUser() user: User, @Param('id') id: string,
+		@Param('fieldId') fieldId: string, @Body() dto: SaveCustomValueDto,
+	) {
+		const actor = await this.editable(user, id)
+		return this.qualification.saveValue(id, fieldId, dto.value, actor.id)
 	}
 
 	@Post('recipients/:id/lead')
@@ -105,7 +152,7 @@ export class WorkspaceCrmController {
 				followUpTask: { select: { id: true, kind: true, title: true, dueAt: true, description: true, status: true, followUpRecipientId: true } },
 				crmLead: { select: {
 					id: true, title: true, status: true, funnelId: true, stageId: true, assigneeId: true, budgetMin: true,
-					budgetMax: true, budgetComment: true, decisionMaker: true, comment: true,
+					budgetMax: true, budgetComment: true, decisionMaker: true, qualification: true, comment: true,
 					stage: { select: { title: true } },
 					deals: { orderBy: { createdAt: 'desc' }, take: 1, select: { id: true, title: true, amount: true, status: true, lostReason: true } },
 					tasks: { where: { status: { not: 'DONE' } }, orderBy: { dueAt: 'asc' }, take: 5,
