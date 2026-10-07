@@ -92,14 +92,14 @@ footer {
 .cover-note { margin-top: 6mm; font-size: 9pt; color: var(--subtle); }
 .cover-art { display: block; width: 112%; height: 94mm; object-fit: contain; transform: translate(-2mm, -15mm); }
 
-/* Qualification and decision: rules instead of identical oversized cards. */
-.choice-grid, .final-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; height: 61mm; }
-.choice, .final-card {
+/* Qualification and decision. */
+.final-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; height: 61mm; }
+.final-card {
   padding: 4mm 1mm 3mm;
   background: transparent;
 }
-.choice h2, .final-card h2 { margin: 1.5mm 0 3mm; font-size: 18pt; line-height: 1.1; }
-.choice p, .final-card p { max-width: 106mm; margin: 0 0 3mm; font-size: 10.7pt; line-height: 1.36; }
+.final-card h2 { margin: 1.5mm 0 3mm; font-size: 18pt; line-height: 1.1; }
+.final-card p { max-width: 106mm; margin: 0 0 3mm; font-size: 10.7pt; line-height: 1.36; }
 .shape { color: var(--blue); font-size: 18pt; line-height: 1; }
 .shape.square { color: #555861; }
 .question {
@@ -108,6 +108,14 @@ footer {
   background: #dfe0e4; color: var(--ink);
   font-size: 13pt; font-weight: 700;
 }
+.decision-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; height: 55mm; }
+.decision-card { display: flex; flex-direction: column; padding: 5mm 6mm; border-radius: 3mm; background: var(--panel); }
+.decision-card:nth-child(2) { background: #dcdee3; }
+.decision-card span { color: var(--subtle); font-size: 9pt; font-weight: 700; }
+.decision-card strong { margin: 2mm 0 0; color: var(--blue); font-size: 29pt; line-height: 1; }
+.decision-card b { margin-top: auto; font-size: 13pt; line-height: 1.17; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decision-caption { margin-top: 3mm; color: var(--subtle); font-size: 9pt; }
+.decision-compare + .decision-caption + .question { margin-top: 4mm; }
 
 /* Position overview: a measured distribution, not three decorative KPI tiles. */
 .position-map { height: 52mm; padding: 5mm 6mm; border-radius: 3mm; background: var(--panel); }
@@ -132,16 +140,7 @@ footer {
 }
 .bracket p { margin: 0; font-size: 10.5pt; line-height: 1.3; }
 
-/* Commercial queries: three useful rows, with no decorative empty boxes. */
-.hot-grid { display: grid; gap: 2mm; height: 55mm; }
-.hot {
-  display: grid; grid-template-columns: 1fr 22mm 35mm; gap: 5mm;
-  align-items: center; min-height: 16mm;
-  padding: 2mm 5mm; border-radius: 2.5mm; background: var(--panel);
-}
-.hot span { font-size: 12pt; font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hot strong { color: var(--blue); font-size: 24pt; line-height: 1; text-align: right; }
-.hot small { color: var(--subtle); font-size: 8pt; line-height: 1.2; }
+/* Position plot for the three queries discussed on the call. */
 .business-point {
   display: flex; align-items: center; gap: 5mm;
   margin-top: 4mm; padding: 3mm 5mm; min-height: 23mm;
@@ -149,59 +148,62 @@ footer {
 }
 .business-point svg { width: 12mm; height: 12mm; }
 .business-point p { margin: 0; font-size: 10pt; line-height: 1.3; }
+.rank-plot { padding: 5mm 6mm; border-radius: 3mm; background: var(--panel); }
+.rank-axis { display: flex; justify-content: space-between; padding-left: 88mm; padding-right: 13mm; margin-bottom: 5mm; color: var(--subtle); font-size: 8pt; }
+.rank-line { display: grid; grid-template-columns: 82mm 1fr 9mm; gap: 6mm; align-items: center; height: 15mm; }
+.rank-line > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10pt; font-weight: 700; }
+.rank-line > b { color: var(--blue); font-size: 21pt; text-align: right; }
+.rank-track { position: relative; height: 3mm; border-radius: 2mm; background: #d9dae0; }
+.rank-first { display: block; height: 100%; border-radius: 2mm; background: #b2b3fb; }
+.rank-dot { position: absolute; top: 50%; width: 5mm; height: 5mm; transform: translate(-50%, -50%); border: 1mm solid var(--blue); border-radius: 50%; background: var(--panel); }
+.rank-empty { padding: 5mm; color: var(--subtle); }
+.rank-plot + .business-point { min-height: 14mm; margin-top: 4mm; }
+.rank-plot + .business-point svg { width: 8mm; height: 8mm; }
 
 /* Search result evidence. */
-.rivals-grid { display: grid; grid-template-columns: 1.45fr .85fr; gap: 6mm; }
-.serp-label { margin: 0 0 2mm; font-size: 10pt; font-weight: 700; color: var(--ink); }
-.serp-row {
-  display: grid; grid-template-columns: 9mm 1fr 30mm; gap: 3mm; align-items: center;
-  min-height: 7mm; margin: 1.5mm 0; padding: 1.4mm 3mm;
-  border-radius: 2mm; background: var(--panel); font-size: 9pt;
-}
-.serp-row b { color: var(--blue); }
-.serp-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.serp-row small { color: var(--subtle); text-align: right; }
-.serp-row.mine { background: #ccced5; font-weight: 700; }
-.rivals-side {
-  display: flex; flex-direction: column; justify-content: center;
-  padding: 5mm; border-radius: 3mm; background: #dfe0e4;
-}
-.rivals-side svg { width: 14mm; height: 14mm; }
-.rivals-side h2 { margin: 2mm 0 3mm; font-size: 15pt; line-height: 1.2; }
-.rivals-side p { margin: 0; font-size: 9.5pt; line-height: 1.35; }
 .empty { padding: 5mm; border-radius: 3mm; background: var(--panel); font-size: 10pt; line-height: 1.4; }
+.compare-query { margin-bottom: 4mm; font-size: 11pt; }
+.versus-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 6mm; height: 64mm; }
+.versus-rivals, .versus-mine { padding: 5mm; border-radius: 3mm; background: var(--panel); }
+.versus-rivals > span, .versus-mine > span { display: block; margin-bottom: 3mm; color: var(--subtle); font-size: 9pt; font-weight: 700; }
+.versus-row { display: grid; grid-template-columns: 12mm 1fr; gap: 4mm; align-items: center; height: 14mm; border-top: .2mm solid #d4d5db; }
+.versus-row b { color: #686a74; font-size: 19pt; }
+.versus-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11pt; }
+.versus-mine { display: flex; flex-direction: column; background: #d4d6dc; }
+.versus-mine strong { margin: auto 0 0; color: var(--blue); font-size: 51pt; line-height: 1; }
+.versus-mine b { margin: 2mm 0 auto; font-size: 12pt; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compare-foot { margin-top: 3mm; color: var(--subtle); font-size: 8.5pt; }
 
-/* Full query list. */
-.query-head, .query-row { display: grid; grid-template-columns: 1fr 18mm 43mm; gap: 3mm; align-items: center; padding: 1mm 4mm; }
-.query-head { border-radius: 2mm; background: #d1d2d8; color: var(--ink); font-size: 8pt; font-weight: 700; }
-.query-row { min-height: 5.9mm; border-bottom: .2mm solid #d1d2d8; font-size: 8.4pt; }
-.query-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.query-row b { color: var(--ink); font-size: 11pt; }
-.query-row small { color: var(--subtle); font-size: 7.7pt; }
-.query-list { margin-top: 1mm; }
+/* Query map. */
+.query-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+.query-column { min-height: 76mm; padding: 4mm 5mm; border-radius: 3mm; background: var(--panel); }
+.query-column:nth-child(2) { background: #dfe0e4; }
+.query-column-head { display: flex; justify-content: space-between; align-items: center; height: 11mm; margin-bottom: 2mm; }
+.query-column-head strong { font-size: 13pt; }
+.query-column-head b { color: var(--blue); font-size: 23pt; }
+.query-chip { display: grid; grid-template-columns: 1fr 9mm; gap: 2mm; align-items: center; height: 11mm; border-top: .2mm solid #c9cad0; }
+.query-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9pt; }
+.query-chip b { text-align: right; font-size: 13pt; }
+.query-overflow { margin-top: 3mm; color: var(--subtle); font-size: 8pt; }
 
-/* Opportunity calculation. */
-.equation { display: grid; grid-template-columns: 1fr 8mm 1fr 8mm 1fr; gap: 3mm; height: 46mm; }
-.equation > div {
-  display: flex; flex-direction: column; justify-content: center;
-  padding: 5mm; border-radius: 3mm; background: var(--panel);
-}
-.equation b { font-size: 15pt; color: var(--ink); }
-.equation span { margin-top: 2mm; font-size: 9pt; line-height: 1.3; }
-.equation i { align-self: center; text-align: center; font-size: 22pt; font-style: normal; color: #797b84; }
-.range {
-  display: flex; align-items: center; gap: 7mm;
-  margin-top: 5mm; padding: 4mm 6mm; min-height: 29mm;
-  border-radius: 3mm; background: #d9dade;
-}
-.range strong { color: var(--blue); font-size: 28pt; }
-.range b { font-size: 10pt; white-space: nowrap; }
-.range p { margin: 0; font-size: 10pt; line-height: 1.35; }
+/* Known positions versus unknown business outcome. */
+.opportunity-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; height: 49mm; }
+.opportunity-grid > div { display: flex; flex-direction: column; padding: 5mm 6mm; border-radius: 3mm; background: var(--panel); }
+.opportunity-unknown { background: #dfe0e4 !important; }
+.opportunity-grid span { color: var(--subtle); font-size: 9pt; font-weight: 700; }
+.opportunity-grid strong { margin: 2mm 0 0; color: var(--blue); font-size: 32pt; line-height: 1; }
+.opportunity-grid b { margin-top: auto; font-size: 12pt; }
+.data-flow { display: grid; grid-template-columns: 1fr 8mm 1fr 8mm 1fr; gap: 2mm; align-items: center; margin-top: 5mm; height: 23mm; }
+.data-flow > div { display: flex; flex-direction: column; justify-content: center; height: 100%; padding: 3mm 4mm; border-radius: 2mm; background: #d6d8dd; }
+.data-flow b { font-size: 12pt; }
+.data-flow span { margin-top: 1mm; color: var(--subtle); font-size: 8pt; }
+.data-flow i { text-align: center; color: #777983; font-size: 18pt; font-style: normal; }
 
 /* Five-day process. */
 .days-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; height: 43mm; }
 .days-grid > div { padding: 4mm 4mm 3mm; background: var(--panel); }
 .days-grid b { font-size: 14pt; color: var(--ink); }
+.days-grid small { display: block; margin-bottom: 2mm; color: var(--subtle); font-size: 8pt; font-weight: 700; }
 .days-grid p { margin: 2mm 0 0; font-size: 9.5pt; line-height: 1.3; }
 .test-compare { display: grid; grid-template-columns: 1fr 12mm 1fr; gap: 3mm; align-items: center; margin-top: 5mm; height: 31mm; }
 .test-compare > div {

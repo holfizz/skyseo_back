@@ -1,5 +1,5 @@
 import { LOGO_SVG_B64 } from './report.assets'
-import { ReportCompetitor, ReportData, ReportKeyword } from './report.types'
+import { ReportData, ReportKeyword } from './report.types'
 import { CALL_PRESENTATION_CSS } from './call-presentation.styles'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -27,12 +27,15 @@ function slide(n: number, domain: string, eyebrow: string, title: string, body: 
 		<footer><span>Сохранённый срез поиска · выводы требуют проверки с бизнесом</span><span>${n} / 9</span></footer></section>`
 }
 
-function keywordCard(k: ReportKeyword | undefined): string {
-	return `<div class="hot"><span>${k ? `«${esc(k.keyword)}»` : 'Запрос выберем вместе'}</span><strong>${pos(k?.position ?? null)}</strong><small>${k ? 'место в сохранённом замере' : 'позиция не сохранена'}</small></div>`
+function rankPlot(k: ReportKeyword | undefined, maxPosition: number): string {
+	if (!k || !k.position) return '<div class="rank-empty">Запросы для сравнения выберем вместе</div>'
+	const left = Math.min(96, Math.max(3, (k.position - 1) / (maxPosition - 1) * 100))
+	return `<div class="rank-line"><span>«${esc(k.keyword)}»</span><div class="rank-track"><i class="rank-first" style="width:${9 / (maxPosition - 1) * 100}%"></i><i class="rank-dot" style="left:${left}%"></i></div><b>${k.position}</b></div>`
 }
 
-function competitorRow(item: ReportCompetitor): string {
-	return `<div class="serp-row"><b>${item.position}</b><span>${esc(item.domain)}</span><small>${marketplace.test(item.domain) ? 'площадка' : 'сайт в выдаче'}</small></div>`
+function queryGroup(items: ReportKeyword[], limit: number): string {
+	return items.slice(0, limit).map(k => `<div class="query-chip"><span>${esc(k.keyword)}</span><b>${pos(k.position)}</b></div>`).join('')
+		+ (items.length > limit ? `<div class="query-overflow">+ ещё ${items.length - limit}</div>` : '')
 }
 
 export function renderCallPresentationHtml(data: ReportData): string {
@@ -48,19 +51,19 @@ export function renderCallPresentationHtml(data: ReportData): string {
 	const focus = priorities.find(k => k.competitors.some(c => c.position > 0 && c.position < (k.position ?? 99)))
 		?? ranked.find(k => k.competitors.some(c => c.position > 0 && c.position < (k.position ?? 99)))
 	const rivals = (focus?.competitors ?? []).filter(c => c.position > 0 && c.position < (focus?.position ?? 99))
-		.sort((a, b) => a.position - b.position).slice(0, 6)
+		.sort((a, b) => a.position - b.position)
+	const siteRivals = rivals.filter(c => !marketplace.test(c.domain)).slice(0, 3)
+	const shownRivals = siteRivals.length ? siteRivals : rivals.slice(0, 3)
 	const region = data.region ? esc(data.region) : 'регион не указан'
 	const measured = `${region} · замер ${date(data.measuredAt)}`
 	const domain = esc(data.domain)
-	const rankNote = ranked.length
-		? `В сохранённом замере ${ranked.length} запросов, ${ranked.length - top10} за пределами топ-10.`
-		: 'По сайту нет сохранённых позиций. На встрече согласуем запросы и регион.'
-	const cards = Array.from({ length: 3 }, (_, index) => keywordCard(priorities[index])).join('')
-	const table = ranked.length
-		? ranked.slice(0, 10).map(k => `<div class="query-row"><span>${esc(k.keyword)}</span><b>${pos(k.position)}</b><small>${(k.position ?? 99) <= 10 ? 'топ-10' : 'за 1-й страницей'}</small></div>`).join('')
-		: '<div class="empty">Позиции не сохранены. Прежде чем обсуждать конкурентов, зафиксируем нужные запросы и регион.</div>'
+	const pageOne = ranked.filter(k => (k.position ?? 99) <= 10)
+	const outside = ranked.filter(k => (k.position ?? 0) > 10)
+	const established = pageOne[0] ?? ranked[0]
+	const opportunity = beyond.length ? priorities[0] : ranked.find(k => k !== established)
+	const maxPlotPosition = Math.max(30, ...priorities.map(k => k.position ?? 0))
+	const cards = Array.from({ length: 3 }, (_, index) => rankPlot(priorities[index], maxPlotPosition)).join('')
 	const focusName = focus ? `«${esc(focus.keyword)}»` : 'Запрос ещё не выбран'
-	const compare = priorities.length ? priorities.map(k => pos(k.position)).join(' / ') : '—'
 	const scale = Math.max(1, top10, eleven20, twentyPlus)
 	const positionRow = (label: string, count: number, tone: string) => `<div class="position-row"><b>${label}</b><div class="position-track"><i class="${tone}" style="width:${count / scale * 100}%"></i></div><strong>${count}</strong></div>`
 	const coverTitle = data.domain.length <= 24
@@ -69,41 +72,43 @@ export function renderCallPresentationHtml(data: ReportData): string {
 	const slides = [
 		slide(1, data.domain, '', coverTitle, `
 			<div class="cover-grid"><div class="cover-main"><div class="cover-domain">Яндекс · ${measured}</div>
-			<p>${rankNote} Посмотрим, какие направления важны вашему бизнесу и где есть смысл искать рост.</p>
+			<p>${ranked.length ? `Из ${ranked.length} проверенных запросов ${ranked.length - top10} находятся за первой страницей. Покажу, где именно.` : 'Сначала согласуем запросы и регион, затем снимем исходные позиции.'}</p>
 			<div class="cover-tags"><span>${top10} из ${ranked.length} в топ-10</span><span>${ranked.length - top10} за первой страницей</span></div>
-			<div class="cover-note">Сколько это заявок, узнаем после проверки аналитики.</div></div>
+			<div class="cover-note">Заявки оценим после проверки аналитики.</div></div>
 			<img class="cover-art" src="data:image/svg+xml;base64,${coverArt}" alt="Абстрактная схема поисковой выдачи"/></div>`, ''),
-		slide(2, data.domain, 'Цель разговора', 'Какие обращения<br><em>ценны для бизнеса?</em>', `
-			<div class="choice-grid"><div class="choice"><div class="shape">✳</div><h2>Нужные услуги и города</h2><p>Какие обращения дают вам подходящих клиентов? Где вы действительно работаете?</p><p><b>Уточним:</b> что продвигать в первую очередь.</p></div>
-			<div class="choice"><div class="shape square">▣</div><h2>Качество заявки</h2><p>Звонок, форма или встреча — что ведёт к продаже? Какие обращения не подходят?</p><p><b>Уточним:</b> как измерять пользу для бизнеса.</p></div></div>
-			<div class="question">Какое направление сейчас для вас приоритетно?</div>`,
-			'Согласуем задачу прежде, чем считать позиции и обещать результат.'),
-		slide(3, data.domain, 'Текущая картина', 'Сайт уже виден,<br><em>но не по всем запросам</em>', `
+		slide(2, data.domain, 'Цель разговора', 'Какие запросы<br><em>приводят ваших клиентов?</em>', `
+			<div class="decision-compare"><div class="decision-card"><span>${pageOne.length ? 'Уже на первой странице' : 'Лучшее сохранённое место'}</span><strong>${pos(established?.position ?? null)}</strong><b>${established ? `«${esc(established.keyword)}»` : 'Пока нет замера'}</b></div>
+			<div class="decision-card"><span>${beyond.length ? 'За первой страницей' : 'Ещё один запрос'}</span><strong>${pos(opportunity?.position ?? null)}</strong><b>${opportunity ? `«${esc(opportunity.keyword)}»` : 'Приоритет определим вместе'}</b></div></div>
+			<div class="decision-caption">Место в поиске видно. Ценность каждого обращения знаете вы.</div>
+			<div class="question">Какую услугу и город стоит проверить первыми?</div>`,
+			'Согласуем приоритет: не каждый проверенный запрос нужен вашему бизнесу.'),
+		slide(3, data.domain, 'Текущая картина', ranked.length ? 'Сайт уже виден,<br><em>но не по всем запросам</em>' : 'Начнём с замера<br><em>нужных запросов</em>', `
 			<div class="position-map"><div class="position-caption"><span>Распределение проверенных фраз по зонам выдачи</span><b>${ranked.length} запросов</b></div>
 			${positionRow('Первая страница', top10, 'first')}${positionRow('Места 11–20', eleven20, 'middle')}${positionRow('Места 21+', twentyPlus, 'deep')}</div>
 			<div class="bracket"><div class="brace"></div><p>${ranked.length ? `Это позиции только ${ranked.length} сохранённых фраз. Сначала проверим, какие из них приводят нужных клиентов.` : 'Пока нечего сравнивать: сначала согласуем запросы, регион и снимем исходные позиции.'}</p></div>`,
 			'Позиция по выбранной фразе не равна доле всего трафика сайта.'),
-		slide(4, data.domain, 'Ближайший смысл для бизнеса', beyond.length ? 'Какие запросы<br><em>проверить первыми?</em>' : 'Какие запросы<br><em>уже дают видимость?</em>', `
-			<div class="hot-grid">${cards}</div>
-			<div class="business-point"><div>${star}</div><p>Позиция сама по себе не показывает ценность. Спросим, ищут ли по этим фразам ваших будущих клиентов, и проверим соответствующие страницы.</p></div>`,
-			'Вопрос владельцу: эти запросы для вас важны или приоритет следует поменять?'),
-		slide(5, data.domain, 'Кто выше', 'По одному запросу клиент<br><em>видит другие сайты</em>', `
-			<div class="rivals-grid"><div class="serp"><div class="serp-label">${focusName}</div>
-			${rivals.length ? rivals.map(competitorRow).join('') : '<div class="empty">В сохранённом замере нет сопоставимых доменов выше. Проверим выдачу во время теста.</div>'}
-			${focus ? `<div class="serp-row mine"><b>${pos(focus.position)}</b><span>${domain}</span><small>ваш сайт</small></div>` : ''}</div>
-			<div class="rivals-side"><div>${star}</div><h2>Сравниваем релевантных игроков</h2><p>Площадка и прямой конкурент — не одно и то же. На встрече уточним, с кем вы действительно боретесь за клиента.</p></div></div>`,
-			'Вопрос владельцу: кого из этих сайтов вы считаете реальным конкурентом?'),
-		slide(6, data.domain, 'Карта запросов', 'Проверенные фразы<br><em>в одном экране</em>', `
-			<div class="query-head"><span>Запрос</span><b>Место</b><small>Как читать</small></div><div class="query-list">${table}</div>`,
-			`Показаны ${Math.min(10, ranked.length)} из ${ranked.length} фраз · ${measured}. Не каждую фразу нужно продвигать.`),
+		slide(4, data.domain, 'Ближайший смысл для бизнеса', beyond.length ? 'Где эти запросы<br><em>сейчас в поиске?</em>' : 'Какие запросы<br><em>уже дают видимость?</em>', `
+			<div class="rank-plot"><div class="rank-axis"><span>1</span><span>10 · первая страница</span><span>${maxPlotPosition} место</span></div>${cards}</div>
+			<div class="business-point"><div>${star}</div><p>Синяя зона — топ-10. Точки показывают сохранённые позиции, а не прогноз роста.</p></div>`,
+			'Вопрос владельцу: какие из этих запросов действительно ведут к продаже?'),
+		slide(5, data.domain, 'Кто выше', focus ? `Другие сайты — выше.<br><em>Ваш — на ${pos(focus.position)} месте.</em>` : 'С кем сравним<br><em>ваш сайт?</em>', `
+			<div class="compare-query">Один и тот же запрос: <b>${focusName}</b></div>
+			<div class="versus-grid"><div class="versus-rivals"><span>Сайты выше в выдаче</span>${shownRivals.length ? shownRivals.map(c => `<div class="versus-row"><b>${c.position}</b><strong>${esc(c.domain)}</strong></div>`).join('') : '<div class="empty">Сопоставимых сайтов в замере нет</div>'}</div>
+			<div class="versus-mine"><span>Ваш сайт</span><strong>${pos(focus?.position ?? null)}</strong><b>${domain}</b></div></div>
+			<div class="compare-foot">Это сравнение мест в выдаче. Страницы и предложения сравним во время теста.</div>`,
+			'Вопрос владельцу: какие из этих сайтов вы считаете прямыми конкурентами?'),
+		slide(6, data.domain, 'Карта запросов', ranked.length ? 'Видимость уже есть.<br><em>Следующий шаг — выбрать важное.</em>' : 'Сначала определим<br><em>важные запросы.</em>', `
+			<div class="query-columns"><div class="query-column"><div class="query-column-head"><strong>Первая страница</strong><b>${pageOne.length}</b></div>${queryGroup(pageOne, 5)}</div>
+			<div class="query-column"><div class="query-column-head"><strong>За первой страницей</strong><b>${outside.length}</b></div>${queryGroup(outside, 5)}</div></div>`,
+			`${measured}. Показаны сохранённые позиции; приоритет выбираем вместе.`),
 		slide(7, data.domain, 'Потенциальные обращения', 'Сколько заявок<br><em>сайт недополучает?</em>', `
-			<div class="equation"><div><b>Показы</b><span>Вебмастер: видимость нужных страниц</span></div><i>×</i><div><b>Прирост CTR</b><span>сколько дополнительных кликов реально возможно</span></div><i>×</i><div><b>Конверсия</b><span>Метрика и CRM: доля качественных обращений</span></div></div>
-			<div class="range"><strong>?</strong><b>дополнительных заявок</b><p>Число пока неизвестно. Без показов, кликов и конверсии точный «недобор» был бы выдумкой.</p></div>`,
-			'На тесте посчитаем сценарный диапазон, а не гарантированный результат.'),
+			<div class="opportunity-grid"><div class="opportunity-known"><span>Что видно сейчас</span><strong>${ranked.length - top10}</strong><b>запросов за первой страницей</b></div><div class="opportunity-unknown"><span>Чего пока не видно</span><strong>?</strong><b>возможных дополнительных заявок</b></div></div>
+			<div class="data-flow"><div><b>Вебмастер</b><span>показы и клики</span></div><i>→</i><div><b>Метрика</b><span>обращения</span></div><i>→</i><div><b>CRM</b><span>качество заявок</span></div></div>`,
+			'На тесте оценим диапазон по реальным данным. Без аналитики число было бы выдумкой.'),
 		slide(8, data.domain, 'Пятидневная диагностика', 'Что проверим<br><em>за 5 дней?</em>', `
-			<div class="days-grid"><div><b>Старт</b><p>Согласуем 2–3 услуги, запросы и регион. Зафиксируем позиции.</p></div><div><b>Проверка</b><p>Сопоставим спрос, выдачу, посадочные страницы и аналитику.</p></div><div><b>Результат</b><p>Покажем находки, приоритет работ и возможный объём заявок при доступных данных.</p></div></div>
-			<div class="test-compare"><div><span>Сейчас</span><b>${compare}</b><small>места выбранных запросов</small></div><i>→</i><div><span>После пяти дней</span><b>?</b><small>повторный замер</small></div></div>`,
-			'Цель теста — принять решение на фактах. Рост позиций за пять дней не обещаем.'),
+			<div class="days-grid"><div><small>День 1</small><b>Выбор</b><p>Услуга · город · нужные заявки</p></div><div><small>Дни 2–4</small><b>Проверка</b><p>Выдача · страницы · аналитика</p></div><div><small>День 5</small><b>Решение</b><p>Потенциал · приоритет · план</p></div></div>
+			<div class="test-compare"><div><span>Сегодня</span><b>Где сайт</b><small>это мы уже видим</small></div><i>→</i><div><span>Через 5 дней</span><b>Что делать</b><small>покажем по фактам</small></div></div>`,
+			'За пять дней проверяем гипотезы и принимаем решение; рост позиций не обещаем.'),
 		slide(9, data.domain, 'Следующий шаг', 'Выберем одно направление<br><em>и проверим его</em>', `
 			<div class="final-grid"><div class="final-card"><div class="shape">✳</div><h2>От вас</h2><p>Приоритетная услуга и город.</p><p>Что считать хорошей заявкой.</p><p>Доступ к Метрике и Вебмастеру только на чтение.</p></div>
 			<div class="final-card accent"><div class="shape square">▣</div><h2>От SkySEO</h2><p>Проверка спроса, страниц и конкурентов.</p><p>Оценка возможных обращений по вашим данным.</p><p>Через пять дней — выводы и следующий шаг.</p></div></div>
