@@ -195,6 +195,19 @@ export class CreateLeadDto {
 }
 
 export class QualificationNotesDto {
+	// Заметки сценария созвона хранятся в CRM-лиде вместе с остальной квалификацией.
+	@IsOptional() @IsString() @MaxLength(2000) callIntroComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callDiscoveryComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callDataComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callTermsComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callTestComment?: string
+	@IsOptional() @IsString() @MaxLength(500) callQueryRelevance?: string
+	@IsOptional() @IsString() @MaxLength(1000) callCompetitorFinding?: string
+	@IsOptional() @IsString() @MaxLength(300) callStartAnswer?: string
+	@IsOptional() @IsString() @MaxLength(500) callTestDirection?: string
+	@IsOptional() @IsString() @MaxLength(1000) callTestHypothesis?: string
+	@IsOptional() @IsString() @MaxLength(500) callTestDecision?: string
+	@IsOptional() @IsString() @MaxLength(300) callTestNextContact?: string
 	@IsOptional() @IsString() @MaxLength(1000) need?: string
 	@IsOptional() @IsString() @MaxLength(1000) desiredResult?: string
 	@IsOptional() @IsString() @MaxLength(1000) priorityCategories?: string
