@@ -201,7 +201,7 @@ export class CampaignManagerController {
 		return this.svc.deleteMessage(id, messageId, forBoth === '1')
 	}
 
-	/** PDF-отчёт адресата: открыть и посмотреть перед отправкой. Счётчик открытий лида не трогает. */
+	/** Девятислайдовая презентация для созвона. Не отправляет клиенту и не меняет счётчик открытий. */
 	@Get('recipients/:id/report')
 	async report(@Param('id') id: string, @Res() res: Response) {
 		const pdf = await this.svc.reportPdf(id)

@@ -4,6 +4,7 @@ import { domainToASCII, domainToUnicode } from 'node:url'
 import { PrismaService } from '../prisma/prisma.service'
 import { renderPdf } from './report.pdf'
 import { renderReportHtml } from './report.template'
+import { renderCallPresentationHtml } from './call-presentation.template'
 import { ReportCompetitor, ReportData, ReportKeyword } from './report.types'
 import { getWordstatVolumes, resolveRegion } from '../common/yandex-positions'
 
@@ -149,13 +150,20 @@ export class ReportService {
 		return renderPdf(await this.renderHtml(leadId))
 	}
 
+	/** Админская презентация для созвона: девять стабильных слайдов без цен. */
+	async renderCallPdf(leadId: string): Promise<Buffer> {
+		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId } })
+		if (!lead) throw new NotFoundException('Лид не найден')
+		return renderPdf(renderCallPresentationHtml(await this.buildData(lead, false)))
+	}
+
 	private async renderHtml(leadId: string): Promise<string> {
 		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId } })
 		if (!lead) throw new NotFoundException('Лид не найден')
 		return renderReportHtml(await this.buildData(lead))
 	}
 
-	private async buildData(lead: OutreachLead): Promise<ReportData> {
+	private async buildData(lead: OutreachLead, includeVolumes = true): Promise<ReportData> {
 		const fromSerp = lead.importId ? await this.keywordsFromSerp(lead.importId, lead.domain) : []
 		const keywords = fromSerp.length ? fromSerp : this.keywordsFromLeadFields(lead)
 		const imp = lead.importId
@@ -168,7 +176,7 @@ export class ReportService {
 			domain: displayDomain(normalizeDomain(lead.domain)),
 			companyName: lead.companyName ?? null,
 			addressee: buildAddressee(lead),
-			keywords: await this.withVolumes(keywords, imp?.region ?? null),
+			keywords: includeVolumes ? await this.withVolumes(keywords, imp?.region ?? null) : keywords,
 			region: imp?.region ?? null,
 			measuredAt: imp?.createdAt ?? null,
 			generatedAt: new Date(),

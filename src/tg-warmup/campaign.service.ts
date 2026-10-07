@@ -3083,7 +3083,7 @@ export class CampaignService {
 		const r = await this.prisma.tgRecipient.findUnique({ where: { id: recipientId }, select: { leadId: true, domain: true } })
 		if (!r) throw new NotFoundException('Адресат не найден')
 		if (!r.leadId) throw new BadRequestException('У этого адресата нет отчёта: он не из базы лидов')
-		return { name: reportFileName(r.domain), buffer: await this.report.renderPdf(r.leadId) }
+		return { name: reportFileName(r.domain), buffer: await this.report.renderCallPdf(r.leadId) }
 	}
 
 	/**
