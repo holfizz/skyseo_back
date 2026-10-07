@@ -48,12 +48,11 @@ header {
 .cover .heading { height: 40mm; margin-top: 11mm; }
 .cover h1 { margin-top: 0; }
 .eyebrow {
-  display: inline-flex; align-items: center; gap: 2mm;
+  display: inline-flex; align-items: center;
   padding: 1.4mm 3mm; border-radius: 8mm;
   background: #d8d9de; color: #32333a;
   font-size: 8.5pt; font-weight: 700;
 }
-.eyebrow::before { content: ''; width: 1.7mm; height: 1.7mm; border-radius: .5mm; background: var(--blue); }
 .dark .eyebrow { background: #44464f; color: #f6f6f7; }
 h1 { margin: 2.2mm 0 0; font-size: 28pt; line-height: 1.05; letter-spacing: -.035em; }
 h1 em { color: inherit; font-style: normal; }
@@ -61,12 +60,8 @@ h1 em { color: inherit; font-style: normal; }
 .body { height: 88mm; position: relative; }
 .takeaway {
   position: absolute; bottom: 10.8mm; left: 16mm; right: 16mm;
-  min-height: 11mm; padding: 3.3mm 0 0 6mm;
+  min-height: 11mm; padding: 3.3mm 0 0;
   color: #44464f; font-size: 8.9pt; font-weight: 700; line-height: 1.25;
-}
-.takeaway::before {
-  content: ''; position: absolute; top: 3.6mm; left: 0;
-  width: 2.3mm; height: 2.3mm; border-radius: .5mm; background: var(--blue);
 }
 .dark .takeaway { color: #f4f4f5; }
 footer {
@@ -155,7 +150,7 @@ footer {
 .rank-line > b { color: var(--blue); font-size: 21pt; text-align: right; }
 .rank-track { position: relative; height: 3mm; border-radius: 2mm; background: #d9dae0; }
 .rank-first { display: block; height: 100%; border-radius: 2mm; background: #b2b3fb; }
-.rank-dot { position: absolute; top: 50%; width: 5mm; height: 5mm; transform: translate(-50%, -50%); border: 1mm solid var(--blue); border-radius: 50%; background: var(--panel); }
+.rank-marker { position: absolute; top: 50%; width: 1mm; height: 8mm; transform: translate(-50%, -50%); border-radius: .3mm; background: var(--blue); }
 .rank-empty { padding: 5mm; color: var(--subtle); }
 .rank-plot + .business-point { min-height: 14mm; margin-top: 4mm; }
 .rank-plot + .business-point svg { width: 8mm; height: 8mm; }

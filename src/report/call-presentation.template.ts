@@ -30,7 +30,7 @@ function slide(n: number, domain: string, eyebrow: string, title: string, body: 
 function rankPlot(k: ReportKeyword | undefined, maxPosition: number): string {
 	if (!k || !k.position) return '<div class="rank-empty">Запросы для сравнения выберем вместе</div>'
 	const left = Math.min(96, Math.max(3, (k.position - 1) / (maxPosition - 1) * 100))
-	return `<div class="rank-line"><span>«${esc(k.keyword)}»</span><div class="rank-track"><i class="rank-first" style="width:${9 / (maxPosition - 1) * 100}%"></i><i class="rank-dot" style="left:${left}%"></i></div><b>${k.position}</b></div>`
+	return `<div class="rank-line"><span>«${esc(k.keyword)}»</span><div class="rank-track"><i class="rank-first" style="width:${9 / (maxPosition - 1) * 100}%"></i><i class="rank-marker" style="left:${left}%"></i></div><b>${k.position}</b></div>`
 }
 
 function queryGroup(items: ReportKeyword[], limit: number): string {
@@ -89,7 +89,7 @@ export function renderCallPresentationHtml(data: ReportData): string {
 			'Позиция по выбранной фразе не равна доле всего трафика сайта.'),
 		slide(4, data.domain, 'Ближайший смысл для бизнеса', beyond.length ? 'Где эти запросы<br><em>сейчас в поиске?</em>' : 'Какие запросы<br><em>уже дают видимость?</em>', `
 			<div class="rank-plot"><div class="rank-axis"><span>1</span><span>10 · первая страница</span><span>${maxPlotPosition} место</span></div>${cards}</div>
-			<div class="business-point"><div>${star}</div><p>Синяя зона — топ-10. Точки показывают сохранённые позиции, а не прогноз роста.</p></div>`,
+			<div class="business-point"><div>${star}</div><p>Синяя зона — топ-10. Метки показывают сохранённые позиции, а не прогноз роста.</p></div>`,
 			'Вопрос владельцу: какие из этих запросов действительно ведут к продаже?'),
 		slide(5, data.domain, 'Кто выше', focus ? `Другие сайты — выше.<br><em>Ваш — на ${pos(focus.position)} месте.</em>` : 'С кем сравним<br><em>ваш сайт?</em>', `
 			<div class="compare-query">Один и тот же запрос: <b>${focusName}</b></div>
