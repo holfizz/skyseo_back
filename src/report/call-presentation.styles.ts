@@ -45,6 +45,8 @@ header {
 .dark .brand { color: #fff; }
 .dark .brand img { filter: grayscale(1) brightness(0) invert(1); }
 .heading { height: 39mm; margin-top: 5mm; }
+.cover .heading { height: 40mm; margin-top: 11mm; }
+.cover h1 { margin-top: 0; }
 .eyebrow {
   display: inline-flex; align-items: center; gap: 2mm;
   padding: 1.4mm 3mm; border-radius: 8mm;
@@ -60,14 +62,13 @@ h1 em { color: inherit; font-style: normal; }
 .takeaway {
   position: absolute; bottom: 10.8mm; left: 16mm; right: 16mm;
   min-height: 11mm; padding: 3.3mm 0 0 6mm;
-  border-top: .35mm solid var(--line);
   color: #44464f; font-size: 8.9pt; font-weight: 700; line-height: 1.25;
 }
 .takeaway::before {
   content: ''; position: absolute; top: 3.6mm; left: 0;
   width: 2.3mm; height: 2.3mm; border-radius: .5mm; background: var(--blue);
 }
-.dark .takeaway { border-top-color: #555761; color: #f4f4f5; }
+.dark .takeaway { color: #f4f4f5; }
 footer {
   position: absolute; bottom: 5mm; left: 16mm; right: 16mm;
   display: flex; justify-content: space-between;
@@ -75,37 +76,26 @@ footer {
 }
 .dark footer { color: #aeb0b8; }
 
-/* Cover: real site and measured distribution, without a fake browser frame. */
-.cover-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 7mm; height: 76mm; }
+/* Cover: bespoke illustration based on the website's squares and star. */
+.cover-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 5mm; height: 79mm; align-items: center; }
 .cover-main { display: flex; flex-direction: column; align-items: flex-start; }
 .cover-domain {
   max-width: 160mm; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding: 0 0 2.5mm; border-bottom: .5mm solid #9fa1aa;
-  color: var(--subtle); font-size: 11pt; font-weight: 700;
+  color: var(--subtle); font-size: 10pt; font-weight: 700;
 }
-.cover-main p { max-width: 160mm; margin: 5mm 0 0; font-size: 13.3pt; line-height: 1.32; }
-.cover-tags { display: flex; flex-wrap: wrap; gap: 2mm; margin-top: auto; padding-bottom: 2mm; }
+.cover-main p { max-width: 135mm; margin: 5mm 0 0; font-size: 12.8pt; line-height: 1.3; }
+.cover-tags { display: flex; flex-wrap: wrap; gap: 2mm; margin-top: 7mm; }
 .cover-tags span {
-  border: .3mm solid #cbccd2; border-radius: 10mm;
-  background: #dedfe3; color: #35363d;
+  border-radius: 10mm; background: #d7d8dc; color: #35363d;
   padding: 1.9mm 3mm; font-size: 8.1pt; font-weight: 700;
 }
-.cover-graphic {
-  display: flex; flex-direction: column;
-  padding: 7mm; border-radius: 4mm; background: #dfe0e4;
-}
-.cover-graphic .graphic-label { font-size: 9pt; font-weight: 700; color: var(--subtle); }
-.cover-graphic .graphic-count { display: flex; align-items: baseline; gap: 2mm; margin: auto 0 2mm; }
-.cover-graphic strong { font-size: 49pt; line-height: .9; color: var(--ink); }
-.cover-graphic .graphic-count span { font-size: 19pt; color: #757781; }
-.cover-graphic .graphic-track { height: 3.3mm; border-radius: 2mm; background: #bfc0c8; overflow: hidden; }
-.cover-graphic .graphic-track i { display: block; height: 100%; border-radius: 2mm; background: var(--blue); }
-.cover-graphic small { margin-top: 4mm; font-size: 9pt; line-height: 1.3; color: #43454d; }
+.cover-note { margin-top: 6mm; font-size: 9pt; color: var(--subtle); }
+.cover-art { display: block; width: 112%; height: 94mm; object-fit: contain; transform: translate(-2mm, -15mm); }
 
 /* Qualification and decision: rules instead of identical oversized cards. */
 .choice-grid, .final-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; height: 61mm; }
 .choice, .final-card {
-  padding: 4mm 1mm 3mm; border-top: .5mm solid #92949d;
+  padding: 4mm 1mm 3mm;
   background: transparent;
 }
 .choice h2, .final-card h2 { margin: 1.5mm 0 3mm; font-size: 18pt; line-height: 1.1; }
@@ -195,7 +185,6 @@ footer {
 .equation > div {
   display: flex; flex-direction: column; justify-content: center;
   padding: 5mm; border-radius: 3mm; background: var(--panel);
-  border-top: .5mm solid #a3a5ae;
 }
 .equation b { font-size: 15pt; color: var(--ink); }
 .equation span { margin-top: 2mm; font-size: 9pt; line-height: 1.3; }
@@ -211,7 +200,7 @@ footer {
 
 /* Five-day process. */
 .days-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; height: 43mm; }
-.days-grid > div { padding: 4mm 4mm 3mm; border-top: .5mm solid #9fa1aa; background: var(--panel); }
+.days-grid > div { padding: 4mm 4mm 3mm; background: var(--panel); }
 .days-grid b { font-size: 14pt; color: var(--ink); }
 .days-grid p { margin: 2mm 0 0; font-size: 9.5pt; line-height: 1.3; }
 .test-compare { display: grid; grid-template-columns: 1fr 12mm 1fr; gap: 3mm; align-items: center; margin-top: 5mm; height: 31mm; }

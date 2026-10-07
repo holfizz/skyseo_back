@@ -1,6 +1,8 @@
 import { LOGO_SVG_B64 } from './report.assets'
 import { ReportCompetitor, ReportData, ReportKeyword } from './report.types'
 import { CALL_PRESENTATION_CSS } from './call-presentation.styles'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 // Девять стабильных слайдов для разговора с владельцем. Их номера совпадают
 // с подсказками в панели «Созвон»; публичный старый отчёт остаётся отдельным.
@@ -11,6 +13,7 @@ const date = (value: Date | null): string => value
 	: 'дата замера не сохранена'
 const pos = (value: number | null): string => value !== null && value > 0 ? String(value) : '—'
 const star = '<svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 1l5.4 17.6L47 24l-17.6 5.4L24 47l-5.4-17.6L1 24l17.6-5.4Z" fill="#b8bac3"/></svg>'
+const coverArt = readFileSync(join(process.cwd(), 'src/report/illustrations/cover-search-steps.svg')).toString('base64')
 const marketplace = /(^|\.)(avito\.ru|profi\.ru|2gis\.ru|yell\.ru|flamp\.ru|zoon\.ru|otzovik\.com|uslugi\.yandex\.ru)$/i
 // Это только порядок примеров для обсуждения, не оценка ценности запроса.
 const intentScore = (keyword: string): number =>
@@ -18,9 +21,9 @@ const intentScore = (keyword: string): number =>
 		: /(цена|стоимость|аренда|доставка|услуги)/i.test(keyword) ? 1 : 0
 
 function slide(n: number, domain: string, eyebrow: string, title: string, body: string, takeaway: string, dark = false): string {
-	return `<section class="slide${dark ? ' dark' : ''}"><header><div class="brand"><img src="data:image/svg+xml;base64,${LOGO_SVG_B64}" alt=""/><b>SkySEO</b></div><span>Разбор сайта · ${esc(domain)}</span></header>
-		<div class="heading"><span class="eyebrow">${esc(eyebrow)}</span><h1>${title}</h1></div>
-		<div class="body">${body}</div><div class="takeaway">${takeaway}</div>
+	return `<section class="slide${n === 1 ? ' cover' : ''}${dark ? ' dark' : ''}"><header><div class="brand"><img src="data:image/svg+xml;base64,${LOGO_SVG_B64}" alt=""/><b>SkySEO</b></div><span>Разбор сайта · ${esc(domain)}</span></header>
+		<div class="heading">${eyebrow ? `<span class="eyebrow">${esc(eyebrow)}</span>` : ''}<h1>${title}</h1></div>
+		<div class="body">${body}</div>${takeaway ? `<div class="takeaway">${takeaway}</div>` : ''}
 		<footer><span>Сохранённый срез поиска · выводы требуют проверки с бизнесом</span><span>${n} / 9</span></footer></section>`
 }
 
@@ -58,19 +61,18 @@ export function renderCallPresentationHtml(data: ReportData): string {
 		: '<div class="empty">Позиции не сохранены. Прежде чем обсуждать конкурентов, зафиксируем нужные запросы и регион.</div>'
 	const focusName = focus ? `«${esc(focus.keyword)}»` : 'Запрос ещё не выбран'
 	const compare = priorities.length ? priorities.map(k => pos(k.position)).join(' / ') : '—'
-	const top10Share = ranked.length ? Math.round(top10 / ranked.length * 100) : 0
 	const scale = Math.max(1, top10, eleven20, twentyPlus)
 	const positionRow = (label: string, count: number, tone: string) => `<div class="position-row"><b>${label}</b><div class="position-track"><i class="${tone}" style="width:${count / scale * 100}%"></i></div><strong>${count}</strong></div>`
 	const coverTitle = data.domain.length <= 24
 		? `Где ${domain}<br><em>может недополучать заявки?</em>`
 		: 'Где сайт может<br><em>недополучать заявки?</em>'
 	const slides = [
-		slide(1, data.domain, 'Персональный разбор', coverTitle, `
-			<div class="cover-grid"><div class="cover-main"><div class="cover-domain">${domain} · ${region}</div>
+		slide(1, data.domain, '', coverTitle, `
+			<div class="cover-grid"><div class="cover-main"><div class="cover-domain">Яндекс · ${measured}</div>
 			<p>${rankNote} Посмотрим, какие направления важны вашему бизнесу и где есть смысл искать рост.</p>
-			<div class="cover-tags"><span>${ranked.length} проверенных запросов</span><span>${ranked.length - top10} за пределами топ-10</span><span>потери заявок пока не рассчитаны</span></div></div>
-			<div class="cover-graphic"><span class="graphic-label">В топ-10 из проверенных</span><div class="graphic-count"><strong>${top10}</strong><span>/ ${ranked.length}</span></div><div class="graphic-track"><i style="width:${top10Share}%"></i></div><small>Ещё ${ranked.length - top10} за первой страницей.<br>Релевантность каждого запроса обсудим.</small></div></div>`,
-			'Сегодня: сопоставим поисковые данные с вашими задачами и выберем следующий шаг.'),
+			<div class="cover-tags"><span>${top10} из ${ranked.length} в топ-10</span><span>${ranked.length - top10} за первой страницей</span></div>
+			<div class="cover-note">Сколько это заявок, узнаем после проверки аналитики.</div></div>
+			<img class="cover-art" src="data:image/svg+xml;base64,${coverArt}" alt="Абстрактная схема поисковой выдачи"/></div>`, ''),
 		slide(2, data.domain, 'Цель разговора', 'Какие обращения<br><em>ценны для бизнеса?</em>', `
 			<div class="choice-grid"><div class="choice"><div class="shape">✳</div><h2>Нужные услуги и города</h2><p>Какие обращения дают вам подходящих клиентов? Где вы действительно работаете?</p><p><b>Уточним:</b> что продвигать в первую очередь.</p></div>
 			<div class="choice"><div class="shape square">▣</div><h2>Качество заявки</h2><p>Звонок, форма или встреча — что ведёт к продаже? Какие обращения не подходят?</p><p><b>Уточним:</b> как измерять пользу для бизнеса.</p></div></div>
