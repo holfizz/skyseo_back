@@ -458,6 +458,9 @@ export class CampaignService {
   return { enabled: settings?.enabled ?? true, variants: variants.map(({ recipients: rows, ...v }) => ({ ...v,
    outcomes: rows.reduce((acc: Record<string, number>, r) => { if (r.outcome) acc[r.outcome] = (acc[r.outcome] ?? 0) + 1; return acc }, {}),
    assigned: rows.length, sent: rows.filter(r => r.sentAt).length,
+   // Блокировка может случиться до успешной отправки. Для её доли берём
+   // уникальных обработанных адресатов, не только получивших сообщение.
+   processed: rows.filter(r => r.sentAt || r.blockedAt || r.status === 'FAILED').length,
    read: rows.filter(r => r.readAt).length, readNoReply: rows.filter(r => r.readAt && !r.repliedAt).length,
    replied: rows.filter(r => r.repliedAt).length, second: rows.filter(r => r.secondSentAt).length,
    blocked: rows.filter(r => r.blockedAt).length, failed: rows.filter(r => r.status === 'FAILED').length,
