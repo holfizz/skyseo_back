@@ -15,7 +15,7 @@ import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { buildLeadVars, type LeadVars } from './lead-vars'
 import { OUTCOME_KEYS, outcomeLabel } from './outcomes'
 import { pickCompetitors } from '../outreach/competitors'
-import { displayDomain } from '../common/domain'
+import { containsDomainOrUrl, displayDomain } from '../common/domain'
 import { domainToASCII } from 'node:url'
 import {
 	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
@@ -477,6 +477,7 @@ export class CampaignService {
    if (v.enabled !== undefined && typeof v.enabled !== 'boolean') throw new BadRequestException('Некорректный флаг активности')
    if (v.hasSecondMessage !== undefined && typeof v.hasSecondMessage !== 'boolean') throw new BadRequestException('Некорректный флаг второго сообщения')
    if (v.hasSecondMessage && (typeof v.secondMessage !== 'string' || !v.secondMessage.trim() || v.secondMessage.length > 4000)) throw new BadRequestException(`Заполните второе сообщение у текста ${position + 1} (до 4000 символов)`)
+   if (containsDomainOrUrl(v.text) || (v.hasSecondMessage && containsDomainOrUrl(v.secondMessage))) throw new BadRequestException(`В тексте ${position + 1} есть ссылка или домен. Используйте имя сайта без зоны`)
    return { id: v.id, name: v.name?.trim() || `Текст ${position + 1}`, text: v.text.trim(), position, enabled: v.enabled !== false,
     hasSecondMessage: v.hasSecondMessage === true, secondMessage: v.hasSecondMessage ? v.secondMessage.trim() : null }
   })
@@ -607,6 +608,9 @@ export class CampaignService {
  }
 
 	async create(body?: { name?: string; firstMessage?: string; secondMessage?: string }) {
+		if ([body?.firstMessage, body?.secondMessage].some(text => typeof text === 'string' && containsDomainOrUrl(text))) {
+			throw new BadRequestException('Ссылки и полные домены в Telegram-сообщениях отключены. Используйте имя сайта без зоны')
+		}
 		return this.prisma.tgCampaign.create({
 			data: {
 				name: body?.name?.trim() || new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
@@ -630,6 +634,9 @@ export class CampaignService {
 		const data: any = {}
 		for (const k of ['name', 'firstMessage', 'secondMessage']) {
 			if (typeof body?.[k] === 'string') data[k] = body[k].trim() || null
+		}
+		if ([data.firstMessage, data.secondMessage].some(text => typeof text === 'string' && containsDomainOrUrl(text))) {
+			throw new BadRequestException('Ссылки и полные домены в Telegram-сообщениях отключены. Используйте имя сайта без зоны')
 		}
 		for (const k of ['perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo']) {
 			if (body?.[k] !== undefined && body[k] !== null && body[k] !== '') data[k] = Number(body[k])
@@ -2097,6 +2104,13 @@ export class CampaignService {
 			return 'skipped'
 		}
 		const text = fillTemplate(variantText, recipient)
+		if (containsDomainOrUrl(text)) {
+			await this.prisma.tgRecipient.update({
+				where: { id: recipient.id },
+				data: { status: 'FAILED', sentAt: null, accountId: null, error: 'ссылка или домен в тексте: отправка отменена' },
+			})
+			return 'skipped'
+		}
 
 		// Аккаунт уже занят вызывающим на весь тик — здесь его не трогаем.
 		const opts = this.warmup.clientOptions(account)
@@ -3117,6 +3131,7 @@ export class CampaignService {
 		const photos = extra?.photos ?? []
 		const replyToTgId = extra?.replyToTgId ?? null
 		if (!body && !photos.length) throw new BadRequestException('Пустое сообщение')
+		if (containsDomainOrUrl(body)) throw new BadRequestException('Ссылки и полные домены в Telegram-сообщениях отключены. Уберите доменную зону')
 		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
 		if (photos.length > PHOTO_COUNT_LIMIT) {
 			throw new BadRequestException(`За раз можно приложить не больше ${PHOTO_COUNT_LIMIT} фото`)
@@ -3897,7 +3912,7 @@ export class CampaignService {
 
 		const rows = []
 		for (const c of campaigns) {
-			const [total, sentTotal, queued, sentToday, blockedToday, plannedToday, next] = await Promise.all([
+			const [total, sentTotal, queued, sentToday, blockedToday, plannedToday, next, sentByAccount] = await Promise.all([
 				// Вся рассылка целиком: «из 20 человек ушло 7» — первое, что хотят видеть.
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id } }),
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { not: null } } }),
@@ -3922,11 +3937,17 @@ export class CampaignService {
 						plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
 					},
 				}),
+				this.prisma.tgRecipient.groupBy({
+					by: ['accountId'],
+					where: { campaignId: c.id, accountId: { not: null }, sentAt: { not: null } },
+					_count: { _all: true },
+				}),
 			])
 
 			// Кампания без единого адресата в очереди и без сегодняшних отправок
 			// в сводке «что идёт сегодня» только мешает.
 			if (!queued && !sentToday) continue
+			const sentByAccountId = new Map(sentByAccount.map(row => [row.accountId, row._count._all]))
 
 			rows.push({
 				id: c.id,
@@ -3957,10 +3978,12 @@ export class CampaignService {
 					.map(l => ({
 						id: l.account.id,
 						label: l.account.label,
+						username: l.account.username,
 						avatar: l.account.avatar,
 						tgUserId: l.account.tgUserId,
 						forceSend: l.account.forceSend,
 						sentToday: l.dayKey === today ? l.sentToday : 0,
+						sentInCampaign: sentByAccountId.get(l.accountId) ?? 0,
 						dailyLimit: l.dailyLimit ?? null,
 						nextSendAt: l.nextSendAt,
 						pausedUntil: l.pausedUntil,
@@ -4514,6 +4537,7 @@ export class CampaignService {
         const missing = missingPlaceholders(template, data)
         if (missing.length) throw new BadRequestException(`Не хватает данных: ${missing.join(', ')}`)
 		const text = fillTemplate(template, data as any)
+		if (containsDomainOrUrl(text)) throw new BadRequestException('Тестовое сообщение содержит ссылку или полный домен')
 
 		if (!(await this.warmup.claimAccount(account.id, 'send', 120))) {
 			throw new BadRequestException('Аккаунт сейчас занят прогревом, попробуйте через минуту')

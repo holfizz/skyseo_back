@@ -4,7 +4,7 @@
 // что они выдают машинный набор.
 
 import { normalizeName } from '../common/normalize-name'
-import { displayDomain } from '../common/domain'
+import { domainName } from '../common/domain'
 
 export type MessageKeyword = { keyword: string; position: number }
 export type MessageCompetitor = { domain: string; position: number }
@@ -89,9 +89,9 @@ export function buildOutreachMessage(input: MessageInput): string {
 
 	const rivals = input.competitors.slice(0, 2)
 	if (rivals.length >= 2) {
-		blocks.push(`В сохраненной выдаче выше вас ${displayDomain(rivals[0].domain)} и ${displayDomain(rivals[1].domain)}.`)
+		blocks.push(`В сохраненной выдаче выше вас ${domainName(rivals[0].domain)} и ${domainName(rivals[1].domain)}.`)
 	} else if (rivals.length === 1) {
-		blocks.push(`В сохраненной выдаче выше вас ${displayDomain(rivals[0].domain)}.`)
+		blocks.push(`В сохраненной выдаче выше вас ${domainName(rivals[0].domain)}.`)
 	}
 
 	blocks.push('Я занимаюсь SEO и видимостью сайтов в ответах нейросетей. По вашему сайту видимость в нейропоиске пока отдельно не проверял.')
@@ -100,24 +100,15 @@ export function buildOutreachMessage(input: MessageInput): string {
 	return blocks.map(trimDot).join('\n\n')
 }
 
-// Доменные зоны второго уровня: после срезания «.uk» надо срезать и «.co».
-const SECOND_LEVEL = ['com', 'co', 'net', 'org']
-
 /**
  * Имя сайта без зоны: «dreamsstore.ru» → «dreamsstore».
  *
  * В первом сообщении зона только мешает: она не несёт смысла, а адрес с точкой
  * Telegram превращает в ссылку, и живое обращение начинает выглядеть рассылкой.
- * В остальных текстах домены остаются целиком: там это чужие сайты, и по
- * огрызку конкурента лид его не узнает.
+ * Во всех текстах домены показываем без зоны, чтобы Telegram не делал ссылки.
  */
 export function siteName(domain: string): string {
-	const clean = displayDomain(domain)
-	const parts = clean.split('.')
-	if (parts.length < 2) return clean
-	parts.pop()
-	if (parts.length > 1 && SECOND_LEVEL.includes(parts[parts.length - 1])) parts.pop()
-	return parts.join('.')
+	return domainName(domain)
 }
 
 /**

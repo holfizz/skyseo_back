@@ -7,11 +7,11 @@
  * Ключ, для которого данных нет, в результат не попадает — тогда
  * missingPlaceholders не даст отправить текст, а не сочинит позиции.
  *
- * Конкуренты идут целым доменом, как и во втором сообщении: по огрызку лид
- * соперника не узнает.
+ * Конкурентов показываем именем основного домена без зоны, чтобы Telegram
+ * не превращал адрес в ссылку.
  */
 
-import { displayDomain } from '../common/domain'
+import { domainName } from '../common/domain'
 import type { MessageCompetitor, MessageKeyword } from '../outreach/outreach-message'
 
 export type LeadVars = Record<string, string>
@@ -32,7 +32,7 @@ export function buildLeadVars(keywords: MessageKeyword[], competitors: MessageCo
 		vars['позиция'] = String(shown[0].position)
 	}
 
-	const rivals = competitors.slice(0, SHOWN_COMPETITORS).map(c => displayDomain(c.domain)).filter(Boolean)
+	const rivals = competitors.slice(0, SHOWN_COMPETITORS).map(c => domainName(c.domain)).filter(Boolean)
 	if (rivals.length) {
 		vars['конкуренты'] = rivals.join(' и ')
 		vars['конкурент'] = rivals[0]

@@ -15,7 +15,7 @@
  */
 
 import { normalizeName } from '../common/normalize-name'
-import { displayDomain } from '../common/domain'
+import { domainName } from '../common/domain'
 
 export type Placeholders = {
 	firstName?: string | null
@@ -28,21 +28,15 @@ export type Placeholders = {
 	leadVars?: unknown
 }
 
-/** Имя сайта без зоны: адрес с точкой Telegram превращает в ссылку. */
-function siteName(domain?: string | null): string {
-	const clean = displayDomain(domain)
-	const parts = clean.split('.')
-	if (parts.length < 2) return clean
-	parts.pop()
-	if (parts.length > 1 && ['com', 'co', 'net', 'org'].includes(parts[parts.length - 1])) parts.pop()
-	return parts.join('.')
-}
-
 /** Фразы по выдаче лида; чужие и нестроковые значения отбрасываем. */
 function leadValues(raw: unknown): Record<string, string> {
 	const out: Record<string, string> = {}
 	if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-		for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && v.trim()) out[k] = v.trim()
+		for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && v.trim()) {
+			// Уже сохранённые leadVars содержат полные домены: чистим и их при подстановке.
+			out[k] = k === 'конкуренты' ? v.split(/\s+и\s+/i).map(domainName).join(' и ')
+				: k === 'конкурент' ? domainName(v) : v.trim()
+		}
 	}
 	return out
 }
@@ -66,7 +60,7 @@ function values(p: Placeholders, now: Date): Record<string, string> {
 		'отчество': normalizeName(p.middleName),
 		'фамилия': normalizeName(p.lastName),
 		'фио': [p.firstName, p.middleName].map(normalizeName).filter(Boolean).join(' '),
-		'сайт': siteName(p.domain),
+		'сайт': domainName(p.domain),
 		'компания': (p.company ?? '').trim(),
 	}
 }

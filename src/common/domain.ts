@@ -17,6 +17,22 @@ export function displayDomain(domain?: string | null): string {
 	}
 }
 
+/** Узнаваемое имя основного домена без зоны: shop.example.co.uk → example. */
+export function domainName(domain?: string | null): string {
+	const clean = displayDomain(domain).replace(/\.$/, '')
+	const labels = clean.split('.').filter(Boolean)
+	if (labels.length < 2) return clean
+	const last = labels.length - 1
+	const doubleSuffix = labels.length >= 3 && labels[last].length === 2
+		&& ['co', 'com', 'net', 'org'].includes(labels[last - 1])
+	return labels[last - (doubleSuffix ? 2 : 1)]
+}
+
+/** Даже домен без протокола Telegram превращает в кликабельную ссылку. */
+export function containsDomainOrUrl(text: string): boolean {
+	return /https?:\/\/|www\.|(?:^|[^\p{L}\p{N}_])(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,24}(?=$|[^\p{L}\p{N}_])/iu.test(text)
+}
+
 /**
  * Сайты, известные всей стране. Показывать их лиду как «конкурента» нельзя:
  * Авито не конкурирует с фабрикой шкафов, и письмо сразу выглядит рассылкой.

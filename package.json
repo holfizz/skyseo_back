@@ -20,6 +20,7 @@
 		"seed:exec-errors": "ts-node --transpile-only prisma/seed-exec-errors.ts",
 		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts",
 		"test:crm": "ts-node --transpile-only src/scripts/test-crm.ts",
+		"test:tg-domains": "ts-node --transpile-only src/scripts/test-tg-message-domains.ts",
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
 		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
 	},
