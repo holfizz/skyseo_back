@@ -51,7 +51,7 @@ export class SalesReminderScheduler implements OnModuleInit {
 				try {
 					await this.telegram.sendOutreachNotification(
 						`⏰ <b>${task.kind === 'FOLLOW_UP' ? 'Напоминание' : task.kind === 'CALL' ? 'Созвон' : 'Задача CRM'}</b> · ${esc(date)} МСК\n` +
-						`${esc(task.title)}\n<a href="${url}">Открыть в CRM</a>`,
+						`${esc(task.title)}\n<a href="${url}">${task.kind === 'FOLLOW_UP' ? 'Открыть напоминания' : 'Открыть в CRM'}</a>`,
 					)
 				} catch (error) {
 					// Delivery after a timeout is unknown. Keep the claim to avoid duplicate alerts;
