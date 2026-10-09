@@ -4619,21 +4619,51 @@ export class CampaignService {
 		})
 	}
 
-	/** Все напоминания: когда и кому написать. Просроченные тоже, пока их не закрыли. */
+	/** Напоминания из CRM-задач: диалоги, заявки и свободные контакты в одном списке. */
 	async followUps() {
-		const rows = await this.prisma.tgRecipient.findMany({
-			where: { followUpAt: { not: null } },
-			orderBy: { followUpAt: 'asc' },
+		const rows = await this.prisma.crmTask.findMany({
+			where: { kind: 'FOLLOW_UP', status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { not: null } },
+			orderBy: { dueAt: 'asc' },
 			select: {
-				id: true, firstName: true, middleName: true, lastName: true, username: true, phone: true,
-				domain: true, company: true, outcome: true, followUpAt: true, followUpNote: true,
+				id: true, dueAt: true, description: true, followUpName: true, followUpContact: true,
+				followUpWebsite: true, followUpSource: true, leadId: true, followUpRecipientId: true,
+				lead: { select: { title: true, contact: true, source: true, outreachLead: { select: { domain: true } } } },
+				followUpRecipient: { select: { firstName: true, middleName: true, username: true, phone: true, domain: true, outcome: true } },
 			},
 		})
-		return rows.map(r => ({
-			...r,
-			who: [r.firstName, r.middleName].filter(Boolean).join(' ') || (r.username ? `@${r.username}` : r.phone) || 'Без имени',
-			outcomeLabel: outcomeLabel(r.outcome),
-		}))
+		return rows.map(task => {
+			const recipient = task.followUpRecipient
+			const who = task.followUpName || (recipient ? [recipient.firstName, recipient.middleName].filter(Boolean).join(' ') : '')
+				|| task.lead?.title || (recipient?.username ? `@${recipient.username}` : recipient?.phone)
+				|| task.followUpContact || task.followUpWebsite || 'Без имени'
+			return {
+				id: task.id, recipientId: task.followUpRecipientId, leadId: task.leadId,
+				who, telegram: task.followUpContact || (recipient?.username ? `@${recipient.username}` : recipient?.phone) || task.lead?.contact || null,
+				domain: task.followUpWebsite || recipient?.domain || task.lead?.outreachLead?.domain || null,
+				followUpAt: task.dueAt, followUpNote: task.description,
+				source: recipient ? 'dialog' : task.followUpSource === 'SITE_FORM' || task.lead?.source === 'SITE_FORM' ? 'site' : task.followUpSource === 'MANUAL' ? 'manual' : 'crm',
+				editable: !recipient && Boolean(task.followUpSource),
+				outcomeLabel: recipient ? outcomeLabel(recipient.outcome) : null,
+			}
+		})
+	}
+
+	async siteFormLeads(q?: string) {
+		const search = String(q ?? '').trim().slice(0, 120)
+		return this.prisma.crmLead.findMany({
+			where: { source: 'SITE_FORM',
+				...(search ? { OR: [{ title: { contains: search, mode: 'insensitive' } }, { contact: { contains: search, mode: 'insensitive' } }] } : {}) },
+			select: { id: true, title: true, contact: true, comment: true, createdAt: true },
+			orderBy: { createdAt: 'desc' }, take: 50,
+		})
+	}
+
+	async saveStandaloneFollowUp(body: { taskId?: string; leadId?: string | null; name?: string; contact?: string; website?: string; note?: string; source?: 'MANUAL' | 'SITE_FORM'; dueAt?: string }) {
+		return this.followUp.saveStandalone({ ...body, dueAt: new Date(body?.dueAt ?? '') })
+	}
+
+	async completeStandaloneFollowUp(taskId: string) {
+		return this.followUp.completeStandalone(taskId)
 	}
 
 	/** Раз в минуту: подошла дата напоминания, и бот ещё не сообщал. */
@@ -4680,10 +4710,10 @@ export class CampaignService {
 		const endOfThirdDay = mskAt(now, 0, 3)
 		const [unread, followUpsTotal, followUpsNext3Days, followUpsToday, followUpsOverdue, noOutcome] = await Promise.all([
 			this.prisma.tgRecipient.aggregate({ where: { unreadIn: { gt: 0 } }, _sum: { unreadIn: true }, _count: true }),
-			this.prisma.tgRecipient.count({ where: { followUpAt: { not: null } } }),
-			this.prisma.tgRecipient.count({ where: { followUpAt: { gte: startOfDay, lt: endOfThirdDay } } }),
-			this.prisma.tgRecipient.count({ where: { followUpAt: { gte: startOfDay, lt: endOfDay } } }),
-			this.prisma.tgRecipient.count({ where: { followUpAt: { lt: startOfDay } } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { not: null } } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { gte: startOfDay, lt: endOfThirdDay } } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { gte: startOfDay, lt: endOfDay } } }),
+			this.prisma.crmTask.count({ where: { kind: 'FOLLOW_UP', status: { in: ['TODO', 'IN_PROGRESS'] }, dueAt: { lt: startOfDay } } }),
 			this.prisma.tgRecipient.count({
 				where: {
 					outcome: null,

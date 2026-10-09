@@ -926,6 +926,11 @@ model CrmTask {
   clientId            String?
   leadId              String?
   followUpRecipientId String?       @unique
+  // Свободное напоминание без CRM-лида или Telegram-диалога.
+  followUpName        String?
+  followUpContact     String?
+  followUpWebsite     String?
+  followUpSource      String? // MANUAL | SITE_FORM
   assigneeId          String?
   createdById         String?
   createdAt           DateTime      @default(now())

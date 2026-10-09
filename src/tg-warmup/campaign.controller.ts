@@ -280,6 +280,21 @@ export class CampaignController {
 		return this.svc.followUps()
 	}
 
+	@Get('follow-ups/site-leads')
+	siteFormLeads(@Query('q') q?: string) {
+		return this.svc.siteFormLeads(q)
+	}
+
+	@Post('follow-ups')
+	saveStandaloneFollowUp(@Body() body: { taskId?: string; leadId?: string | null; name?: string; contact?: string; website?: string; note?: string; source?: 'MANUAL' | 'SITE_FORM'; dueAt?: string }) {
+		return this.svc.saveStandaloneFollowUp(body)
+	}
+
+	@Post('follow-ups/:id/complete')
+	completeStandaloneFollowUp(@Param('id') id: string) {
+		return this.svc.completeStandaloneFollowUp(id)
+	}
+
 	/**
 	 * Написать адресату: любой текст, в любой момент, с того же аккаунта.
 	 *

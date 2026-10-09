@@ -46,10 +46,11 @@ export class SalesReminderScheduler implements OnModuleInit {
 				if (claim.count !== 1) continue
 				const task = reminder.task
 				const date = task.dueAt?.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) || 'сейчас'
-				const url = task.leadId ? `https://skyseo.site/holfizz/crm?lead=${encodeURIComponent(task.leadId)}` : 'https://skyseo.site/holfizz/crm'
+				const url = task.kind === 'FOLLOW_UP' ? 'https://skyseo.site/holfizz/telegram?tab=followups'
+					: task.leadId ? `https://skyseo.site/holfizz/crm?lead=${encodeURIComponent(task.leadId)}` : 'https://skyseo.site/holfizz/crm'
 				try {
 					await this.telegram.sendOutreachNotification(
-						`⏰ <b>${task.kind === 'CALL' ? 'Созвон' : 'Задача CRM'}</b> · ${esc(date)} МСК\n` +
+						`⏰ <b>${task.kind === 'FOLLOW_UP' ? 'Напоминание' : task.kind === 'CALL' ? 'Созвон' : 'Задача CRM'}</b> · ${esc(date)} МСК\n` +
 						`${esc(task.title)}\n<a href="${url}">Открыть в CRM</a>`,
 					)
 				} catch (error) {

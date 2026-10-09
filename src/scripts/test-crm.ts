@@ -69,6 +69,25 @@ async function main() {
 	await followUp.saveCrm({ leadId: lead.id, taskId: follow.taskId, dueAt: null })
 	assert.equal(await prisma.crmReminder.count({ where: { taskId: follow.taskId, sent: false } }), 0)
 
+	const standalone = await followUp.saveStandalone({ name: 'Новый контакт', contact: '@contact', website: 'example', note: 'Перезвонить', dueAt })
+	const standaloneTask = await prisma.crmTask.findUniqueOrThrow({ where: { id: standalone.taskId } })
+	assert.equal(standaloneTask.leadId, null)
+	assert.equal(standaloneTask.followUpRecipientId, null)
+	assert.equal(standaloneTask.followUpContact, '@contact')
+	assert.equal(await prisma.crmReminder.count({ where: { taskId: standalone.taskId, sent: false } }), 1)
+	const later = new Date(dueAt.getTime() + 86_400_000)
+	await followUp.saveStandalone({ taskId: standalone.taskId, name: 'Новый контакт', contact: '@contact', dueAt: later })
+	assert.equal((await prisma.crmTask.findUniqueOrThrow({ where: { id: standalone.taskId } })).dueAt?.getTime(), later.getTime())
+	assert.equal(await prisma.crmReminder.count({ where: { taskId: standalone.taskId, sent: false } }), 1)
+	await followUp.completeStandalone(standalone.taskId)
+	assert.equal((await prisma.crmTask.findUniqueOrThrow({ where: { id: standalone.taskId } })).status, 'DONE')
+	assert.equal(await prisma.crmReminder.count({ where: { taskId: standalone.taskId, sent: false } }), 0)
+	const siteLead = await prisma.crmLead.create({ data: { title: 'Заявка с сайта', contact: '@site', source: 'SITE_FORM' } })
+	const siteFollow = await followUp.saveStandalone({ leadId: siteLead.id, source: 'SITE_FORM', dueAt, note: 'Позвонить' })
+	assert.equal((await prisma.crmTask.findUniqueOrThrow({ where: { id: siteFollow.taskId } })).leadId, siteLead.id)
+	await assert.rejects(() => followUp.saveStandalone({ leadId: siteLead.id, source: 'SITE_FORM', dueAt }), /активное напоминание/)
+	await followUp.completeStandalone(siteFollow.taskId)
+
 	const requestId = randomUUID()
 	const [call, repeatedCall] = await Promise.all([
 		crm.scheduleCall(actor, lead.id, { requestId, title: 'Созвон', dueAt: dueAt.toISOString() }),
