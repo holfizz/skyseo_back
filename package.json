@@ -21,6 +21,7 @@
 		"test:emails": "ts-node --transpile-only src/scripts/test-emails.ts",
 		"test:crm": "ts-node --transpile-only src/scripts/test-crm.ts",
 		"test:tg-domains": "ts-node --transpile-only src/scripts/test-tg-message-domains.ts",
+		"test:site-lead-notifications": "ts-node --transpile-only src/scripts/test-site-lead-notifications.ts",
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
 		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
 	},
