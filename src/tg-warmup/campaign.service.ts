@@ -10,7 +10,7 @@ import { ReportService } from '../report/report.service'
 import { CustomFile } from 'teleproto/client/uploads'
 import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
-import { fillTemplate, missingPlaceholders } from './campaign-text'
+import { adaptTopTenClaim, fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { buildLeadVars, type LeadVars } from './lead-vars'
 import { OUTCOME_KEYS, outcomeLabel } from './outcomes'
@@ -2944,7 +2944,10 @@ export class CampaignService {
    // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
    if (r.leadId && r.leadVars == null) r = { ...r, leadVars: (await this.leadVarsFor([r.leadId])).get(r.leadId) ?? {} }
    // Без данных заготовка вышла бы с пустыми местами. Лучше без неё: напишет человек.
-   const template = usesLegacyReportOffer(r.hypothesis.secondMessage) ? SECOND_MESSAGE : r.hypothesis.secondMessage
+   const template = adaptTopTenClaim(
+    usesLegacyReportOffer(r.hypothesis.secondMessage) ? SECOND_MESSAGE : r.hypothesis.secondMessage,
+    r,
+   )
    if (missingPlaceholders(template, r).length) return null
    return fillTemplate(template, r)
   }

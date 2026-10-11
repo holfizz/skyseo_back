@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { containsDomainOrUrl, domainName } from '../common/domain'
 import { buildOutreachMessage } from '../outreach/outreach-message'
-import { fillTemplate, missingPlaceholders } from '../tg-warmup/campaign-text'
+import { adaptTopTenClaim, fillTemplate, missingPlaceholders } from '../tg-warmup/campaign-text'
 import { buildLeadVars } from '../tg-warmup/lead-vars'
 
 assert.equal(domainName('https://www.shop.example.co.uk/catalog'), 'example')
@@ -33,15 +33,22 @@ assert.equal(containsDomainOrUrl(followUp), false)
 
 // H5's manually sent continuation must use real saved positions and stripped
 // competitor names. Missing data disables the suggestion instead of inventing it.
-const h5Sql = readFileSync(join(__dirname, '../../prisma/migrations/20261011120000_h5_joke_second_message/migration.sql'), 'utf8')
-const h5Template = h5Sql.match(/\$h5\$([\s\S]*?)\$h5\$/)?.[1]
+const h5Sql = readFileSync(join(__dirname, '../../prisma/migrations/20261011160000_h5_approved_second_message/migration.sql'), 'utf8')
+const h5Template = h5Sql.match(/\$approved\$([\s\S]*?)\$approved\$/)?.[1]
 assert.ok(h5Template)
 assert.deepEqual(missingPlaceholders(h5Template, recipient), [])
-assert.deepEqual(missingPlaceholders(h5Template, { ...recipient, leadVars: {} }), ['позиции', 'конкуренты'])
-const h5Second = fillTemplate(h5Template, recipient)
-assert.match(h5Second, /по «станки купить» вы на 19 месте/)
+assert.deepEqual(missingPlaceholders(h5Template, { ...recipient, leadVars: {} }), ['запрос', 'позиция', 'конкуренты'])
+const h5Second = fillTemplate(adaptTopTenClaim(h5Template, recipient), recipient)
+assert.match(h5Second, /по «станки купить» сайт на 19 месте, но до топ-10 пока не дотягивает/)
 assert.match(h5Second, /Среди конкурентов в выдаче вижу rival и other/)
+assert.match(h5Second, /вопросам\.\n\nДавайте созвонимся/)
+assert.equal(/[—–Ёё]/.test(h5Second), false)
 assert.equal(containsDomainOrUrl(h5Second), false)
+const topTenRecipient = { ...recipient, leadVars: { ...vars, позиция: '10' } }
+const topTenSecond = fillTemplate(adaptTopTenClaim(h5Template, topTenRecipient), topTenRecipient)
+assert.match(topTenSecond, /сайт на 10 месте и уже входит в топ-10/)
+assert.equal(topTenSecond.includes('не дотягивает'), false)
+assert.equal(containsDomainOrUrl(topTenSecond), false)
 
 for (const text of ['client.ru', 'https://client.ru', 'www.client.com', 'shop.client.co.uk', 'client@shop.ru', 'сайт.рф']) {
 	assert.equal(containsDomainOrUrl(text), true, text)

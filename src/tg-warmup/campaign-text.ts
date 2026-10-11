@@ -41,6 +41,14 @@ function leadValues(raw: unknown): Record<string, string> {
 	return out
 }
 
+/** Keep the H5 top-10 claim accurate for recipients already ranked there. */
+export function adaptTopTenClaim(template: string, p: Placeholders): string {
+	const position = Number(leadValues(p.leadVars)['позиция'])
+	return Number.isInteger(position) && position > 0 && position <= 10
+		? template.replace(', но до топ-10 пока не дотягивает', ' и уже входит в топ-10')
+		: template
+}
+
 export const PLACEHOLDERS = [
 	'имя', 'отчество', 'фамилия', 'фио', 'сайт', 'компания', 'ждал',
 	'позиции', 'конкуренты', 'запрос', 'позиция', 'конкурент',
