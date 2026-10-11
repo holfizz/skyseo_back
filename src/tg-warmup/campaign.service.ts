@@ -21,7 +21,7 @@ import {
 	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
 	type MessageCompetitor, type MessageKeyword,
 } from '../outreach/outreach-message'
-import { distributeDaily } from './warmup-plan'
+import { distributeDaily, type Allowance } from './warmup-plan'
 import { planQueue, startCursor, windowStart, slotCapacity, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
@@ -354,6 +354,25 @@ function missingForCampaign(campaign: any, recipient: any): string[] {
 
 export function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
 	return !!allow?.allowOutgoing
+}
+
+/** Аккаунты, которые действительно могут забрать назначенного на сегодня адресата. */
+export function workingAccountIds(
+	links: Array<{ accountId: string; dayKey: string | null; sentToday: number; pausedUntil: Date | null;
+		account: { status: string; mode: string } }>,
+	quota: Map<string, number>,
+	remaining: Map<string, { maxMessagesPerDay: number }>,
+	today: string,
+	now: Date,
+): string[] {
+	return links.filter(l => {
+		const spent = l.dayKey === today ? l.sentToday : 0
+		return (quota.get(l.accountId) ?? 0) > spent
+			&& (remaining.get(l.accountId)?.maxMessagesPerDay ?? 0) > 0
+			&& (!l.pausedUntil || l.pausedUntil <= now)
+			&& l.account.mode !== 'WARM'
+			&& !['BANNED', 'ERROR', 'PAUSED'].includes(l.account.status)
+	}).map(l => l.accountId)
 }
 
 /**
@@ -1075,7 +1094,7 @@ export class CampaignService {
 			}),
 		])
 		const perAccount = 15
-		const allowances = await this.warmup.allowancesFor(accounts, 0)
+		const allowances = await this.warmup.allowancesFor(accounts, 0, { settle: false })
 		const reservations = new Map<string, number>()
 		for (const r of pending) {
 			// An unassigned active recipient may use any linked account: reserve conservatively.
@@ -1722,6 +1741,7 @@ export class CampaignService {
 			// Норма каждого аккаунта на сегодня. Если задана цель дня, она
 			// раскладывается по готовности; иначе у каждого свой общий потолок.
 			const quota = await this.dailyQuota(c, today)
+			const remaining = await this.warmup.allowancesFor(c.accounts.map(l => l.account), 0, { settle: false })
 
 			/*
 			 * Кто сегодня вообще способен писать. Нужно, чтобы подобрать
@@ -1731,9 +1751,7 @@ export class CampaignService {
 			 * норму аккаунтам урезал прогрев уже ПОСЛЕ того, как расписание
 			 * было построено, и трое суток провисели непонятно почему.
 			 */
-			const working = c.accounts
-				.filter(l => (quota.get(l.accountId) ?? 0) > 0)
-				.map(l => l.accountId)
+			const working = workingAccountIds(c.accounts, quota, remaining, today, now)
 
 			for (const link of c.accounts) {
 				if (link.pausedUntil && link.pausedUntil > now) continue
@@ -1821,7 +1839,9 @@ export class CampaignService {
 									{ plannedAccountId: null },
 									{
 										scheduleLocked: false,
-										scheduledAt: { lt: new Date(now.getTime() - 30 * 60_000) },
+										// Назначенный аккаунт уже не может писать сегодня:
+										// ждать дополнительные полчаса не имеет смысла.
+										scheduledAt: { lte: now },
 										plannedAccountId: { notIn: working.length ? working : ['-'] },
 									},
 								],
@@ -1916,9 +1936,13 @@ export class CampaignService {
 	 * готовности: прогретому больше, слабому меньше, закрытому ничего. Личный
 	 * потолок при этом остаётся верхней границей и цель его не поднимает.
 	 */
-	async dailyQuota(campaign: any, today: string): Promise<Map<string, number>> {
+	async dailyQuota(campaign: any, today: string, opts?: { settle?: boolean; allowances?: Map<string, Allowance> }): Promise<Map<string, number>> {
 		const links: any[] = campaign.accounts ?? []
 		const rows = []
+		const allowances = opts?.allowances ?? await this.warmup.allowancesFor(
+			links.filter(l => !['BANNED', 'ERROR', 'PAUSED'].includes(l.account.status)).map(l => l.account),
+			0, { settle: opts?.settle !== false },
+		)
 
 		for (const l of links) {
 			const acc = l.account
@@ -1927,7 +1951,7 @@ export class CampaignService {
 			// аккаунта пишем», и норму дня утверждает он. Остальные вызовы
 			// (карточка, календарь, готовность, узкое место) только читают:
 			// просмотр страницы не должен решать, сколько уйдёт сообщений.
-			const allow = dead ? null : await this.warmup.allowanceFor(acc, 0, { settle: true })
+			const allow = dead ? null : allowances.get(acc.id)
 
 			// Предохранитель прогрева: сколько исходящих в сутки он считает
 			// безопасным для ЭТОГО аккаунта. Раньше рассылка его не спрашивала
@@ -3914,6 +3938,7 @@ export class CampaignService {
 		})
 
 		const rows = []
+		const sharedAllowance = new Map<string, number>()
 		for (const c of campaigns) {
 			const [total, sentTotal, queued, sentToday, blockedToday, plannedToday, next, sentByAccount] = await Promise.all([
 				// Вся рассылка целиком: «из 20 человек ушло 7» — первое, что хотят видеть.
@@ -3933,7 +3958,7 @@ export class CampaignService {
 					},
 				}),
 				this.prisma.tgRecipient.findFirst({
-					where: { campaignId: c.id, status: 'QUEUED', scheduledAt: { not: null } },
+					where: { campaignId: c.id, status: 'QUEUED', scheduledAt: { gte: now } },
 					orderBy: { scheduledAt: 'asc' },
 					select: {
 						scheduledAt: true, firstName: true, lastName: true, company: true, username: true, phone: true,
@@ -3950,6 +3975,34 @@ export class CampaignService {
 			// Кампания без единого адресата в очереди и без сегодняшних отправок
 			// в сводке «что идёт сегодня» только мешает.
 			if (!queued && !sentToday) continue
+			// Календарь — исходный план, а не обещание доставки. За день аккаунт
+			// может получить паузу, спам-ограничение или исчерпать общую норму.
+			// Показываем отдельно верхнюю границу по текущим разрешениям и времени,
+			// не меняя лимиты и не переписывая расписание при чтении страницы.
+			let possibleToday = 0
+			if (c.status === 'RUNNING' && queued && now < windowStart(now, c.windowTo, 0)) {
+				const allowances = await this.warmup.allowancesFor(c.accounts.map(l => l.account), 0, { settle: false })
+				const quota = await this.dailyQuota(c, today, { settle: false, allowances })
+				for (const link of c.accounts) {
+					const acc = link.account
+					if (['BANNED', 'ERROR', 'PAUSED'].includes(acc.status) || acc.mode === 'WARM') continue
+					if (link.pausedUntil && link.pausedUntil > now) continue
+					const allowance = allowances.get(acc.id)
+					const globalLeft = allowance?.maxMessagesPerDay ?? 0
+					sharedAllowance.set(acc.id, Math.min(sharedAllowance.get(acc.id) ?? globalLeft, globalLeft))
+					if (!maySend(acc, allowance ?? null)) continue
+					const left = Math.max(0, Math.min(
+						(quota.get(acc.id) ?? 0) - (link.dayKey === today ? link.sentToday : 0),
+						globalLeft,
+					))
+					if (!left) continue
+					const cursor = Math.max(now.getTime(), windowStart(now, c.windowFrom, 0).getTime(),
+						link.nextSendAt?.getTime() ?? 0, acc.busyUntil?.getTime() ?? 0)
+					possibleToday += slotCapacity({ id: acc.id, quota: left, left, cursor, floor: cursor,
+						day: 0, readiness: allowance?.readiness ?? 0 }, c, now)
+				}
+				possibleToday = Math.min(queued, possibleToday)
+			}
 			const sentByAccountId = new Map(sentByAccount.map(row => [row.accountId, row._count._all]))
 
 			rows.push({
@@ -3964,6 +4017,7 @@ export class CampaignService {
 				sentTotal,
 				queued,
 				sentToday,
+				possibleToday,
 				blockedToday,
 				plannedToday: plannedToday + sentToday,
 				next: next?.scheduledAt
@@ -3998,15 +4052,16 @@ export class CampaignService {
 
 		const hour = mskHour(now)
 		return {
-			// Идёт ли отправка прямо сейчас: мало быть запущенной, надо ещё
-			// попасть в окно. Вне окна кампания «запущена, но молчит», и это
-			// разные вещи, которые нельзя показывать одинаково.
-			sending: rows.some(r => r.status === 'RUNNING' && hour >= r.windowFrom && hour < r.windowTo && r.queued > 0),
+			// Есть ли сейчас возможность отправлять: статус, окно и оставшаяся
+			// безопасная норма должны совпасть. Это не гарантия доставки.
+			sending: rows.some(r => r.status === 'RUNNING' && hour >= r.windowFrom && hour < r.windowTo && r.possibleToday > 0),
 			now: now.toISOString(),
 			campaigns: rows,
 			totals: {
 				sentToday: rows.reduce((n, r) => n + r.sentToday, 0),
 				plannedToday: rows.reduce((n, r) => n + r.plannedToday, 0),
+				possibleToday: Math.min(rows.reduce((n, r) => n + r.possibleToday, 0),
+					[...sharedAllowance.values()].reduce((n, left) => n + left, 0)),
 				queued: rows.reduce((n, r) => n + r.queued, 0),
 			},
 		}
