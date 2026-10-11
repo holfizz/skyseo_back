@@ -89,14 +89,28 @@ async function main() {
 	await followUp.completeStandalone(siteFollow.taskId)
 
 	const requestId = randomUUID()
+	const callDueAt = new Date(dueAt.getTime() + 86_400_000)
 	const [call, repeatedCall] = await Promise.all([
-		crm.scheduleCall(actor, lead.id, { requestId, title: 'Созвон', dueAt: dueAt.toISOString() }),
-		crm.scheduleCall(actor, lead.id, { requestId, title: 'Созвон', dueAt: dueAt.toISOString() }),
+		crm.scheduleCall(actor, lead.id, { requestId, title: 'Созвон', dueAt: callDueAt.toISOString() }),
+		crm.scheduleCall(actor, lead.id, { requestId, title: 'Созвон', dueAt: callDueAt.toISOString() }),
 	])
 	assert.equal(call.id, repeatedCall.id)
 	assert.equal(await prisma.crmTask.count({ where: { id: requestId } }), 1)
+	assert.equal(await prisma.crmReminder.count({ where: { taskId: call.id, sent: false } }), 3)
+	const moved = await crm.updateCall(actor, call.id, { dueAt: new Date(callDueAt.getTime() + 3_600_000).toISOString() })
+	assert.equal(moved.dueAt?.getTime(), callDueAt.getTime() + 3_600_000)
+	assert.equal(await prisma.crmReminder.count({ where: { taskId: call.id, sent: false } }), 3)
+	const feed = await crm.createCalendarFeed(actor)
+	assert.match(feed.url, /calendar-ics\/[a-f0-9]{64}\.ics$/)
+	assert.match(await crm.calendarFeed(feed.url.split('/').pop()!), /UID:crm-call-/)
+	await crm.revokeCalendarFeed(actor)
+	await assert.rejects(() => crm.calendarFeed(feed.url.split('/').pop()!), /не найден/)
 	await crm.updateTask(actor, call.id, { status: 'DONE' })
 	assert.equal(await prisma.crmReminder.count({ where: { taskId: call.id, sent: false } }), 0)
+	const standaloneCall = await crm.scheduleCall(actor, null, { requestId: randomUUID(), title: 'Созвон без лида', dueAt: callDueAt.toISOString() })
+	assert.ok((await crm.callsCalendar(actor, dueAt.toISOString(), new Date(callDueAt.getTime() + 86_400_000).toISOString())).some(row => row.id === standaloneCall.id))
+	await crm.deleteCall(actor, standaloneCall.id)
+	assert.equal(await prisma.crmTask.count({ where: { id: standaloneCall.id } }), 0)
 
 	const custom = await qualification.createField({
 		key: `smoke_${randomUUID().replace(/-/g, '').slice(0, 12)}`,

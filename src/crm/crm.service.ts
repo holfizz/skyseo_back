@@ -6,9 +6,11 @@ import {
 } from '@nestjs/common'
 import { rolesOf } from '../common/roles'
 import { CrmTaskStatus, CrmUser, Prisma } from '@prisma/client'
+import { createHash, randomBytes } from 'node:crypto'
 import { ManagerService } from '../manager/manager.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { mskAt } from '../tg-warmup/msk'
+import { callReminderRows, renderCallCalendar } from './call-calendar'
 import {
 	CreateClientDto,
 	CreateDealDto,
@@ -1156,15 +1158,15 @@ export class CrmService {
 		})
 	}
 
-	async scheduleCall(user: CrmUser, leadId: string, dto: CreateTaskDto) {
-		const lead = await this.prisma.crmLead.findUnique({ where: { id: leadId }, select: { id: true, title: true, assigneeId: true } })
-		if (!lead) throw new NotFoundException('Лид не найден')
+	async scheduleCall(user: CrmUser, leadId: string | null, dto: CreateTaskDto) {
+		const lead = leadId ? await this.prisma.crmLead.findUnique({ where: { id: leadId }, select: { id: true, title: true, assigneeId: true } }) : null
+		if (leadId && !lead) throw new NotFoundException('Лид не найден')
 		return this.prisma.$transaction(async tx => {
 			if (dto.requestId) {
 				await tx.$queryRaw`SELECT 1::int FROM pg_advisory_xact_lock(761903, hashtext(${dto.requestId}))`
 				const existing = await tx.crmTask.findUnique({ where: { id: dto.requestId } })
 				if (existing) {
-					if (existing.kind !== 'CALL' || existing.leadId !== leadId)
+				if (existing.kind !== 'CALL' || existing.leadId !== leadId || existing.createdById !== user.id)
 						throw new BadRequestException('Идентификатор созвона уже используется')
 					return existing
 				}
@@ -1173,16 +1175,97 @@ export class CrmService {
 			if (!dueAt) throw new BadRequestException('Для созвона укажите дату и время')
 			const task = await tx.crmTask.create({ data: {
 				...(dto.requestId ? { id: dto.requestId } : {}),
-				kind: 'CALL', title: dto.title?.trim() || `Созвон: ${lead.title}`,
+				kind: 'CALL', title: dto.title?.trim() || (lead ? `Созвон: ${lead.title}` : 'Созвон'),
 				description: dto.description?.trim() || null, status: 'TODO',
-				dueAt, leadId, assigneeId: lead.assigneeId || user.id, createdById: user.id,
+				dueAt, leadId, assigneeId: lead?.assigneeId || user.id, createdById: user.id,
 			} })
-			const remindAt = new Date(dueAt.getTime() - 60 * 60_000)
-			if (remindAt.getTime() > Date.now())
-				await tx.crmReminder.create({ data: { taskId: task.id, remindAt, offsetLabel: 'за 1 час' } })
-			await tx.crmActivity.create({ data: { actorId: user.id, action: 'call.schedule', entityType: 'task', entityId: task.id, summary: `Назначен созвон по «${lead.title}»` } })
+			const reminders = callReminderRows(task.id, dueAt)
+			if (reminders.length) await tx.crmReminder.createMany({ data: reminders })
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'call.schedule', entityType: 'task', entityId: task.id, summary: `Назначен созвон «${task.title}»` } })
 			return task
 		})
+	}
+
+	async callsCalendar(user: CrmUser, from: string, to: string) {
+		const start = new Date(from)
+		const end = new Date(to)
+		if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start || end.getTime() - start.getTime() > 370 * 86_400_000)
+			throw new BadRequestException('Некорректный диапазон календаря')
+		return this.prisma.crmTask.findMany({
+			where: { kind: 'CALL', dueAt: { gte: start, lt: end }, OR: [{ assigneeId: user.id }, { createdById: user.id }] },
+			select: { id: true, title: true, description: true, dueAt: true, status: true,
+				lead: { select: { id: true, title: true } } },
+			orderBy: { dueAt: 'asc' }, take: 1500,
+		})
+	}
+
+	async updateCall(user: CrmUser, id: string, dto: UpdateTaskDto) {
+		const existing = await this.prisma.crmTask.findUnique({ where: { id } })
+		if (!existing || existing.kind !== 'CALL') throw new NotFoundException('Созвон не найден')
+		if (user.role !== 'ADMIN' && existing.assigneeId !== user.id && existing.createdById !== user.id)
+			throw new ForbiddenException('Нет доступа к созвону')
+		const dueAt = dto.dueAt !== undefined ? this.parseFutureDate(dto.dueAt, 'Созвон') : existing.dueAt
+		if (!dueAt) throw new BadRequestException('Для созвона укажите дату и время')
+		return this.prisma.$transaction(async tx => {
+			const task = await tx.crmTask.update({ where: { id }, data: {
+				...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
+				...(dto.description !== undefined ? { description: dto.description.trim() || null } : {}),
+				...(dto.dueAt !== undefined ? { dueAt } : {}),
+				...(existing.status === 'DONE' && dto.dueAt !== undefined ? { status: 'TODO', completedAt: null } : {}),
+			} })
+			if (dto.dueAt !== undefined) {
+				await tx.crmReminder.deleteMany({ where: { taskId: id, sent: false } })
+				const reminders = callReminderRows(id, dueAt)
+				if (reminders.length) await tx.crmReminder.createMany({ data: reminders })
+			}
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'call.update', entityType: 'task', entityId: id, summary: `Изменён созвон «${task.title}»` } })
+			return task
+		})
+	}
+
+	async deleteCall(user: CrmUser, id: string) {
+		const existing = await this.prisma.crmTask.findUnique({ where: { id } })
+		if (!existing || existing.kind !== 'CALL') throw new NotFoundException('Созвон не найден')
+		if (user.role !== 'ADMIN' && existing.assigneeId !== user.id && existing.createdById !== user.id)
+			throw new ForbiddenException('Нет доступа к созвону')
+		await this.prisma.$transaction(async tx => {
+			await tx.crmTask.delete({ where: { id } })
+			await tx.crmActivity.create({ data: { actorId: user.id, action: 'call.delete', entityType: 'task', entityId: id, summary: `Отменён созвон «${existing.title}»` } })
+		})
+		return { deleted: true }
+	}
+
+	async calendarFeedStatus(user: CrmUser) {
+		const row = await this.prisma.crmUser.findUnique({ where: { id: user.id }, select: { calendarFeedTokenHash: true } })
+		return { active: !!row?.calendarFeedTokenHash }
+	}
+
+	async createCalendarFeed(user: CrmUser) {
+		const token = randomBytes(32).toString('hex')
+		const hash = createHash('sha256').update(token).digest('hex')
+		await this.prisma.crmUser.update({ where: { id: user.id }, data: { calendarFeedTokenHash: hash } })
+		return { url: `https://skyseo.site/v1/api/workspace/crm/calendar-ics/${token}.ics` }
+	}
+
+	async revokeCalendarFeed(user: CrmUser) {
+		await this.prisma.crmUser.update({ where: { id: user.id }, data: { calendarFeedTokenHash: null } })
+		return { active: false }
+	}
+
+	async calendarFeed(tokenWithExtension: string) {
+		if (!/^[a-f0-9]{64}\.ics$/.test(tokenWithExtension)) throw new NotFoundException('Календарь не найден')
+		const token = tokenWithExtension.slice(0, -4)
+		const hash = createHash('sha256').update(token).digest('hex')
+		const user = await this.prisma.crmUser.findUnique({ where: { calendarFeedTokenHash: hash }, select: { id: true, isActive: true } })
+		if (!user?.isActive) throw new NotFoundException('Календарь не найден')
+		const now = Date.now()
+		const calls = await this.prisma.crmTask.findMany({
+			where: { kind: 'CALL', dueAt: { gte: new Date(now - 30 * 86_400_000), lt: new Date(now + 370 * 86_400_000) },
+				OR: [{ assigneeId: user.id }, { createdById: user.id }] },
+			select: { id: true, title: true, description: true, dueAt: true, createdAt: true, updatedAt: true },
+			orderBy: { dueAt: 'asc' }, take: 1500,
+		})
+		return renderCallCalendar(calls)
 	}
 
 	/** Qualification is idempotent; a quote can be priced later. */

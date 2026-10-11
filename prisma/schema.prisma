@@ -825,6 +825,7 @@ model CrmUser {
   lastName   String?
   username   String? // @username на момент входа
   photoUrl   String?
+  calendarFeedTokenHash String? @unique // bearer-ссылка на личный календарь созвонов; хранится только SHA-256
   role       CrmRole   @default(EMPLOYEE)
   isActive   Boolean   @default(true)
   createdAt  DateTime  @default(now())

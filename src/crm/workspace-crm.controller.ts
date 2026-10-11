@@ -1,5 +1,5 @@
 import {
-	Body, Controller, ForbiddenException, Get, NotFoundException,
+	Body, Controller, Delete, ForbiddenException, Get, NotFoundException,
 	Param, Patch, Post, Put, Query, UseGuards,
 } from '@nestjs/common'
 import { CrmUser, User } from '@prisma/client'
@@ -14,7 +14,7 @@ import { QualificationService } from './qualification.service'
 import { CreateCustomFieldDto, SaveCustomValueDto, UpdateCustomFieldDto } from './qualification.dto'
 import {
 	CreateFunnelDto, CreateStageDto, CreateTaskDto, MoveLeadStageDto,
-	QualifyLeadDto, SaveFollowUpDto, UpdateDealDto, UpdateLeadDto,
+	QualifyLeadDto, SaveFollowUpDto, UpdateDealDto, UpdateLeadDto, UpdateTaskDto,
 } from './dto'
 
 /** Sales CRM inside the existing workspace, authenticated by the platform JWT. */
@@ -189,6 +189,42 @@ export class WorkspaceCrmController {
 	async scheduleCall(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: CreateTaskDto) {
 		const actor = await this.editable(user, id)
 		return this.crm.scheduleCall(actor, id, dto)
+	}
+
+	@Get('calls')
+	async calls(@CurrentUser() user: User, @Query('from') from: string, @Query('to') to: string) {
+		return this.crm.callsCalendar(await this.actor(user), from, to)
+	}
+
+	@Post('calls')
+	async createCalendarCall(@CurrentUser() user: User, @Body() dto: CreateTaskDto) {
+		const actor = dto.leadId ? await this.editable(user, dto.leadId) : await this.actor(user)
+		return this.crm.scheduleCall(actor, dto.leadId || null, dto)
+	}
+
+	@Patch('calls/:id')
+	async updateCalendarCall(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateTaskDto) {
+		return this.crm.updateCall(await this.actor(user), id, dto)
+	}
+
+	@Delete('calls/:id')
+	async deleteCalendarCall(@CurrentUser() user: User, @Param('id') id: string) {
+		return this.crm.deleteCall(await this.actor(user), id)
+	}
+
+	@Get('calendar-sync')
+	async calendarSyncStatus(@CurrentUser() user: User) {
+		return this.crm.calendarFeedStatus(await this.actor(user))
+	}
+
+	@Post('calendar-sync')
+	async createCalendarSync(@CurrentUser() user: User) {
+		return this.crm.createCalendarFeed(await this.actor(user))
+	}
+
+	@Delete('calendar-sync')
+	async revokeCalendarSync(@CurrentUser() user: User) {
+		return this.crm.revokeCalendarFeed(await this.actor(user))
 	}
 
 	@Post('tasks/:id/complete')
