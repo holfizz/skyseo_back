@@ -99,6 +99,7 @@ export class TgWarmupController {
 		@Body() body: {
 			purchasedAt?: string; strings?: string; apiId?: string; apiHash?: string; passcode?: string
 			proxyMode?: 'pool' | 'one' | 'none'; proxyId?: string
+			accountKeys?: string; proxyChoices?: string
 		},
 	) {
 		return this.svc.importAccounts({
@@ -110,6 +111,18 @@ export class TgWarmupController {
 			passcode: body?.passcode || undefined,
 			proxyMode: body?.proxyMode ?? 'pool',
 			proxyId: body?.proxyId || null,
+			accountKeys: body?.accountKeys,
+			proxyChoices: body?.proxyChoices,
+		})
+	}
+
+	@Post('accounts/import/preview')
+	@UseInterceptors(FilesInterceptor('files', 50, { limits: { fileSize: 60 * 1024 * 1024 } }))
+	previewAccounts(@UploadedFiles() files: Express.Multer.File[], @Body() body: { strings?: string; passcode?: string }) {
+		return this.svc.previewAccounts({
+			files: (files ?? []).map(file => ({ name: file.originalname, buffer: file.buffer })),
+			strings: body?.strings,
+			passcode: body?.passcode,
 		})
 	}
 

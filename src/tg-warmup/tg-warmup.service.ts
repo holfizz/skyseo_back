@@ -4,10 +4,10 @@ import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
 import { decryptSecret, encryptSecret, secretsReady } from '../common/secrets'
 import {
-	defaultFingerprint, importFromSessionFile, importFromStringSession, importFromTdataZip,
-	mergeFingerprint, parseCompanionJson, type CompanionMeta, type Fingerprint,
+	defaultFingerprint, mergeFingerprint, type Fingerprint,
 } from './session-import'
 import { parseProxyPool } from './proxy-pool'
+import { collectImportAccounts, importSelection, newImportProxy, type AccountImportInput } from './account-import'
 import { detectOrigin } from './proxy-geo'
 import { Api } from 'teleproto'
 import bigInt from 'big-integer'
@@ -469,13 +469,13 @@ export class TgWarmupService {
 	 * для новичков задним числом значило бы разом оставить половину пула без
 	 * канала.
 	 */
-	async assignFromPool(accountIds: string[], opts?: { maxPerProxy?: number }) {
+	async assignFromPool(accountIds: string[], opts?: { maxPerProxy?: number; excludeProxyIds?: string[] }) {
 		if (!accountIds.length) return { assigned: 0, left: 0, crowded: 0 }
 
 		const max = opts?.maxPerProxy ?? Infinity
 		const pool = (
 			await this.prisma.tgProxy.findMany({
-				where: { alive: true },
+				where: { alive: true, ...(opts?.excludeProxyIds?.length ? { id: { notIn: opts.excludeProxyIds } } : {}) },
 				include: { _count: { select: { accounts: true } } },
 				orderBy: { createdAt: 'asc' },
 			})
@@ -786,10 +786,21 @@ export class TgWarmupService {
 	 * json сопоставляется с сессией по имени файла: у поставщиков это всегда
 	 * пара «79001234567.session» и «79001234567.json».
 	 */
+	async previewAccounts(input: AccountImportInput) {
+		const { pending, errors } = await collectImportAccounts(input)
+		return {
+			accounts: pending.map(({ key, source, meta }) => ({
+				key, source, label: meta.phone ?? meta.username ?? (meta.userId ? `id ${meta.userId}` : source),
+				phone: meta.phone ?? null, username: meta.username ?? null, userId: meta.userId ?? null,
+			})),
+			errors,
+		}
+	}
+
 	async importAccounts(input: {
 		files: Array<{ name: string; buffer: Buffer }>
 		strings?: string
-        purchasedAt?: string
+		purchasedAt?: string
 		apiId?: number
 		apiHash?: string
 		passcode?: string
@@ -801,9 +812,11 @@ export class TgWarmupService {
 		 */
 		proxyMode?: 'pool' | 'one' | 'none'
 		proxyId?: string | null
+		accountKeys?: string
+		proxyChoices?: string
 	}) {
-        const purchasedAt = input.purchasedAt ? new Date(input.purchasedAt) : new Date()
-        if (!Number.isFinite(purchasedAt.getTime()) || purchasedAt.getTime() > Date.now()) throw new BadRequestException('Укажите корректные дату и время покупки, не в будущем')
+		const purchasedAt = input.purchasedAt ? new Date(input.purchasedAt) : new Date()
+		if (!Number.isFinite(purchasedAt.getTime()) || purchasedAt.getTime() > Date.now()) throw new BadRequestException('Укажите корректные дату и время покупки, не в будущем')
 		if (!secretsReady()) {
 			throw new BadRequestException(
 				'Не задан SECRETS_KEY — сессии Telegram нечем шифровать. Добавьте переменную и перезапустите сервис.',
@@ -813,63 +826,14 @@ export class TgWarmupService {
 		// Пара из настроек — последняя в очереди: json поставщика и поле формы
 		// важнее, потому что относятся к конкретной пачке.
 		const defaults = await this.getApiDefaults()
-		const files = input.files ?? []
-		// json раскладываем по базовому имени, чтобы приложить к своей сессии.
-		const metaByName = new Map<string, CompanionMeta>()
-		for (const f of files) {
-			if (!/\.json$/i.test(f.name)) continue
-			try {
-				metaByName.set(f.name.replace(/\.json$/i, ''), parseCompanionJson(f.buffer.toString('utf8')))
-			} catch {
-				/* битый json — не повод отказываться от самой сессии */
-			}
-		}
-		// Единственный json на всю загрузку применяем ко всем — но ТОЛЬКО в части
-		// реквизитов приложения. Поставщики действительно отдают пачку с общими
-		// api_id и api_hash, а вот телефон и имя в нём относятся к одному
-		// аккаунту, и подставлять их соседям — значит перепутать людей.
-		const one = metaByName.size === 1 ? [...metaByName.values()][0] : undefined
-		const common: CompanionMeta | undefined = one
-			? { apiId: one.apiId, apiHash: one.apiHash }
-			: undefined
-
-		type Pending = { session: string; meta: CompanionMeta; source: string }
-		const pending: Pending[] = []
-		const errors: Array<{ source: string; reason: string }> = []
-
-		for (const f of files) {
-			if (/\.json$/i.test(f.name)) continue
-			const base = f.name.replace(/\.[^.]+$/, '')
-			const meta = metaByName.get(base) ?? common ?? {}
-			try {
-				if (/\.zip$/i.test(f.name)) {
-					const list = await importFromTdataZip(f.buffer, input.passcode)
-					for (const a of list) {
-						pending.push({
-							session: a.session,
-							meta: { ...meta, userId: a.userId ?? meta.userId },
-							source: list.length > 1 ? `${f.name} (слот ${a.index})` : f.name,
-						})
-					}
-				} else if (/\.session$/i.test(f.name)) {
-					pending.push({ session: importFromSessionFile(f.buffer).session, meta, source: f.name })
-				} else {
-					// Всё остальное пробуем прочитать как строковую сессию.
-					pending.push({ session: importFromStringSession(f.buffer.toString('utf8')).session, meta, source: f.name })
-				}
-			} catch (e: any) {
-				errors.push({ source: f.name, reason: String(e?.message ?? e) })
-			}
-		}
-
-		for (const [i, line] of String(input.strings ?? '').split(/\r?\n/).entries()) {
-			if (!line.trim()) continue
-			try {
-				pending.push({ session: importFromStringSession(line).session, meta: common ?? {}, source: `строка ${i + 1}` })
-			} catch (e: any) {
-				errors.push({ source: `строка ${i + 1}`, reason: String(e?.message ?? e) })
-			}
-		}
+		const decoded = await collectImportAccounts(input)
+		const { accounts: pending, choices } = importSelection(decoded.pending, input.accountKeys, input.proxyChoices)
+		const errors = decoded.errors
+		if (input.proxyMode && !['pool', 'one', 'none'].includes(input.proxyMode)) throw new BadRequestException('Некорректный режим прокси')
+		if (input.proxyMode === 'one' && !input.proxyId) throw new BadRequestException('Выберите общий прокси')
+		const poolIds: string[] = []
+		const dedicatedProxyIds = new Set<string>()
+		const handledKeys: string[] = []
 
 		const created: Array<{ id: string; source: string }> = []
 		const duplicates: string[] = []
@@ -892,6 +856,7 @@ export class TgWarmupService {
 				})
 				if (exists) {
 					duplicates.push(p.source)
+					handledKeys.push(p.key)
 					continue
 				}
 			}
@@ -901,41 +866,73 @@ export class TgWarmupService {
 			const fp: Fingerprint = mergeFingerprint(defaultFingerprint(p.session.slice(0, 32)), p.meta)
 			const est = p.meta.userId ? estimateRegistration(p.meta.userId) : null
 
-			const row = await this.prisma.tgAccount.create({
-				data: {
-					// Имя файла в списке ни о чём не говорит. Пока аккаунт не
-					// проверен, берём телефон или юзернейм из json, а для tdata
-					// хотя бы числовой id — он там есть всегда. Настоящее имя
-					// подставится при первой проверке.
-					label: p.meta.phone ?? p.meta.username ?? (p.meta.userId ? `id ${p.meta.userId}` : p.source),
-					phone: p.meta.phone ?? null,
-					username: p.meta.username ?? null,
-					firstName: p.meta.firstName ?? null,
-					lastName: p.meta.lastName ?? null,
-					tgUserId: p.meta.userId ?? null,
-					session: encryptSecret(p.session),
-					apiId, apiHash,
-					...fp,
-					// Раздача из пула идёт после вставки: чтобы делить поровну,
-					// надо знать, сколько аккаунтов создалось.
-					proxyId: input.proxyMode === 'one' ? input.proxyId || null : null,
-					registeredAt: p.meta.registeredAt ?? (est ? est.date : null),
-					status: 'NEW',
-                    purchasedAt,
-				},
-				select: { id: true },
-			})
-			created.push({ id: row.id, source: p.source })
+			const choice = choices.get(p.key) ?? (input.proxyMode === 'one'
+				? { key: p.key, mode: 'existing' as const, proxyId: input.proxyId }
+				: { key: p.key, mode: input.proxyMode === 'none' ? 'none' as const : 'pool' as const })
+			try {
+				const fresh = choice.mode === 'new' ? newImportProxy(choice.text) : null
+				const row = await this.prisma.$transaction(async tx => {
+					let proxyId: string | null = null
+					if (fresh) {
+						const existing = await tx.tgProxy.findFirst({
+							where: { host: fresh.host, port: fresh.port, username: fresh.username },
+							include: { _count: { select: { accounts: true } } },
+						})
+						if (existing) {
+							if (existing.kind !== fresh.kind || existing.password !== fresh.password || existing.secret !== fresh.secret) {
+								throw new BadRequestException('Этот прокси уже в пуле с другими реквизитами. Проверьте запись в разделе прокси.')
+							}
+							if (existing._count.accounts || !existing.alive) throw new BadRequestException('Этот прокси уже занят или не работает. Укажите другой либо выберите его из пула.')
+							proxyId = existing.id
+						} else {
+							proxyId = (await tx.tgProxy.create({ data: { ...fresh, alive: true }, select: { id: true } })).id
+						}
+					} else if (choice.mode === 'existing') {
+						const proxy = await tx.tgProxy.findUnique({ where: { id: choice.proxyId } })
+						if (!proxy || !proxy.alive) throw new BadRequestException('Выбранный прокси удален или не работает. Выберите другой.')
+						proxyId = proxy.id
+					}
+					return tx.tgAccount.create({
+						data: {
+							// Имя файла в списке ни о чём не говорит. Пока аккаунт не
+							// проверен, берём телефон или юзернейм из json, а для tdata
+							// хотя бы числовой id — он там есть всегда. Настоящее имя
+							// подставится при первой проверке.
+							label: p.meta.phone ?? p.meta.username ?? (p.meta.userId ? `id ${p.meta.userId}` : p.source),
+							phone: p.meta.phone ?? null,
+							username: p.meta.username ?? null,
+							firstName: p.meta.firstName ?? null,
+							lastName: p.meta.lastName ?? null,
+							tgUserId: p.meta.userId ?? null,
+							session: encryptSecret(p.session),
+							apiId, apiHash,
+							...fp,
+							// Свежий прокси и аккаунт сохраняются одной транзакцией.
+							proxyId,
+							registeredAt: p.meta.registeredAt ?? (est ? est.date : null),
+							status: 'NEW',
+							purchasedAt,
+						},
+						select: { id: true, proxyId: true },
+					})
+				}, { isolationLevel: 'Serializable' })
+				created.push({ id: row.id, source: p.source })
+				handledKeys.push(p.key)
+				if (choice.mode === 'pool') poolIds.push(row.id)
+				else if (row.proxyId) dedicatedProxyIds.add(row.proxyId)
+			} catch (error) {
+				errors.push({ source: p.source, reason: error instanceof BadRequestException ? error.message : 'Не удалось сохранить аккаунт и прокси. Повторите загрузку этого аккаунта.' })
+			}
 		}
 
 		const ids = created.map(c => c.id)
-		// Новые аккаунты по умолчанию «греются и пишут» — значит, сразу в рассылки.
-		await this.joinActiveCampaigns(ids)
-		const pool = input.proxyMode !== 'one' && input.proxyMode !== 'none' && ids.length
-			? await this.assignFromPool(ids)
+		const pool = poolIds.length
+			? await this.assignFromPool(poolIds, { excludeProxyIds: [...dedicatedProxyIds] })
 			: null
+		// Назначить маршрут до регистрации аккаунта в действующих кампаниях.
+		await this.joinActiveCampaigns(ids)
 
-		return { created: created.length, duplicates, errors, ids, pool }
+		return { created: created.length, duplicates, errors, ids, pool, handledKeys }
 	}
 
 	/**

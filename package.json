@@ -24,6 +24,7 @@
 		"test:campaign-today": "ts-node --transpile-only src/scripts/test-campaign-today.ts",
 		"test:site-lead-notifications": "ts-node --transpile-only src/scripts/test-site-lead-notifications.ts",
 		"test:call-calendar": "ts-node --transpile-only src/scripts/test-call-calendar.ts",
+		"test:account-import": "ts-node --transpile-only src/scripts/test-account-import.ts",
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
 		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
 	},
