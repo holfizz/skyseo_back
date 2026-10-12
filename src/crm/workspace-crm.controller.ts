@@ -1,6 +1,6 @@
 import {
 	Body, Controller, Delete, ForbiddenException, Get, NotFoundException,
-	Param, Patch, Post, Put, Query, UseGuards,
+	Param, Patch, Post, Put, Query, Res, UseGuards,
 } from '@nestjs/common'
 import { CrmUser, User } from '@prisma/client'
 import { JwtAuthGuard } from '../auth/jwt-auth.guard'
@@ -12,6 +12,11 @@ import { CrmService } from './crm.service'
 import { FollowUpService } from './follow-up.service'
 import { QualificationService } from './qualification.service'
 import { CreateCustomFieldDto, SaveCustomValueDto, UpdateCustomFieldDto } from './qualification.dto'
+import type { Response } from 'express'
+import { ReportService } from '../report/report.service'
+import { renderPdf } from '../report/report.pdf'
+import { buildCallScript } from './call-script'
+import { renderCallScriptHtml } from './call-script.pdf'
 import {
 	CreateFunnelDto, CreateStageDto, CreateTaskDto, MoveLeadStageDto,
 	QualifyLeadDto, SaveFollowUpDto, UpdateDealDto, UpdateLeadDto, UpdateTaskDto,
@@ -26,6 +31,7 @@ export class WorkspaceCrmController {
 		private readonly crm: CrmService,
 		private readonly followUp: FollowUpService,
 		private readonly qualification: QualificationService,
+		private readonly report: ReportService,
 	) {}
 
 	private actor(user: User): Promise<CrmUser> {
@@ -164,6 +170,22 @@ export class WorkspaceCrmController {
 		if (actor.role !== 'ADMIN' && recipient.crmLead?.assigneeId && recipient.crmLead.assigneeId !== actor.id)
 			return { ...recipient, crmLead: null, crmLocked: true }
 		return recipient
+	}
+
+	@Get('recipients/:id/call-script')
+	async callScript(@CurrentUser() user: User, @Param('id') id: string) {
+		const context = await this.recipientContext(user, id)
+		const brief = context.leadId ? await this.report.leadBrief(context.leadId) : null
+		return { ...context, script: buildCallScript(context, brief) }
+	}
+
+	@Get('recipients/:id/call-script/pdf')
+	async callScriptPdf(@CurrentUser() user: User, @Param('id') id: string, @Res() response: Response) {
+		const context = await this.callScript(user, id)
+		response.setHeader('Content-Type', 'application/pdf')
+		response.setHeader('Cache-Control', 'private, no-store')
+		response.setHeader('Content-Disposition', 'attachment; filename="skyseo-call-script.pdf"')
+		response.send(await renderPdf(renderCallScriptHtml(context.script), true))
 	}
 
 	@Patch('leads/:id')

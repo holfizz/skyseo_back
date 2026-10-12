@@ -8,9 +8,10 @@ import { TelegramModule } from '../telegram/telegram.module'
 import { SalesReminderScheduler } from './sales-reminder.scheduler'
 import { QualificationService } from './qualification.service'
 import { CalendarFeedController } from './calendar-feed.controller'
+import { ReportModule } from '../report/report.module'
 
 @Module({
-	imports: [PrismaModule, ManagerModule, FollowUpModule, TelegramModule.forRoot()],
+	imports: [PrismaModule, ManagerModule, FollowUpModule, TelegramModule.forRoot(), ReportModule],
 	controllers: [WorkspaceCrmController, CalendarFeedController],
 	providers: [CrmService, QualificationService, SalesReminderScheduler],
 })

@@ -201,6 +201,12 @@ export class QualificationNotesDto {
 	@IsOptional() @IsString() @MaxLength(2000) callDataComment?: string
 	@IsOptional() @IsString() @MaxLength(2000) callTermsComment?: string
 	@IsOptional() @IsString() @MaxLength(2000) callTestComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callComparisonComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callPotentialComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callSkyseoComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callClosingComment?: string
+	@IsOptional() @IsString() @MaxLength(500) callInterest?: string
+	@IsOptional() @IsISO8601() callCompletedAt?: string
 	@IsOptional() @IsString() @MaxLength(500) callQueryRelevance?: string
 	@IsOptional() @IsString() @MaxLength(1000) callCompetitorFinding?: string
 	@IsOptional() @IsString() @MaxLength(300) callStartAnswer?: string

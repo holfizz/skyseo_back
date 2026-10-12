@@ -37,7 +37,7 @@ function resolveChrome(): string | undefined {
 	return candidates.find(p => { try { return fs.existsSync(p) } catch { return false } })
 }
 
-export async function renderPdf(html: string): Promise<Buffer> {
+export async function renderPdf(html: string, portrait = false): Promise<Buffer> {
 	const puppeteer = loadPuppeteer()
 	// В Alpine-образе штатный Chromium из puppeteer не запускается (musl),
 	// там ставится системный chromium и путь к нему передаётся через env.
@@ -50,8 +50,7 @@ export async function renderPdf(html: string): Promise<Buffer> {
 		const page = await browser.newPage()
 		await page.setContent(html, { waitUntil: 'load' })
 		const pdf = await page.pdf({
-			width: '297mm',
-			height: '167mm',
+			...(portrait ? { format: 'A4', preferCSSPageSize: true } : { width: '297mm', height: '167mm' }),
 			printBackground: true,
 			margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
 		})

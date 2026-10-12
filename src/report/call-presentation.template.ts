@@ -1,119 +1,40 @@
 import { LOGO_SVG_B64 } from './report.assets'
 import { ReportData, ReportKeyword } from './report.types'
 import { CALL_PRESENTATION_CSS } from './call-presentation.styles'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-// Девять стабильных слайдов для разговора с владельцем. Их номера совпадают
-// с подсказками в панели «Созвон»; публичный старый отчёт остаётся отдельным.
-const esc = (value: unknown): string => String(value ?? '')
-	.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-const date = (value: Date | null): string => value
-	? value.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Moscow' })
-	: 'дата замера не сохранена'
-const pos = (value: number | null): string => value !== null && value > 0 ? String(value) : '—'
-const star = '<svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 1l5.4 17.6L47 24l-17.6 5.4L24 47l-5.4-17.6L1 24l17.6-5.4Z" fill="#b8bac3"/></svg>'
-const coverArt = readFileSync(join(process.cwd(), 'src/report/illustrations/cover-search-steps.svg')).toString('base64')
-const marketplace = /(^|\.)(avito\.ru|profi\.ru|2gis\.ru|yell\.ru|flamp\.ru|zoon\.ru|otzovik\.com|uslugi\.yandex\.ru)$/i
-// Это только порядок примеров для обсуждения, не оценка ценности запроса.
-const intentScore = (keyword: string): number =>
-	/(заказать|вызвать|купить|приобрести|нанять|записаться|оформить)/i.test(keyword) ? 2
-		: /(цена|стоимость|аренда|доставка|услуги)/i.test(keyword) ? 1 : 0
+const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const asset = (file: string, mime = 'image/png') => `data:${mime};base64,${readFileSync(join(process.cwd(), 'src/report/illustrations', file)).toString('base64')}`
+const before = asset('trial-before.png'), after = asset('trial-after.png'), testArt = asset('free-test-still-life.png')
+const portfolio = readdirSync(join(process.cwd(), 'src/report/illustrations/portfolio')).filter(file => /\.jpg$/i.test(file)).sort().map(file => ({ image: asset(`portfolio/${file}`, 'image/jpeg'), url: `https://skyseo.site/cases/serp/${file}` }))
+const cover = asset('cover-search-steps.svg', 'image/svg+xml')
+const safeUrl = (value: string) => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? esc(url.href) : '#' } catch { return '#' } }
 
-function slide(n: number, domain: string, eyebrow: string, title: string, body: string, takeaway: string, dark = false): string {
-	return `<section class="slide${n === 1 ? ' cover' : ''}${dark ? ' dark' : ''}"><header><div class="brand"><img src="data:image/svg+xml;base64,${LOGO_SVG_B64}" alt=""/><b>SkySEO</b></div><span>Разбор сайта · ${esc(domain)}</span></header>
-		<div class="heading">${eyebrow ? `<span class="eyebrow">${esc(eyebrow)}</span>` : ''}<h1>${title}</h1></div>
-		<div class="body">${body}</div>${takeaway ? `<div class="takeaway">${takeaway}</div>` : ''}
-		<footer><span>Сохранённый срез поиска · выводы требуют проверки с бизнесом</span><span>${n} / 9</span></footer></section>`
-}
-
-function rankPlot(k: ReportKeyword | undefined, maxPosition: number): string {
-	if (!k || !k.position) return '<div class="rank-empty">Запросы для сравнения выберем вместе</div>'
-	const left = Math.min(96, Math.max(3, (k.position - 1) / (maxPosition - 1) * 100))
-	return `<div class="rank-line"><span>«${esc(k.keyword)}»</span><div class="rank-track"><i class="rank-first" style="width:${9 / (maxPosition - 1) * 100}%"></i><i class="rank-marker" style="left:${left}%"></i></div><b>${k.position}</b></div>`
-}
-
-function queryGroup(items: ReportKeyword[], limit: number): string {
-	return items.slice(0, limit).map(k => `<div class="query-chip"><span>${esc(k.keyword)}</span><b>${pos(k.position)}</b></div>`).join('')
-		+ (items.length > limit ? `<div class="query-overflow">+ ещё ${items.length - limit}</div>` : '')
-}
-
-export function renderCallPresentationHtml(data: ReportData): string {
-	const ranked = [...data.keywords].filter(k => k.position !== null && k.position > 0)
-		.sort((a, b) => (a.position ?? 99) - (b.position ?? 99))
-	const top10 = ranked.filter(k => (k.position ?? 99) <= 10).length
-	const eleven20 = ranked.filter(k => (k.position ?? 0) > 10 && (k.position ?? 99) <= 20).length
-	const twentyPlus = ranked.filter(k => (k.position ?? 0) > 20).length
-	const beyond = ranked.filter(k => (k.position ?? 0) > 10)
-	const priorities = [...(beyond.length ? beyond : ranked)]
-		.sort((a, b) => intentScore(b.keyword) - intentScore(a.keyword) || (a.position ?? 99) - (b.position ?? 99))
-		.slice(0, 3)
-	const focus = priorities.find(k => k.competitors.some(c => c.position > 0 && c.position < (k.position ?? 99)))
-		?? ranked.find(k => k.competitors.some(c => c.position > 0 && c.position < (k.position ?? 99)))
-	const rivals = (focus?.competitors ?? []).filter(c => c.position > 0 && c.position < (focus?.position ?? 99))
-		.sort((a, b) => a.position - b.position)
-	const siteRivals = rivals.filter(c => !marketplace.test(c.domain)).slice(0, 3)
-	const shownRivals = siteRivals.length ? siteRivals : rivals.slice(0, 3)
-	const region = data.region ? esc(data.region) : 'регион не указан'
-	const measured = `${region} · замер ${date(data.measuredAt)}`
-	const domain = esc(data.domain)
-	const pageOne = ranked.filter(k => (k.position ?? 99) <= 10)
-	const outside = ranked.filter(k => (k.position ?? 0) > 10)
-	const established = pageOne[0] ?? ranked[0]
-	const opportunity = beyond.length ? priorities[0] : ranked.find(k => k !== established)
-	const maxPlotPosition = Math.max(30, ...priorities.map(k => k.position ?? 0))
-	const cards = Array.from({ length: 3 }, (_, index) => rankPlot(priorities[index], maxPlotPosition)).join('')
-	const focusName = focus ? `«${esc(focus.keyword)}»` : 'Запрос ещё не выбран'
-	const scale = Math.max(1, top10, eleven20, twentyPlus)
-	const positionRow = (label: string, count: number, tone: string) => `<div class="position-row"><b>${label}</b><div class="position-track"><i class="${tone}" style="width:${count / scale * 100}%"></i></div><strong>${count}</strong></div>`
-	const coverTitle = data.domain.length <= 24
-		? `Где ${domain}<br><em>может недополучать заявки?</em>`
-		: 'Где сайт может<br><em>недополучать заявки?</em>'
-	const slides = [
-		slide(1, data.domain, '', coverTitle, `
-			<div class="cover-grid"><div class="cover-main"><div class="cover-domain">Яндекс · ${measured}</div>
-			<p>${ranked.length ? `Из ${ranked.length} проверенных запросов ${ranked.length - top10} находятся за первой страницей. Покажу, где именно.` : 'Сначала согласуем запросы и регион, затем снимем исходные позиции.'}</p>
-			<div class="cover-tags"><span>${top10} из ${ranked.length} в топ-10</span><span>${ranked.length - top10} за первой страницей</span></div>
-			<div class="cover-note">Заявки оценим после проверки аналитики.</div></div>
-			<img class="cover-art" src="data:image/svg+xml;base64,${coverArt}" alt="Абстрактная схема поисковой выдачи"/></div>`, ''),
-		slide(2, data.domain, 'Цель разговора', 'Какие запросы<br><em>приводят ваших клиентов?</em>', `
-			<div class="decision-compare"><div class="decision-card"><span>${pageOne.length ? 'Уже на первой странице' : 'Лучшее сохранённое место'}</span><strong>${pos(established?.position ?? null)}</strong><b>${established ? `«${esc(established.keyword)}»` : 'Пока нет замера'}</b></div>
-			<div class="decision-card"><span>${beyond.length ? 'За первой страницей' : 'Ещё один запрос'}</span><strong>${pos(opportunity?.position ?? null)}</strong><b>${opportunity ? `«${esc(opportunity.keyword)}»` : 'Приоритет определим вместе'}</b></div></div>
-			<div class="decision-caption">Место в поиске видно. Ценность каждого обращения знаете вы.</div>
-			<div class="question">Какую услугу и город стоит проверить первыми?</div>`,
-			'Согласуем приоритет: не каждый проверенный запрос нужен вашему бизнесу.'),
-		slide(3, data.domain, 'Текущая картина', ranked.length ? 'Сайт уже виден,<br><em>но не по всем запросам</em>' : 'Начнём с замера<br><em>нужных запросов</em>', `
-			<div class="position-map"><div class="position-caption"><span>Распределение проверенных фраз по зонам выдачи</span><b>${ranked.length} запросов</b></div>
-			${positionRow('Первая страница', top10, 'first')}${positionRow('Места 11–20', eleven20, 'middle')}${positionRow('Места 21+', twentyPlus, 'deep')}</div>
-			<div class="bracket"><div class="brace"></div><p>${ranked.length ? `Это позиции только ${ranked.length} сохранённых фраз. Сначала проверим, какие из них приводят нужных клиентов.` : 'Пока нечего сравнивать: сначала согласуем запросы, регион и снимем исходные позиции.'}</p></div>`,
-			'Позиция по выбранной фразе не равна доле всего трафика сайта.'),
-		slide(4, data.domain, 'Ближайший смысл для бизнеса', beyond.length ? 'Где эти запросы<br><em>сейчас в поиске?</em>' : 'Какие запросы<br><em>уже дают видимость?</em>', `
-			<div class="rank-plot"><div class="rank-axis"><span>1</span><span>10 · первая страница</span><span>${maxPlotPosition} место</span></div>${cards}</div>
-			<div class="business-point"><div>${star}</div><p>Синяя зона — топ-10. Метки показывают сохранённые позиции, а не прогноз роста.</p></div>`,
-			'Вопрос владельцу: какие из этих запросов действительно ведут к продаже?'),
-		slide(5, data.domain, 'Кто выше', focus ? `Другие сайты — выше.<br><em>Ваш — на ${pos(focus.position)} месте.</em>` : 'С кем сравним<br><em>ваш сайт?</em>', `
-			<div class="compare-query">Один и тот же запрос: <b>${focusName}</b></div>
-			<div class="versus-grid"><div class="versus-rivals"><span>Сайты выше в выдаче</span>${shownRivals.length ? shownRivals.map(c => `<div class="versus-row"><b>${c.position}</b><strong>${esc(c.domain)}</strong></div>`).join('') : '<div class="empty">Сопоставимых сайтов в замере нет</div>'}</div>
-			<div class="versus-mine"><span>Ваш сайт</span><strong>${pos(focus?.position ?? null)}</strong><b>${domain}</b></div></div>
-			<div class="compare-foot">Это сравнение мест в выдаче. Страницы и предложения сравним во время теста.</div>`,
-			'Вопрос владельцу: какие из этих сайтов вы считаете прямыми конкурентами?'),
-		slide(6, data.domain, 'Карта запросов', ranked.length ? 'Видимость уже есть.<br><em>Следующий шаг — выбрать важное.</em>' : 'Сначала определим<br><em>важные запросы.</em>', `
-			<div class="query-columns"><div class="query-column"><div class="query-column-head"><strong>Первая страница</strong><b>${pageOne.length}</b></div>${queryGroup(pageOne, 5)}</div>
-			<div class="query-column"><div class="query-column-head"><strong>За первой страницей</strong><b>${outside.length}</b></div>${queryGroup(outside, 5)}</div></div>`,
-			`${measured}. Показаны сохранённые позиции; приоритет выбираем вместе.`),
-		slide(7, data.domain, 'Потенциальные обращения', 'Сколько заявок<br><em>сайт недополучает?</em>', `
-			<div class="opportunity-grid"><div class="opportunity-known"><span>Что видно сейчас</span><strong>${ranked.length - top10}</strong><b>запросов за первой страницей</b></div><div class="opportunity-unknown"><span>Чего пока не видно</span><strong>?</strong><b>возможных дополнительных заявок</b></div></div>
-			<div class="data-flow"><div><b>Вебмастер</b><span>показы и клики</span></div><i>→</i><div><b>Метрика</b><span>обращения</span></div><i>→</i><div><b>CRM</b><span>качество заявок</span></div></div>`,
-			'На тесте оценим диапазон по реальным данным. Без аналитики число было бы выдумкой.'),
-		slide(8, data.domain, 'Пятидневная диагностика', 'Что проверим<br><em>за 5 дней?</em>', `
-			<div class="days-grid"><div><small>День 1</small><b>Выбор</b><p>Услуга · город · нужные заявки</p></div><div><small>Дни 2–4</small><b>Проверка</b><p>Выдача · страницы · аналитика</p></div><div><small>День 5</small><b>Решение</b><p>Потенциал · приоритет · план</p></div></div>
-			<div class="test-compare"><div><span>Сегодня</span><b>Где сайт</b><small>это мы уже видим</small></div><i>→</i><div><span>Через 5 дней</span><b>Что делать</b><small>покажем по фактам</small></div></div>`,
-			'За пять дней проверяем гипотезы и принимаем решение; рост позиций не обещаем.'),
-		slide(9, data.domain, 'Следующий шаг', 'Выберем одно направление<br><em>и проверим его</em>', `
-			<div class="final-grid"><div class="final-card"><div class="shape">✳</div><h2>От вас</h2><p>Приоритетная услуга и город.</p><p>Что считать хорошей заявкой.</p><p>Доступ к Метрике и Вебмастеру только на чтение.</p></div>
-			<div class="final-card accent"><div class="shape square">▣</div><h2>От SkySEO</h2><p>Проверка спроса, страниц и конкурентов.</p><p>Оценка возможных обращений по вашим данным.</p><p>Через пять дней — выводы и следующий шаг.</p></div></div>
-			<div class="question">Какую услугу и город возьмём для первой проверки?</div>`,
-			'После согласия фиксируем направление, ответственного и дату обсуждения результата.', true),
-	]
-	return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>SkySEO · ${domain}</title><style>${CALL_PRESENTATION_CSS}</style></head><body>${slides.join('')}</body></html>`
+/** Nine client slides match the CRM prompter and the approved SKB-4 sequence. */
+export function renderCallPresentationHtml(data: ReportData) {
+	const ranked = data.keywords.filter(row => Number.isFinite(row.position) && row.position > 0).sort((a, b) => a.position - b.position)
+	const date = data.measuredAt ? data.measuredAt.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' }) : 'Дата не сохранена'
+	const source = `${data.region || 'Регион не указан'}, замер ${date}`
+	const slides: string[] = []
+	const slide = (title: string, body: string) => slides.push(`<section class="slide"><header><div class="brand"><img src="data:image/svg+xml;base64,${LOGO_SVG_B64}"><b>SkySEO</b></div><span>${esc(data.domain)}</span></header><div class="heading"><h1>${title}</h1></div><div class="body">${body}</div></section>`)
+	const positions = (items: ReportKeyword[]) => items.map(row => `<div class="position-proof"><span>${esc(row.keyword)}</span><strong>${row.position}</strong></div>`).join('')
+	slide(`SEO для ${esc(data.companyName || data.domain)}`, `<div class="deck-cover"><div><h2>Где сайт уже виден и что можно усилить</h2><p>${esc(source)}</p></div><img src="${cover}" alt="Иллюстрация поискового разбора"></div>`)
+	const examples = [...ranked.filter(row => row.position <= 10).slice(0, 2), ...ranked.filter(row => row.position > 10).slice(0, 2)]
+	slide('Текущие позиции сайта', `<div class="proof-pairs">${positions(examples.length ? examples : ranked.slice(0, 4)) || '<p>Выберем запросы и снимем исходный замер</p>'}</div><p class="deck-source">${esc(source)}</p>`)
+	const comparisonQueries = ranked.filter(row => row.competitors.some(other => other.position > 0 && other.position < row.position)).slice(0, 2)
+	for (let index = 0; index < 2; index++) {
+		const row = comparisonQueries[index]
+		const rivals = (row?.competitors || []).filter(other => other.position > 0 && other.position < row.position).sort((a, b) => a.position - b.position).slice(0, 3)
+		slide(index === 0 ? 'Кто выше по этому запросу' : 'Какие страницы сравним', row ? `<h2 class="compare-phrase">${esc(row.keyword)}</h2><div class="deck-versus"><div>${rivals.map(other => `<a href="${safeUrl(other.url)}" class="position-proof"><span>${esc(other.domain)}</span><strong>${other.position}</strong></a>`).join('')}</div><div class="deck-ours"><span>${esc(data.domain)}</span><strong>${row.position}</strong></div></div><div class="deck-next">${index === 0 ? 'Сравним разделы и связи между страницами' : 'Сопоставим страницы с типами и моделями товаров'}</div><p class="deck-source">${esc(source)}. Решения для сайта определим после проверки страниц.</p>` : '<div class="deck-empty">Сопоставимые страницы выберем по приоритетным запросам</div>')
+	}
+	const demand = data.keywords.find(row => Number.isFinite(row.volume) && row.volume > 0)
+	slide('Условный сценарий. Уточним по вашей аналитике', `<div class="deck-rates"><div><strong>6%</strong><span>Спрос в переходы</span></div><div><strong>3%</strong><span>Переходы в заявки</span></div><div><strong>20%</strong><span>Заявки в сделки</span></div></div>${demand ? `<div class="deck-formula">${demand.volume.toLocaleString('ru-RU')} × 6% × 3% ≈ ${(demand.volume * .06 * .03).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} заявок</div><p>${esc(demand.keyword)}</p>` : '<div class="deck-formula">Спрос × доля переходов × конверсия в заявку</div>'}<p class="deck-source">Проценты условные. Это пример, не прогноз и не подтвержденные потери. Частоты не суммируем.</p>`)
+	slide('Результат теста до оплаты', `<div class="deck-trial"><div><h2>До теста <small>26.09.2026</small></h2><div class="shot"><img src="${before}"></div></div><div><h2>После теста <small>30.09.2026</small></h2><div class="shot"><img src="${after}"></div></div></div><div class="deck-highlights"><b>забор купить: 12 → 3</b><b>купить забор: 21 → 6</b><b>5 дней бесплатно</b></div><p class="deck-source">Пример другого проекта. Показаны отдельные изменения позиций.</p>`)
+	slide('Чем выгоден SkySEO', '<div class="deck-advantages"><div><h2>Под ключ</h2><p>SEO + правки + тексты</p></div><div><h2>Свои программисты</h2><p>Внедрения в SEO-пакете</p></div><div><h2>Опыт с 2004 года</h2><p>SEO-специалист ведет проект</p></div><div><h2>Продвижение в нейросетях</h2><p>Без доплаты к SEO</p></div></div>')
+	slide('60+ примеров работ', `<p class="deck-source">Часть нашего портфолио. Полный скриншот по клику.</p><div class="deck-portfolio">${portfolio.map(item => `<a href="${item.url}"><img src="${item.image}"></a>`).join('')}</div>`)
+	slide('Сначала покажем, что умеем.<br>Потом обсудим сотрудничество.', `<div class="deck-test"><div><h2>5 дней бесплатно<br>на вашем сайте</h2><ol><li>Подберем подходящие запросы.</li><li>Проведем тестовое продвижение.</li><li>Покажем динамику позиций.</li></ol></div><img src="${testArt}" alt="Лупа над страницами сайта"></div>`)
+	return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>${CALL_PRESENTATION_CSS}
+	.slide{background:#f2f2f1;padding:10mm 16mm}.heading{height:32mm;margin-top:5mm}h1{font-size:28pt}.body{height:105mm}.brand img{width:8mm;height:8mm}.brand{font-size:13pt}.deck-source{font-size:9pt;color:#65656d;margin:3mm 0}.deck-cover{display:grid;grid-template-columns:1.1fr 1fr;gap:6mm;align-items:center;height:88mm}.deck-cover img{width:100%;height:82mm;object-fit:contain}.deck-cover h2{font-size:23pt;line-height:1.2}.proof-pairs{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.position-proof{display:flex;align-items:center;justify-content:space-between;gap:5mm;background:#fff;border-radius:4mm;padding:5mm;color:#202024;text-decoration:none;font-size:14pt;min-height:27mm}.position-proof strong{font-size:30pt;color:#1d4e9e}.compare-phrase{font-size:17pt;margin:0 0 4mm}.deck-versus{display:grid;grid-template-columns:1.6fr 1fr;gap:4mm}.deck-versus>div:first-child{display:grid;gap:3mm}.deck-versus .position-proof{min-height:20mm;padding:3mm 5mm}.deck-ours{background:#303033;color:#fff;border-radius:4mm;padding:6mm;display:flex;flex-direction:column;justify-content:center;gap:3mm}.deck-ours strong{font-size:56pt}.deck-next{background:#e4e4e2;border-radius:3mm;padding:3mm 5mm;margin-top:4mm;font-size:14pt}.deck-empty{font-size:23pt;padding:15mm;background:#fff;border-radius:5mm}.deck-rates{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}.deck-rates>div{display:grid;gap:4mm;background:#e4e4e2;padding:6mm;border-radius:4mm}.deck-rates strong{font-size:38pt}.deck-rates span{font-size:13pt}.deck-formula{background:#303033;color:#fff;border-radius:4mm;padding:7mm;margin-top:6mm;font-size:23pt}.deck-trial{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.deck-trial>div{background:#fff;border-radius:4mm;padding:4mm}.deck-trial h2{font-size:15pt;margin:0 0 3mm;display:flex;justify-content:space-between}.deck-trial small{font-size:10pt;font-weight:400}.shot{height:63mm;overflow:hidden;border-radius:3mm}.shot img{width:100%;height:auto}.deck-highlights{display:flex;justify-content:space-between;gap:3mm;margin-top:4mm;font-size:13pt}.deck-advantages{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.deck-advantages>div{background:#fff;border-radius:5mm;padding:6mm;height:43mm}.deck-advantages>div:nth-child(2){background:#e4e4e2}.deck-advantages>div:last-child{background:#e5ebf0}.deck-advantages h2{font-size:23pt;margin:0 0 4mm}.deck-advantages p{font-size:13pt}.deck-portfolio{display:grid;grid-template-columns:repeat(6,1fr);grid-template-rows:repeat(6,14.8mm);gap:1.5mm}.deck-portfolio a{background:#fff;border-radius:2mm;padding:1mm;overflow:hidden}.deck-portfolio img{width:100%;height:100%;object-fit:cover;object-position:top}.deck-test{display:grid;grid-template-columns:1.75fr 1fr;gap:7mm;align-items:start}.deck-test>img{width:100%;height:86mm;object-fit:cover;border-radius:5mm}.deck-test h2{background:#e4e4e2;border-radius:4mm;padding:4mm 5mm;font-size:21pt;margin:0 0 4mm}.deck-test ol{margin:0;padding:0;list-style-position:inside;display:grid;gap:3mm}.deck-test li{background:#fff;border-radius:4mm;padding:4mm 5mm;font-size:17pt;line-height:1.15}
+	</style></head><body>${slides.join('')}</body></html>`
 }
