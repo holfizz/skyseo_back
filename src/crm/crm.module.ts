@@ -9,10 +9,11 @@ import { SalesReminderScheduler } from './sales-reminder.scheduler'
 import { QualificationService } from './qualification.service'
 import { CalendarFeedController } from './calendar-feed.controller'
 import { ReportModule } from '../report/report.module'
+import { CallPreparationService } from './preparation/preparation.service'
 
 @Module({
 	imports: [PrismaModule, ManagerModule, FollowUpModule, TelegramModule.forRoot(), ReportModule],
 	controllers: [WorkspaceCrmController, CalendarFeedController],
-	providers: [CrmService, QualificationService, SalesReminderScheduler],
+	providers: [CrmService, QualificationService, SalesReminderScheduler, CallPreparationService],
 })
 export class CrmModule {}

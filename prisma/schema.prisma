@@ -1054,11 +1054,34 @@ model CrmLead {
   tasks           CrmTask[]
   deals           CrmDeal[]
   customValues    CrmCustomFieldValue[]
+  callPreparation CrmCallPreparation?
 
   @@index([status, createdAt])
   @@index([assigneeId])
   @@index([funnelId, stageId])
   @@map("crm_leads")
+}
+
+// Durable checkpoints and generated call documents; qualification stays in CrmLead.
+model CrmCallPreparation {
+  id           String   @id @default(uuid())
+  leadId       String   @unique
+  status       String   @default("PENDING")
+  phase        String   @default("SITE")
+  version      Int      @default(1)
+  research     Json
+  slideOutline Json?
+  clientPdf    Bytes?
+  scriptPdf    Bytes?
+  error        String?
+  leaseUntil   DateTime?
+  generatedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lead         CrmLead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([status, leaseUntil])
+  @@map("crm_call_preparations")
 }
 
 // Определения управляются администратором; выключение не удаляет сохранённые ответы.

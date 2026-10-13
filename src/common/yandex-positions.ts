@@ -227,6 +227,26 @@ export async function checkYandexPositions(opts: {
 
 const XMLRIVER_WORDSTAT = 'https://xmlriver.com/wordstat/new/json'
 
+export async function getWordstatHints(opts: { user: string; key: string; keyword: string; lr: number }): Promise<{ popular: Array<{text:string; value:number}>; associations: Array<{text:string; value:number}>; error?:string }> {
+ const u = new URL(XMLRIVER_WORDSTAT)
+ for (const [key, value] of Object.entries({ user: opts.user, key: opts.key, query: opts.keyword, regions: String(opts.lr), pagetype: 'words' })) u.searchParams.set(key, value)
+ for(let attempt=0;attempt<3;attempt++){
+  try {
+   const response = await fetch(u, { signal: AbortSignal.timeout(25000) })
+   if (!response.ok) {if(attempt<2&&[429,500,502,503,504].includes(response.status)){await sleep(1500*(attempt+1));continue};return { popular: [], associations: [], error: `HTTP ${response.status}` }}
+   const json = await response.json() as any
+   const error=json.error||json.errors
+   if (error) {
+    if(attempt<2&&/перезапрос|не получен|канал|попробуйте|повторите|busy/i.test(String(error))){await sleep(1500*(attempt+1));continue}
+    return { popular: [], associations: [], error: /balance|баланс|quota|лимит/i.test(String(error)) ? 'недостаточно баланса или квоты' : 'источник временно недоступен' }
+   }
+   const rows = (value: unknown) => Array.isArray(value) ? value.filter(row => typeof row?.text === 'string' && Number.isFinite(Number(row.value))).map(row => ({ text: row.text.trim(), value: Number(row.value) })) : []
+   return { popular: rows(json.popular), associations: rows(json.associations) }
+  } catch {if(attempt<2){await sleep(1500*(attempt+1));continue};return { popular: [], associations: [], error: 'сеть недоступна' }}
+ }
+ return {popular:[],associations:[],error:'источник временно недоступен'}
+}
+
 async function fetchWordstatOne(
 	user: string,
 	key: string,
@@ -240,10 +260,10 @@ async function fetchWordstatOne(
 	// Регион обязателен там, где объём показывается рядом с позициями: позиции мы
 	// снимаем по конкретному городу, и всероссийская частотность рядом с ними
 	// вводит в заблуждение — для регионального бизнеса расхождение в разы.
-	if (lr != null) u.searchParams.set('lr', String(lr))
+	if (lr != null) u.searchParams.set('regions', String(lr))
 	for (let attempt = 0; attempt < 4; attempt++) {
 		try {
-			const res = await fetch(u.toString())
+			const res = await fetch(u.toString(), { signal: AbortSignal.timeout(25000) })
 			const text = await res.text()
 			if (!res.ok) {
 				if ((res.status >= 500 || res.status === 429) && attempt < 3) { await sleep(1200 * (attempt + 1)); continue }

@@ -24,7 +24,7 @@ function loadPuppeteer(): any {
 // puppeteer-core своего браузера не несёт — путь обязателен. Берём из env,
 // иначе ищем среди обычных мест установки. Полный puppeteer это переживёт:
 // у него executablePath просто перекроет встроенный Chromium.
-function resolveChrome(): string | undefined {
+export function resolveChrome(): string | undefined {
 	if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH
 	const fs = require('fs')
 	const candidates = [

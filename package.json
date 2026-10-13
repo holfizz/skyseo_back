@@ -26,6 +26,9 @@
 		"test:call-calendar": "ts-node --transpile-only src/scripts/test-call-calendar.ts",
 		"test:account-import": "ts-node --transpile-only src/scripts/test-account-import.ts",
 		"test:call-script": "ts-node --transpile-only src/scripts/test-call-script.ts",
+		"test:call-preparation": "ts-node --transpile-only src/scripts/test-call-preparation.ts",
+		"test:call-preparation-db": "ts-node --transpile-only src/scripts/test-call-preparation-db.ts",
+		"prepare:call": "ts-node --transpile-only src/scripts/prepare-client-call.ts",
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
 		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
 	},

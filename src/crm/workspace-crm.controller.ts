@@ -17,6 +17,10 @@ import { ReportService } from '../report/report.service'
 import { renderPdf } from '../report/report.pdf'
 import { buildCallScript } from './call-script'
 import { renderCallScriptHtml } from './call-script.pdf'
+import { CallPreparationService } from './preparation/preparation.service'
+import { PrepareCallDto } from './preparation/dto'
+import { Research, DeckSlide } from './preparation/types'
+import { renderResearchPresentation } from '../report/call-presentation.template'
 import {
 	CreateFunnelDto, CreateStageDto, CreateTaskDto, MoveLeadStageDto,
 	QualifyLeadDto, SaveFollowUpDto, UpdateDealDto, UpdateLeadDto, UpdateTaskDto,
@@ -32,6 +36,7 @@ export class WorkspaceCrmController {
 		private readonly followUp: FollowUpService,
 		private readonly qualification: QualificationService,
 		private readonly report: ReportService,
+		private readonly preparation: CallPreparationService,
 	) {}
 
 	private actor(user: User): Promise<CrmUser> {
@@ -175,8 +180,9 @@ export class WorkspaceCrmController {
 	@Get('recipients/:id/call-script')
 	async callScript(@CurrentUser() user: User, @Param('id') id: string) {
 		const context = await this.recipientContext(user, id)
+		if (context.crmLead && !('crmLocked' in context && context.crmLocked)) return this.leadCallScript(user, context.crmLead.id, id)
 		const brief = context.leadId ? await this.report.leadBrief(context.leadId) : null
-		return { ...context, script: buildCallScript(context, brief) }
+		return { ...context, preparation: null, script: buildCallScript(context, brief) }
 	}
 
 	@Get('recipients/:id/call-script/pdf')
@@ -186,6 +192,59 @@ export class WorkspaceCrmController {
 		response.setHeader('Cache-Control', 'private, no-store')
 		response.setHeader('Content-Disposition', 'attachment; filename="skyseo-call-script.pdf"')
 		response.send(await renderPdf(renderCallScriptHtml(context.script), true))
+	}
+
+	@Get('leads/:id/preparation')
+	async preparationStatus(@CurrentUser() user: User, @Param('id') id: string) {
+		await this.viewable(user, id)
+		return this.preparation.get(id)
+	}
+
+	@Post('leads/:id/preparation')
+	async prepareCall(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: PrepareCallDto) {
+		await this.editable(user, id)
+		return this.preparation.start(id, dto)
+	}
+
+	@Get('leads/:id/call-script')
+	async leadCallScript(@CurrentUser() user: User, @Param('id') id: string, @Query('recipientId') recipientId?: string) {
+		await this.viewable(user, id)
+		const context = await this.preparation.context(id, recipientId)
+		const row = await this.preparation.prepared(id)
+		const ready = row && ['READY', 'PARTIAL'].includes(row.status) && row.slideOutline
+		const research = row?.research as unknown as Research
+		const script = ready ? buildCallScript(context, null, { research, slides: row.slideOutline as unknown as DeckSlide[] }) : buildCallScript(context, null)
+		return { ...context, script, preparation: await this.preparation.get(id), progress: { stepId: (context.crmLead.qualification as any)?.callStepId, questionKey: (context.crmLead.qualification as any)?.callQuestionKey, version: (context.crmLead.qualification as any)?.callPreparationVersion } }
+	}
+
+	@Get('leads/:id/preparation/pdf/:kind')
+	async preparationPdf(@CurrentUser() user: User, @Param('id') id: string, @Param('kind') kind: string, @Res() response: Response) {
+		await this.viewable(user, id)
+		if (!['client', 'script'].includes(kind)) throw new NotFoundException('Документ не найден')
+		const row = await this.preparation.prepared(id)
+		if (!row || !['READY', 'PARTIAL'].includes(row.status)) throw new NotFoundException('Подготовка документов еще не завершена')
+		let bytes = kind === 'client' ? row.clientPdf : row.scriptPdf
+		if (kind === 'script') {
+			const context = await this.preparation.context(id)
+			if (!bytes || !row.generatedAt || context.crmLead.updatedAt > row.generatedAt) bytes = await renderPdf(renderCallScriptHtml(buildCallScript(context, null, { research: row.research as unknown as Research, slides: row.slideOutline as unknown as DeckSlide[] })), true)
+		}
+		if (!bytes) throw new NotFoundException('Документ не сформирован')
+		response.setHeader('Content-Type', 'application/pdf')
+		response.setHeader('Cache-Control', 'private, no-store')
+		response.setHeader('Content-Disposition', `attachment; filename="skyseo-${kind}.pdf"`)
+		response.send(bytes)
+	}
+
+	@Get('leads/:id/preparation/slides/:number')
+	async preparationSlide(@CurrentUser() user: User, @Param('id') id: string, @Param('number') number: string, @Res() response: Response) {
+		await this.viewable(user, id)
+		const row = await this.preparation.prepared(id)
+		const slides = row?.slideOutline as unknown as DeckSlide[]
+		if (!row || !['READY', 'PARTIAL'].includes(row.status) || !/^\d{1,3}$/.test(number) || !slides?.[Number(number) - 1]) throw new NotFoundException('Слайд не найден')
+		response.setHeader('Content-Type', 'text/html; charset=utf-8')
+		response.setHeader('Cache-Control', 'private, no-store')
+		response.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'")
+		response.send(renderResearchPresentation(row.research as unknown as Research, slides, Number(number) - 1))
 	}
 
 	@Patch('leads/:id')

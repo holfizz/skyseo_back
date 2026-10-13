@@ -1,0 +1,41 @@
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index b09fdfa..9b9a92c 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -1054,6 +1054,7 @@ model CrmLead {
+   tasks           CrmTask[]
+   deals           CrmDeal[]
+   customValues    CrmCustomFieldValue[]
++  callPreparation CrmCallPreparation?
+
+   @@index([status, createdAt])
+   @@index([assigneeId])
+@@ -1061,6 +1062,28 @@ model CrmLead {
+   @@map("crm_leads")
+ }
+
++// Durable checkpoints and generated call documents; qualification stays in CrmLead.
++model CrmCallPreparation {
++  id           String   @id @default(uuid())
++  leadId       String   @unique
++  status       String   @default("PENDING")
++  phase        String   @default("SITE")
++  version      Int      @default(1)
++  research     Json
++  slideOutline Json?
++  clientPdf    Bytes?
++  scriptPdf    Bytes?
++  error        String?
++  leaseUntil   DateTime?
++  generatedAt  DateTime?
++  createdAt    DateTime @default(now())
++  updatedAt    DateTime @updatedAt
++  lead         CrmLead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
++
++  @@index([status, leaseUntil])
++  @@map("crm_call_preparations")
++}
++
+ // Определения управляются администратором; выключение не удаляет сохранённые ответы.
+ model CrmCustomFieldDefinition {
+   id         String             @id @default(uuid())

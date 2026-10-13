@@ -150,8 +150,10 @@ export class ReportService {
 		return renderPdf(await this.renderHtml(leadId))
 	}
 
-	/** Админская презентация для созвона: девять стабильных слайдов без цен. */
+	/** Prefer the prepared CRM deck so existing download buttons open the same slides. */
 	async renderCallPdf(leadId: string): Promise<Buffer> {
+		const prepared = await this.prisma.crmCallPreparation.findFirst({where:{lead:{outreachLeadId:leadId},status:{in:['READY','PARTIAL']}},select:{clientPdf:true}})
+		if(prepared?.clientPdf)return prepared.clientPdf
 		const lead = await this.prisma.outreachLead.findUnique({ where: { id: leadId } })
 		if (!lead) throw new NotFoundException('Лид не найден')
 		return renderPdf(renderCallPresentationHtml(await this.buildData(lead, false)))

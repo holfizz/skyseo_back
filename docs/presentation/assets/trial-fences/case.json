@@ -1,0 +1,40 @@
+{
+  "id": "trial-fences",
+  "title": "Кейс: заборы",
+  "providedOn": "2026-10-12",
+  "source": "User-provided Topvisor screenshots",
+  "purpose": "One reusable before/after case for the free five-day test",
+  "visibleKeywordCount": 203,
+  "region": null,
+  "regionNote": "Region is not shown in the provided screenshots; do not claim it was independently verified.",
+  "dateNote": "Displayed measurements are 26 and 30 September 2026, five calendar dates inclusive; not five elapsed 24-hour periods.",
+  "screenshots": [
+    {
+      "phase": "before",
+      "file": "before.png",
+      "originalFilename": "Screenshot 2026-10-12 at 18.58.28.png",
+      "measuredOn": "2026-09-26",
+      "sha256": "6e7582f9627f07aefe57bb5821fe360c8259061b477a6ff7a2f2114206b3413a"
+    },
+    {
+      "phase": "after",
+      "file": "after.png",
+      "originalFilename": "Screenshot 2026-10-12 at 18.57.38.png",
+      "measuredOn": "2026-09-30",
+      "sha256": "ae719505370fe42bd5ba4cb9296d252d38033e072f5a34669ca0daec001fcc6a"
+    }
+  ],
+  "highlights": [
+    {
+      "keyword": "забор купить",
+      "before": 12,
+      "after": 3
+    },
+    {
+      "keyword": "купить забор",
+      "before": 21,
+      "after": 6
+    }
+  ],
+  "interpretation": "Selected observed changes, not total growth of all 203 keywords, a forecast, or proof of causality. Some visible phrases declined."
+}

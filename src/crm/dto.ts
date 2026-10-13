@@ -205,8 +205,14 @@ export class QualificationNotesDto {
 	@IsOptional() @IsString() @MaxLength(2000) callPotentialComment?: string
 	@IsOptional() @IsString() @MaxLength(2000) callSkyseoComment?: string
 	@IsOptional() @IsString() @MaxLength(2000) callClosingComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callCaseComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callPortfolioComment?: string
+	@IsOptional() @IsString() @MaxLength(2000) callComparisonSecondComment?: string
 	@IsOptional() @IsString() @MaxLength(500) callInterest?: string
 	@IsOptional() @IsISO8601() callCompletedAt?: string
+	@IsOptional() @IsString() @MaxLength(80) callStepId?: string
+	@IsOptional() @IsString() @MaxLength(80) callQuestionKey?: string
+	@IsOptional() @IsInt() @Min(1) callPreparationVersion?: number
 	@IsOptional() @IsString() @MaxLength(500) callQueryRelevance?: string
 	@IsOptional() @IsString() @MaxLength(1000) callCompetitorFinding?: string
 	@IsOptional() @IsString() @MaxLength(300) callStartAnswer?: string
@@ -227,9 +233,9 @@ export class QualificationNotesDto {
 	@IsOptional() @IsString() @MaxLength(1000) nextStep?: string
 	@IsOptional() @IsString() @MaxLength(1000) seoGoal?: string
 
-	@IsOptional() @IsIn(['YES', 'NO']) hasSeo?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'UNKNOWN']) hasSeo?: string
 	@IsOptional() @IsIn(['IN_HOUSE', 'AGENCY', 'FREELANCER', 'UNKNOWN']) seoProvider?: string
-	@IsOptional() @IsIn(['YES', 'NO', 'PARTIAL']) seoSatisfied?: string
+	@IsOptional() @IsIn(['YES', 'NO', 'PARTIAL', 'UNKNOWN']) seoSatisfied?: string
 	@IsOptional() @IsIn(['YES', 'NO']) hasAds?: string
 	@IsOptional() @IsIn(['YES', 'NO', 'UNKNOWN']) websiteLeads?: string
 	@IsOptional() @IsIn(['YES', 'NO']) tracksOrganicLeads?: string

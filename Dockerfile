@@ -45,6 +45,9 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/report/illustrations ./src/report/illustrations
+COPY --from=builder /app/scripts/lib/client-presentation-style.cjs ./scripts/lib/client-presentation-style.cjs
+COPY --from=builder /app/scripts/lib/client-trial-case.cjs ./scripts/lib/client-trial-case.cjs
+COPY --from=builder /app/docs/presentation/assets/trial-fences ./docs/presentation/assets/trial-fences
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package*.json ./
 
