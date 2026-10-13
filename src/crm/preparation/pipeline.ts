@@ -36,7 +36,7 @@ export async function runPreparation(research:Research,context:PipelineContext,a
      const candidates=siteCandidates(research.sitePages,existing,limit)
      research.keywords=[...research.keywords.filter(k=>research.sitePages.some(p=>relevant(k.keyword,p))),...candidates.filter(k=>!research.keywords.some(saved=>saved.keyword.toLowerCase()===k.keyword.toLowerCase()))].slice(0,limit)
      if(!research.keywords.length)throw new Error('Не удалось подтвердить темы запросов по страницам сайта')
-     const seeds=research.keywords.slice(0,8)
+     const seeds=research.keywords.slice(0,8);let unavailableSeeds=0
      for(const seed of seeds){
       if(seed.wordstatSeedCompleted)continue
       try{
@@ -48,8 +48,8 @@ export async function runPreparation(research:Research,context:PipelineContext,a
         if(!row&&research.keywords.length<limit){row={...seed,keyword:hint.text,clientEvidenceUrl:page.url,volume:null,position:null,url:null,scanned:0,top10:[],measuredAt:undefined,source:undefined,error:undefined,wordstatSeedCompleted:false};research.keywords.push(row)}
         if(row){row.volume=hint.value;row.volumeAt=time;row.volumeRegion=research.region.lr;row.volumePeriod='Широкое соответствие, период ответа Wordstat'}
        }
-       seed.wordstatSeedCompleted=true;await checkpoint()
-      }catch(error){issue(error instanceof SourceUnavailable?error.message:'Wordstat временно недоступен');if(error instanceof SourceUnavailable&&error.quota)break}
+       seed.wordstatSeedCompleted=true;unavailableSeeds=0;await checkpoint()
+      }catch(error){issue(error instanceof SourceUnavailable?error.message:'Wordstat временно недоступен');if(error instanceof SourceUnavailable&&(error.quota||++unavailableSeeds>=2))break}
      }
     }
     if(phase==='POSITIONS'){

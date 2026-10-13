@@ -24,7 +24,7 @@ export async function measureKeyword(domain:string,keyword:string,lr:number):Pro
     const json=await response.json() as any
     if(!json.rawData)throw new Error('Search API вернул пустой ответ')
     return {...rankResult(Buffer.from(json.rawData,'base64').toString('utf8'),domain,keyword,lr),source:'Yandex Search API v2'}
-   }catch(error){if(error instanceof SourceUnavailable||attempt===1)throw error;await sleep(1200)}
+   }catch(error){if(error instanceof SourceUnavailable)throw error;if(attempt===1)throw new SourceUnavailable('Search API: сеть или источник временно недоступны');await sleep(1200)}
   }
  }
  const user=process.env.XMLRIVER_USER,key=process.env.XMLRIVER_KEY

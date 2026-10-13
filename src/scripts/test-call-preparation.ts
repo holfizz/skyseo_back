@@ -3,7 +3,7 @@ import {strict as assert} from 'node:assert'
 import {plainToInstance} from 'class-transformer'
 import {validate} from 'class-validator'
 import {publicAddress,publicUrl} from '../crm/preparation/public-web'
-import {rankResult} from '../crm/preparation/search'
+import {rankResult,measureKeyword,SourceUnavailable} from '../crm/preparation/search'
 import {siteCandidates,relevant,comparePages} from '../crm/preparation/research'
 import {buildSlideOutline,renderResearchPresentation} from '../report/call-presentation.template'
 import {buildCallScript} from '../crm/call-script'
@@ -23,6 +23,7 @@ async function main(){
  for(const url of ['http://127.1','http://2130706433','http://0x7f000001','http://localhost','file:///etc/passwd','https://user:pass@public.example','http://example.local','http://example.com:4000'])assert.throws(()=>publicUrl(url),url)
  const xml='<doc><url>https://fixture.example.evil.org/</url></doc><doc><url>https://shop.fixture.example/catalog?a=1&amp;b=2</url></doc>'
  const result=rankResult(xml,'fixture.example','запрос',213);assert.equal(result.position,2);assert.equal(result.scanned,2);assert.ok(result.url?.includes('&b=2'))
+ assert.throws(()=>rankResult('<response/>','fixture.example','запрос',213),SourceUnavailable)
  assert.equal(rankResult('<doc><url>https://other.example/</url></doc>','fixture.example','запрос',213).scanned,1)
  assert.throws(()=>rankResult('<error>quota exceeded</error>','fixture.example','запрос',213))
  const research=fixtureResearch(),page=research.sitePages[0]
@@ -48,6 +49,11 @@ async function main(){
  const original=global.fetch;let requestUrl=''
  global.fetch=(async(url:any)=>{requestUrl=String(url);return new Response(JSON.stringify({popular:[{text:'гидронасос',value:2},{text:'гидронасос bosch rexroth',value:1000}],associations:[]}),{status:200})}) as typeof fetch
  try{const hints=await getWordstatHints({user:'fixture',key:'fixture',keyword:'гидронасос',lr:213});assert.equal(new URL(requestUrl).searchParams.get('regions'),'213');assert.equal(new URL(requestUrl).searchParams.get('lr'),null);assert.equal(hints.popular.length,2)}finally{global.fetch=original}
+ const savedKey=process.env.YANDEX_SEARCH_API_KEY,savedFolder=process.env.YANDEX_FOLDER_ID;let failedCalls=0
+ process.env.YANDEX_SEARCH_API_KEY='test-only';process.env.YANDEX_FOLDER_ID='test-only'
+ global.fetch=(async()=>{failedCalls++;return new Response('',{status:503})}) as typeof fetch
+ try{await assert.rejects(()=>measureKeyword('fixture.example','гидронасос',213),SourceUnavailable);assert.equal(failedCalls,2,'Provider outage has bounded attempts and stops a batch')}
+ finally{global.fetch=original;if(savedKey===undefined)delete process.env.YANDEX_SEARCH_API_KEY;else process.env.YANDEX_SEARCH_API_KEY=savedKey;if(savedFolder===undefined)delete process.env.YANDEX_FOLDER_ID;else process.env.YANDEX_FOLDER_ID=savedFolder}
  console.log('Preparation: public-network guard, exact domain matching, evidence-based keywords/comparisons, dynamic slide mapping, truthful omissions, shared script/PDF and CRM DTO contracts passed.')
 }
 if(require.main===module)main().catch(e=>{console.error(e);process.exitCode=1})

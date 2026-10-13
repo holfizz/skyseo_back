@@ -103,13 +103,15 @@ export function buildCallScript(context:Context,brief:Brief|null,prepared?:{rese
    const measured=research.keywords.filter(k=>!k.error&&k.measuredAt),ranked=measured.filter(k=>k.position!==null).sort((a,b)=>a.position!-b.position!)
    const strong=ranked.filter(k=>k.position!<=10).slice(0,2),growth=ranked.filter(k=>k.position!>10).slice(0,2)
    const positions=(rows:typeof ranked)=>rows.map(k=>`по запросу «${k.keyword}» — ${k.position}-е место`).join(', ')
-   const start=strong.length?`Смотрите, начнем с хорошего. ${positions(strong)}.`:ranked.length?`Смотрите, вот измеренные позиции: ${positions(ranked.slice(0,2))}.`:`В проверенной выдаче сайт по этим запросам не найден. Глубина проверки указана на слайде.`
+   const start=strong.length?`Смотрите, начнем с хорошего. ${positions(strong).replace(/^по/,'По')}.`:ranked.length?`Смотрите, вот измеренные позиции: ${positions(ranked.slice(0,2))}.`:`В проверенной выдаче сайт по этим запросам не найден. Глубина проверки указана на слайде.`
    steps.push(step('positions','Позиции',start+'\n\n'+(strong.length&&growth.length?`Есть и направления ниже топ-10: ${positions(growth)}. `:'')+'Интересно понять, какие товары важны для продаж и какие запросы стоит усиливать в первую очередь.',[q('callQueryRelevance','Эти направления сейчас актуальны для ваших продаж?')],'callDataComment',slide.id))
   }
   if(slide.kind==='COMPARISON'){
    const comp=research.comparisons.find(c=>c.id===slide.comparisonId)!
    const own=comp.clientPosition?`ваш сайт на ${comp.clientPosition}-м месте`:`ваш сайт не найден в проверенном топ-${comp.scanned}`
-   const say=`Теперь давайте посмотрим на конкурента. По запросу «${comp.keyword}» ${own}, а ${comp.competitor.domain} — на ${comp.competitor.position}-м.\n\nВот что удалось проверить: ${comp.competitorFinding}. У вас: ${comp.clientFinding}.\n\n${comp.apply}. ${comp.benefit}.`
+   const action=comp.feature==='Параметры оборудования'?comp.apply.replace(/^Дополнить страницу: /,'Можно добавить ')+'. Так страница будет отвечать на более точные поисковые запросы.':'Можно проверить спрос по этим направлениям и выделить отдельные страницы под нужные запросы.'
+   const ours=comp.feature==='Параметры оборудования'&&!/[,]/.test(comp.clientFinding)?`У вас есть страница «${comp.clientFinding}».`:`У вас представлены ${comp.clientFinding.toLowerCase()}.`
+   const say=`Теперь давайте посмотрим на конкурента. По запросу «${comp.keyword}» ${own}, а ${comp.competitor.domain} — на ${comp.competitor.position}-м.\n\nНа странице конкурента есть ${comp.competitorFinding.toLowerCase()}. ${ours}\n\n${action}`
    const number=research.comparisons.indexOf(comp)
    steps.push(step(comp.id,'Сравнение страниц',say,number===0?[q('callCompetitorFinding','Какие из этих решений были бы полезны для ваших направлений?')]:[],number===0?'callComparisonComment':'callComparisonSecondComment',slide.id))
   }
