@@ -30,7 +30,8 @@
 		"test:call-preparation-db": "ts-node --transpile-only src/scripts/test-call-preparation-db.ts",
 		"prepare:call": "ts-node --transpile-only src/scripts/prepare-client-call.ts",
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
-		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts"
+		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts",
+		"test:campaign-workspace": "ts-node --transpile-only src/scripts/test-campaign-workspace.ts"
 	},
 	"dependencies": {
 		"@mtcute/convert": "^0.32.1",

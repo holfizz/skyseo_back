@@ -24,6 +24,7 @@ import {
 import { distributeDaily, type Allowance } from './warmup-plan'
 import { planQueue, startCursor, windowStart, slotCapacity, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
+import { workspaceSnapshot, validatedDay } from './campaign-workspace'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 
@@ -650,6 +651,9 @@ export class CampaignService {
 	}
 
 	async update(id: string, body: any) {
+		const existing = await this.prisma.tgCampaign.findUnique({where:{id}})
+		if (!existing) throw new NotFoundException('Кампания не найдена')
+
 		const data: any = {}
 		for (const k of ['name', 'firstMessage', 'secondMessage']) {
 			if (typeof body?.[k] === 'string') data[k] = body[k].trim() || null
@@ -678,6 +682,10 @@ export class CampaignService {
 		if (data.windowFrom !== undefined && data.windowTo !== undefined && data.windowFrom >= data.windowTo) {
 			throw new BadRequestException('Окно отправки задано наоборот: конец раньше начала')
 		}
+		const effective = {...existing,...data}
+		if (!Number.isInteger(effective.windowFrom) || !Number.isInteger(effective.windowTo) || effective.windowFrom < 0 || effective.windowTo > 24 || effective.windowFrom >= effective.windowTo) throw new BadRequestException('Окно отправки: от 0 до 24 часов')
+		if (!Number.isInteger(effective.perAccountPerDay) || effective.perAccountPerDay < 1 || effective.perAccountPerDay > 200) throw new BadRequestException('Дневной лимит: целое число от 1 до 200')
+		if (!Number.isFinite(effective.minIntervalSec) || !Number.isFinite(effective.maxIntervalSec) || effective.minIntervalSec < 0 || effective.minIntervalSec > effective.maxIntervalSec) throw new BadRequestException('Проверьте минимальный и максимальный интервал')
 		if (body?.sendDate !== undefined) {
 			data.sendDate = body.sendDate ? parseDay(body.sendDate) : null
 			if (body.sendDate && !data.sendDate) throw new BadRequestException('День отправки: ожидается дата вида 2026-09-06')
@@ -958,6 +966,14 @@ export class CampaignService {
 	 * заметное, что можно сделать. Человек в лучшем случае перестанет отвечать.
 	 */
 	private async insertRecipients(campaignId: string, rows: any[], take?: number) {
+		// Imports and new campaign launches must share one contact-deduplication lock.
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421021)`
+			return this.insertRecipientsUnlocked(campaignId, rows, take)
+		}, { timeout: 120000, maxWait: 10000 })
+	}
+
+	private async insertRecipientsUnlocked(campaignId: string, rows: any[], take?: number) {
 		if (!rows.length) return { added: 0, duplicates: 0, alreadyWritten: 0, refused: 0 }
 
 		const inThis = await this.prisma.tgRecipient.findMany({
@@ -1080,46 +1096,98 @@ export class CampaignService {
 	 * запустить рассылку с недописанным текстом.
 	 */
 	/** Read-only daily capacity; no Telegram connections or warmup work. */
-	async dailyNorm(windowFrom = 10, windowTo = 20) {
+	private async availableLeadCount() {
+		const leads = await this.prisma.outreachLead.findMany({ where: { telegramManual:true, telegram:{not:null}, OR:[{notes:null},{NOT:{notes:{contains:'дев-сид'}}}] }, select:{telegram:true} })
+		const candidates = leads.map(l=>parseContact(l.telegram)).filter(Boolean) as any[]
+		if (!candidates.length) return 0
+		const contacts = candidates.map(c=>c.username??c.phone)
+		const existing = await this.prisma.tgRecipient.findMany({ where:{OR:[{username:{in:contacts}},{phone:{in:contacts}}]}, select:{username:true,phone:true,status:true,sentAt:true,accountId:true,deliveryUnknown:true,campaign:{select:{status:true}}} })
+		const written = new Set(existing.filter(e=>!(e.campaign.status==='DONE'&&e.status==='QUEUED'&&!e.sentAt&&!e.accountId&&!e.deliveryUnknown)).flatMap(e=>[e.username,e.phone].filter(Boolean)))
+		const stopped = await this.stopped(candidates), fresh = new Set<string>()
+		for (const c of candidates) {
+			const key = c.username??c.phone
+			if (!written.has(key) && !keysOf(c).some(k=>stopped.has(`${k.kind}:${k.value}`))) fresh.add(key)
+		}
+		return fresh.size
+	}
+
+	async dailyNorm(windowFrom = 10, windowTo = 20, date?: string) {
 		if (!Number.isInteger(windowFrom) || !Number.isInteger(windowTo) || windowFrom < 0 || windowTo > 24 || windowFrom >= windowTo) {
 			throw new BadRequestException('Укажите окно отправки от 0 до 24 часов')
 		}
 		const now = new Date()
-		const [accounts, last, pending] = await Promise.all([
+		const day = validatedDay(date, now)
+		const future = day.getTime() > mskAt(now, 0).getTime()
+		const [accounts, last, pending, freshContacts] = await Promise.all([
 			this.prisma.tgAccount.findMany({ orderBy: { createdAt: 'asc' } }),
 			this.prisma.tgCampaign.findFirst({ orderBy: { createdAt: 'desc' } }),
 			this.prisma.tgRecipient.findMany({
-				where: { status: 'QUEUED', campaign: { status: { in: ['RUNNING', 'PAUSED'] }, OR: [{ sendDate: null }, { sendDate: { lt: mskAt(now, 24) } }] } },
-				select: { plannedAccountId: true, campaign: { select: { accounts: { select: { accountId: true } } } } },
+				where: { campaign:{archivedAt:null}, OR:[
+					{status:'QUEUED',campaign:{status:{in:['DRAFT','RUNNING','PAUSED']}}, OR:[
+						{scheduledAt:{gte:day,lt:mskAt(day,24)}},
+						{scheduledAt:null,campaign:{OR:[{sendDate:null},{sendDate:{gte:day,lt:mskAt(day,24)}}]}}]},
+					{sentAt:null,OR:[{status:'SENT'},{deliveryUnknown:true}]}]},
+				select: { plannedAccountId:true,accountId:true,scheduledAt:true, campaign:{select:{accounts:{select:{accountId:true,nextSendAt:true,pausedUntil:true}}}} },
 			}),
+			this.availableLeadCount(),
 		])
 		const perAccount = 15
 		const allowances = await this.warmup.allowancesFor(accounts, 0, { settle: false })
 		const reservations = new Map<string, number>()
+		const floors = new Map<string, number>()
+		const unassigned: typeof pending = []
 		for (const r of pending) {
-			// An unassigned active recipient may use any linked account: reserve conservatively.
-			const ids = r.plannedAccountId ? [r.plannedAccountId] : r.campaign.accounts.map(a => a.accountId)
-			for (const id of ids) reservations.set(id, (reservations.get(id) ?? 0) + 1)
+			r.plannedAccountId = r.accountId ?? r.plannedAccountId
+			for (const l of r.campaign.accounts) floors.set(l.accountId, Math.max(floors.get(l.accountId) ?? 0, l.nextSendAt?.getTime() ?? 0, l.pausedUntil?.getTime() ?? 0))
+			if (r.plannedAccountId) {
+				reservations.set(r.plannedAccountId, (reservations.get(r.plannedAccountId) ?? 0) + 1)
+				if (r.scheduledAt) floors.set(r.plannedAccountId, Math.max(floors.get(r.plannedAccountId) ?? 0, r.scheduledAt.getTime() + Math.max(30, last?.minIntervalSec ?? 240) * 1000))
+			} else unassigned.push(r)
 		}
 		const rows = accounts.map(a => {
 			const allow = allowances.get(a.id)
-			const blocked = ['BANNED', 'ERROR', 'PAUSED'].includes(a.status) || a.mode === 'WARM' || !a.proxyId || !allow?.dailyMessages
+			const blocked = ['BANNED', 'ERROR', 'PAUSED'].includes(a.status) || a.mode === 'WARM' || !a.proxyId || !maySend(a, allow)
 			const limit = blocked ? 0 : Math.min(perAccount, allow?.dailyMessages ?? 0)
-			const spent = Math.max(0, (allow?.dailyMessages ?? 0) - (allow?.maxMessagesPerDay ?? 0))
+			const spent = future ? 0 : Math.max(0, (allow?.dailyMessages ?? 0) - (allow?.maxMessagesPerDay ?? 0))
 			const remaining = Math.max(0, limit - spent)
-			const reserved = Math.min(remaining, reservations.get(a.id) ?? 0)
-			const left = Math.max(0, remaining - reserved)
-			// Use a conservative first-slot margin and the existing minimum interval.
-			const start = Math.max(now.getTime(), mskAt(now, windowFrom).getTime(), a.busyUntil?.getTime() ?? 0)
+			const reserved = reservations.get(a.id) ?? 0
+			const start = Math.max(future ? 0 : now.getTime(), mskAt(day, windowFrom).getTime(), a.busyUntil?.getTime() ?? 0, floors.get(a.id) ?? 0)
 			const margin = Math.min(45 * 60_000, (windowTo - windowFrom) * 3600_000 * 0.25)
-			const timeSlots = Math.max(0, Math.floor((mskAt(now, windowTo).getTime() - start - margin) / (Math.max(30, last?.minIntervalSec ?? 240) * 1000)))
-			return { id: a.id, limit, spent: Math.min(limit, spent), reserved, available: Math.min(left, timeSlots) }
+			const timeSlots = Math.max(0, Math.ceil((mskAt(day, windowTo).getTime() - start - margin) / (Math.max(30, last?.minIntervalSec ?? 240) * 1000)))
+			return { id: a.id, label: a.label || a.tgUserId || 'Аккаунт', limit, spent, reserved,
+				available: Math.min(Math.max(0, remaining - reserved), timeSlots),
+				reason: blocked ? allow?.notes?.[0] || 'Исходящие недоступны' : timeSlots === 0 ? 'Окно или пауза' : remaining <= reserved ? 'Норма занята' : null }
 		})
+		// A recipient reserves exactly one slot, never one slot on every account.
+		let unreserved = 0
+		for (const r of unassigned) {
+			const ids = new Set(r.campaign.accounts.map(l => l.accountId))
+			const row = rows.filter(row => ids.has(row.id) && row.available > 0).sort((a,b) => b.available-a.available)[0]
+			if (row) { row.reserved++; row.available-- } else unreserved++
+		}
 		const groups = [...new Set(rows.filter(r => r.limit > 0).map(r => r.limit))].sort((a,b) => b-a).map(limit => ({ limit, accounts: rows.filter(r => r.limit === limit).length }))
 		const sum = (key: 'limit' | 'spent' | 'reserved' | 'available') => rows.reduce((n,r) => n+r[key],0)
-		return { date: mskDayKey(now), totalAccounts: accounts.length, eligibleAccounts: rows.filter(r => r.limit > 0).length,
+		return { date: mskDayKey(day), unreserved, estimate: future, totalAccounts: accounts.length, eligibleAccounts: rows.filter(r => r.limit > 0).length,
 			perAccount, groups, dailyTotal: sum('limit'), sent: sum('spent'), reserved: sum('reserved'), available: sum('available'),
-			launchCount: Math.min(500, sum('available')), windowFrom, windowTo, rows }
+			freshContacts, launchCount: Math.min(500, sum('available'), freshContacts), windowFrom, windowTo, rows }
+	}
+
+	async workspace(date?: string, from = 10, to = 20, days = 14) {
+		if (!Number.isInteger(days) || days < 1 || days > 90) throw new BadRequestException('Период: от 1 до 90 дней')
+		const now = new Date(), day = validatedDay(date, now)
+		const [campaigns, recipients, capacity] = await Promise.all([
+			this.prisma.tgCampaign.findMany({ where: { archivedAt: null }, orderBy: { createdAt: 'desc' }, include: { accounts: { include: { account: true } } } }),
+			this.prisma.tgRecipient.findMany({ where: { campaign: { archivedAt: null } }, select: {
+				id: true, campaignId: true, status: true, createdAt: true, firstName: true, middleName: true, username: true,
+				plannedAccountId: true, accountId: true, scheduledAt: true, sentAt: true, readAt: true, repliedAt: true,
+				error: true, deliveryUnknown: true, scheduleLocked: true } }),
+			this.dailyNorm(from, to, date),
+		])
+		const accounts = [...new Map(campaigns.flatMap(c => c.accounts.map(l => [l.accountId, l.account] as const))).values()]
+		const allowances = await this.warmup.allowancesFor(accounts, 0, { settle: false })
+		const quotas = new Map<string, Map<string, number>>()
+		for (const c of campaigns) quotas.set(c.id, await this.dailyQuota(c, mskDayKey(day), { settle: false, allowances }))
+		return workspaceSnapshot(campaigns, recipients, capacity, allowances, quotas, day, now, days)
 	}
 
 	async startDailyNorm(windowFrom = 10, windowTo = 20) {
@@ -1128,14 +1196,45 @@ export class CampaignService {
 			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421019)`
 			const norm = await this.dailyNorm(windowFrom, windowTo)
 			if (!norm.launchCount) throw new BadRequestException('На сегодня свободной нормы нет: проверьте аккаунты, очередь и окно отправки')
-			return this.quickFill(norm.launchCount, undefined, { start: true, date: norm.date, windowFrom, windowTo, norm })
+			return this.quickFillUnlocked(norm.launchCount, undefined, { start: true, date: norm.date, windowFrom, windowTo, norm })
 		}, { timeout: 120000, maxWait: 10000 })
 	}
 
-	async quickFill(
+	async quickFill(count: number, campaignId?: string, opts?: Parameters<CampaignService['quickFillUnlocked']>[2]) {
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421019)`
+			return this.quickFillUnlocked(count, campaignId, opts)
+		}, { timeout: 120000, maxWait: 10000 })
+	}
+
+	async startWorkspace(body: { requestId: string; date?: string; count?: number; windowFrom?: number; windowTo?: number; allowUnplanned?: boolean }) {
+		body = body ?? {} as typeof body
+		if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId ?? '')) throw new BadRequestException('Обновите форму создания')
+		if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1 || body.count > 500)) throw new BadRequestException('Количество: от 1 до 500')
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421019)`
+			const previous = await this.prisma.tgCampaign.findUnique({ where: { id: body.requestId } })
+			if (previous) {
+				const [added, queued, planned] = await Promise.all([
+					this.prisma.tgRecipient.count({where:{campaignId:previous.id}}),
+					this.prisma.tgRecipient.count({where:{campaignId:previous.id,status:'QUEUED'}}),
+					this.prisma.tgRecipient.count({where:{campaignId:previous.id,status:'QUEUED',scheduledAt:{not:null},plannedAccountId:{not:null}}}),
+				])
+				return { campaignId: previous.id, name: previous.name, repeated: true, added, queued, planned }
+			}
+			const norm = await this.dailyNorm(body.windowFrom ?? 10, body.windowTo ?? 20, body.date)
+			if (norm.date < mskDayKey(new Date())) throw new BadRequestException('Нельзя создать очередь в прошлом')
+			const count = body.count ?? norm.launchCount
+			if (!count) throw new BadRequestException('На выбранный день свободных мест нет')
+			if (count > norm.available && body.allowUnplanned !== true) throw new BadRequestException(`Помещается ${norm.available} из ${count}. Подтвердите остаток без времени или уменьшите количество`)
+			return this.quickFillUnlocked(count, undefined, { norm, newId: body.requestId, date:norm.date, windowFrom:norm.windowFrom, windowTo:norm.windowTo, start:norm.available>0 })
+		}, { timeout:120000, maxWait:10000 })
+	}
+
+	private async quickFillUnlocked(
 		count: number,
 		campaignId?: string,
-		opts?: { windowFrom?: number; windowTo?: number; start?: boolean; date?: string; force?: boolean; norm?: Awaited<ReturnType<CampaignService['dailyNorm']>> },
+		opts?: { windowFrom?: number; windowTo?: number; start?: boolean; date?: string; force?: boolean; newId?: string; norm?: Awaited<ReturnType<CampaignService['dailyNorm']>> },
 	) {
 		const n = Math.max(1, Math.min(500, Math.round(count || 20)))
 
@@ -1183,6 +1282,7 @@ export class CampaignService {
 
 			target = await this.prisma.tgCampaign.create({
 				data: {
+					...(opts?.newId ? { id: opts.newId } : {}),
 					name: opts?.norm ? `Норма · ${opts.norm.date}` : new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
 					firstMessage: FIRST_MESSAGE,
 					secondMessage: SECOND_MESSAGE,
@@ -1417,47 +1517,44 @@ export class CampaignService {
 	 * Время не проверяем: перенести на «вне окна» — осознанное решение, и
 	 * отправщик его исполнит, когда окно откроется.
 	 */
-	async rescheduleRecipient(id: string, body: { at?: string | null; accountId?: string | null }) {
-		const r = await this.prisma.tgRecipient.findUnique({
-			where: { id },
-			select: { id: true, status: true, campaignId: true },
-		})
-		if (!r) throw new NotFoundException('Адресат не найден')
-		if (r.status !== 'QUEUED') throw new BadRequestException('Переносить можно только тех, кому ещё не писали')
-
-		const data: any = {}
-
-		// Замок снимается вместе со временем: «убрать время» означает вернуть
-		// адресата в общую раскладку, а не подвесить его навсегда.
-		data.scheduleLocked = true
-
-		if (body.at !== undefined) {
-			if (body.at === null || body.at === '') {
-				data.scheduledAt = null
-				data.scheduleLocked = false
-			} else {
-				const at = new Date(body.at)
-				if (Number.isNaN(at.getTime())) throw new BadRequestException('Время не разобрали')
-				data.scheduledAt = at
+	async rescheduleRecipient(id: string, body: { at?: string | null; accountId?: string | null; expectedAt?: string | null }) {
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421020)`
+			const r = await tx.tgRecipient.findUnique({ where: { id }, include: { campaign: { include: { accounts: { include: { account: true } } } } } })
+			if (!r) throw new NotFoundException('Адресат не найден')
+			if (r.status !== 'QUEUED' || r.sentAt || r.deliveryUnknown) throw new BadRequestException('Переносить можно только неотправленную очередь')
+			if (body.expectedAt !== undefined && (r.scheduledAt?.toISOString() ?? null) !== body.expectedAt) throw new BadRequestException('Расписание уже изменилось. Обновите календарь')
+			if (body.at === undefined && body.accountId === undefined) return { ok: true }
+			const at = body.at === undefined ? r.scheduledAt : body.at ? new Date(body.at) : null
+			const accountId = body.accountId === undefined ? r.plannedAccountId : body.accountId
+			if (at) {
+				const now = new Date()
+				if (!Number.isFinite(at.getTime()) || at <= now) throw new BadRequestException('Выберите время в будущем')
+				if (mskHour(at) < r.campaign.windowFrom || mskHour(at) >= r.campaign.windowTo) throw new BadRequestException('Время вне окна этой рассылки')
+				const link = r.campaign.accounts.find(l => l.accountId === accountId)
+				if (!link) throw new BadRequestException('Выберите аккаунт этой рассылки')
+				const acc = link.account
+				const allow = await this.warmup.allowanceFor(acc, 0, { settle: false })
+				if (['BANNED', 'ERROR', 'PAUSED'].includes(acc.status) || acc.mode === 'WARM' || !acc.proxyId || !maySend(acc, allow)) throw new BadRequestException('Аккаунту сейчас нельзя отправлять')
+				if (Math.max(link.pausedUntil?.getTime() ?? 0, link.nextSendAt?.getTime() ?? 0, acc.busyUntil?.getTime() ?? 0) > at.getTime()) throw new BadRequestException('В это время аккаунт еще на паузе')
+				const day = mskAt(at, 0), end = mskAt(at, 24), future = mskDayKey(at) !== mskDayKey(now)
+				const pending = await tx.tgRecipient.findMany({ where: { id: { not: id }, status: 'QUEUED', plannedAccountId: acc.id,
+					scheduledAt: { gte: day, lt: end }, campaign: { archivedAt: null, status: { in: ['DRAFT', 'RUNNING', 'PAUSED'] } } },
+					select: { scheduledAt: true, campaignId: true, campaign: { select: { minIntervalSec: true } } } })
+				const gap = Math.max(30, r.campaign.minIntervalSec) * 1000
+				if (pending.some(p => Math.abs(p.scheduledAt!.getTime()-at.getTime()) < Math.max(gap, p.campaign.minIntervalSec*1000))) throw new BadRequestException('Слишком близко к другой отправке этого аккаунта')
+				const quota = await this.dailyQuota(r.campaign, mskDayKey(at), { settle: false })
+				const spent = !future && link.dayKey === mskDayKey(at) ? link.sentToday : 0
+				if (pending.filter(p => p.campaignId === r.campaignId).length + spent >= (quota.get(acc.id) ?? 0)) throw new BadRequestException('Дневная норма этой рассылки занята')
+				const remaining = future ? allow.dailyMessages : allow.maxMessagesPerDay
+				if (pending.length >= remaining) throw new BadRequestException('Свободная норма аккаунта занята другими рассылками')
 			}
-		}
-
-		if (body.accountId !== undefined) {
-			if (!body.accountId) {
-				data.plannedAccountId = null
-			} else {
-				const link = await this.prisma.tgCampaignAccount.findUnique({
-					where: { campaignId_accountId: { campaignId: r.campaignId, accountId: body.accountId } },
-					select: { id: true },
-				})
-				if (!link) throw new BadRequestException('Этого аккаунта нет в рассылке')
-				data.plannedAccountId = body.accountId
-			}
-		}
-
-		if (!Object.keys(data).length) return { ok: true }
-		await this.prisma.tgRecipient.update({ where: { id }, data })
-		return { ok: true }
+			const changed = await tx.tgRecipient.updateMany({ where: { id, status: 'QUEUED', sentAt: null,
+				scheduledAt: r.scheduledAt, plannedAccountId: r.plannedAccountId },
+				data: { scheduledAt: at, plannedAccountId: at ? accountId : null, scheduleLocked: !!at } })
+			if (changed.count !== 1) throw new BadRequestException('Отправка уже началась или расписание изменилось')
+			return { ok: true }
+		}, { timeout: 30000 })
 	}
 
 	/**
@@ -1818,7 +1915,7 @@ export class CampaignService {
 						orderBy: { scheduledAt: 'asc' },
 					})
 					planned = !!recipient
-					if (!recipient) {
+					if (!recipient && (!c.sendDate || mskDayKey(c.sendDate) <= today)) {
 						/*
 						 * Свободные адресаты. Два случая:
 						 *
@@ -1836,7 +1933,7 @@ export class CampaignService {
 							where: {
 								campaignId: c.id, status: 'QUEUED',
 								OR: [
-									{ plannedAccountId: null },
+									{ plannedAccountId: null, OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }] },
 									{
 										scheduleLocked: false,
 										// Назначенный аккаунт уже не может писать сегодня:
@@ -1868,7 +1965,8 @@ export class CampaignService {
 
 					// Захват адресата: без него два тика могли бы взять одного и того же.
 					const claimed = await this.prisma.tgRecipient.updateMany({
-						where: { id: recipient.id, status: 'QUEUED' },
+						where: { id: recipient.id, status: 'QUEUED', scheduledAt: recipient.scheduledAt, plannedAccountId: recipient.plannedAccountId,
+							campaign: { status: 'RUNNING' } },
 						data: { status: 'SENT', accountId: acc.id, attempts: { increment: 1 } },
 					})
 					if (claimed.count !== 1) continue
@@ -3311,8 +3409,12 @@ export class CampaignService {
 	 */
 	private async slotsFor(c: any, now: Date, dayShift = 0): Promise<PlanSlot[]> {
 		const today = dayKey(now)
-		const quota = await this.dailyQuota(c, today)
+		const quota = await this.dailyQuota(c, today, { settle: false })
 		const slots: PlanSlot[] = []
+		const targetDay = mskAt(now, 0, dayShift)
+		const other = await this.prisma.tgRecipient.findMany({ where: { campaignId: { not: c.id }, status:'QUEUED',
+			scheduledAt: { gte: targetDay, lt: mskAt(targetDay,24) }, plannedAccountId: { in: c.accounts.map((l:any)=>l.accountId) },
+			campaign: { archivedAt:null, status:{in:['DRAFT','RUNNING','PAUSED']} } }, select: { plannedAccountId:true, scheduledAt:true, campaign:{select:{minIntervalSec:true}} } })
 
 		for (const link of c.accounts) {
 			const acc = link.account
@@ -3325,11 +3427,13 @@ export class CampaignService {
 			// Сегодняшний счётчик вычитаем только когда планируем сегодня: на
 			// завтра у аккаунта снова полная норма.
 			const sent = dayShift === 0 && link.dayKey === today ? link.sentToday : 0
-			const floor = Math.max(link.nextSendAt?.getTime() ?? 0, link.pausedUntil?.getTime() ?? 0)
+			const reserved = other.filter(r=>r.plannedAccountId===acc.id)
+			const floor = Math.max(link.nextSendAt?.getTime() ?? 0, link.pausedUntil?.getTime() ?? 0,
+				...reserved.map(r=>r.scheduledAt!.getTime()+Math.max(30,c.minIntervalSec,r.campaign.minIntervalSec)*1000))
 			slots.push({
 				id: acc.id,
 				quota: cap,
-				left: Math.max(0, Math.min(cap - sent, dayShift === 0 ? allow.maxMessagesPerDay : cap)),
+				left: Math.max(0, Math.min(cap - sent, Math.max(0, (dayShift === 0 ? allow.maxMessagesPerDay : allow.dailyMessages) - reserved.length))),
 				cursor: startCursor(now, c, floor, dayShift),
 				floor,
 				day: dayShift,
@@ -3366,6 +3470,14 @@ export class CampaignService {
 	 * врать самому себе.
 	 */
 	async buildSchedule(campaignId: string) {
+		// Serialize scheduling and manual transfers across application instances.
+		return this.prisma.$transaction(async tx => {
+			await tx.$executeRaw`SELECT pg_advisory_xact_lock(73421020)`
+			return this.buildScheduleUnlocked(campaignId)
+		}, { timeout: 120000, maxWait: 10000 })
+	}
+
+	private async buildScheduleUnlocked(campaignId: string) {
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
 			include: { hypotheses: true, accounts: { include: { account: true } } },
@@ -3392,12 +3504,15 @@ export class CampaignService {
 		const shift = this.dayShiftOf(c, now)
 		const slots = await this.slotsFor(c, now, shift ?? 0)
 		for (const s of slots) {
-			const taken = locked.filter(r => r.plannedAccountId === s.id).length
+			const manual = locked.filter(r => r.plannedAccountId === s.id && mskDayKey(r.scheduledAt!) === mskDayKey(mskAt(now,0,s.day)))
+			const taken = manual.length
+			s.cursor = Math.max(s.cursor, ...manual.map(r=>r.scheduledAt!.getTime()+Math.max(30,c.minIntervalSec)*1000))
 			s.left = Math.max(0, s.left - taken)
-			s.quota = Math.max(0, s.quota - taken)
 		}
 		const capacity = locked.length + slots.reduce((n, s) => n + slotCapacity(s, c, now), 0)
-		const plan = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null })
+		const futureReservations = shift == null ? await this.prisma.tgRecipient.findMany({ where:{status:'QUEUED',scheduledAt:{gte:mskAt(now,0),lt:mskAt(now,0,61)},plannedAccountId:{in:c.accounts.map(l=>l.accountId)},campaign:{archivedAt:null,status:{in:['DRAFT','RUNNING','PAUSED']}},OR:[{campaignId:{not:campaignId}},{scheduleLocked:true}]},select:{plannedAccountId:true,scheduledAt:true,campaign:{select:{minIntervalSec:true}}} }) : []
+		const plan = planQueue(willWrite.map(r => r.id), slots, c, now, { singleDay: shift != null,
+			reservations:futureReservations.map(r=>({accountId:r.plannedAccountId!,at:r.scheduledAt!,minIntervalSec:r.campaign.minIntervalSec})) })
 
 		// Сначала снимаем прежний план со всей очереди, потом раскладываем
 		// новый: адресат, выпавший из плана (аккаунт убрали, данных не хватает),
@@ -3413,8 +3528,8 @@ export class CampaignService {
 		for (let i = 0; i < entries.length; i += 200) {
 			await this.prisma.$transaction(
 				entries.slice(i, i + 200).map(([id, p]) =>
-					this.prisma.tgRecipient.update({
-						where: { id },
+					this.prisma.tgRecipient.updateMany({
+						where: { id, status: 'QUEUED', scheduleLocked: false },
 						data: { scheduledAt: p.at, plannedAccountId: p.accountId },
 					}),
 				),
@@ -3449,7 +3564,6 @@ export class CampaignService {
 		if (!c) throw new NotFoundException('Кампания не найдена')
 
         c.hypotheses = await this.activeHypotheses()
-        await this.fillLeadVars(campaignId)
 
 		const pick = {
 			id: true, username: true, phone: true, status: true,
@@ -3625,7 +3739,6 @@ export class CampaignService {
 		if (!c) return empty
 
         c.hypotheses = await this.activeHypotheses()
-        await this.fillLeadVars(campaignId)
 
 		const queued = await this.prisma.tgRecipient.findMany({
 			where: { campaignId, status: 'QUEUED' },
@@ -4461,7 +4574,7 @@ export class CampaignService {
 		if (!c) throw new NotFoundException('Кампания не найдена')
 		const funnel = (await this.statsByCampaign([id])).get(id)!
 
-		const quota = await this.dailyQuota(c, dayKey(new Date()))
+		const quota = await this.dailyQuota(c, dayKey(new Date()), { settle: false })
 		// Готовность каждого аккаунта показываем прямо здесь: выбирая, с кого
 		// рассылать, надо видеть, кому Telegram уже говорил сбавить.
 		const accounts = []

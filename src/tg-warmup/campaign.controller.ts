@@ -26,6 +26,16 @@ export class CampaignController {
 	 * в минуту, но ждать минуту после собственного ответа неудобно.
 	 */
 	/** Подробная статистика — только для окна, которое открывают по кнопке. */
+	@Post('workspace/start')
+	startWorkspace(@Body() body: { requestId: string; date?: string; count?: number; windowFrom?: number; windowTo?: number; allowUnplanned?: boolean }) {
+		return this.svc.startWorkspace(body)
+	}
+
+	@Get('workspace')
+	workspace(@Query('date') date?: string, @Query('from') from?: string, @Query('to') to?: string, @Query('days') days?: string) {
+		return this.svc.workspace(date, from === undefined ? 10 : Number(from), to === undefined ? 20 : Number(to), days === undefined ? 14 : Number(days))
+	}
+
 	@Get('stats')
 	stats(@Query('days') days?: string) {
 		return this.svc.stats(days ? Number(days) : undefined)
@@ -202,7 +212,7 @@ export class CampaignController {
 
 	/** Перенести отправку: другое время и/или другой аккаунт. */
 	@Patch('recipients/:id/schedule')
-	reschedule(@Param('id') id: string, @Body() body: { at?: string | null; accountId?: string | null }) {
+	reschedule(@Param('id') id: string, @Body() body: { at?: string | null; accountId?: string | null; expectedAt?: string | null }) {
 		return this.svc.rescheduleRecipient(id, body ?? {})
 	}
 

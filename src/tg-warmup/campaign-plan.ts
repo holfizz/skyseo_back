@@ -1,4 +1,4 @@
-import { mskAt } from './msk'
+import { mskAt, mskDayKey } from './msk'
 
 /**
  * Расписание рассылки: кому, когда и с какого аккаунта.
@@ -105,6 +105,7 @@ export function planQueue(
 		 */
 		singleDay?: boolean
 		maxDays?: number
+		reservations?: Array<{ accountId: string; at: Date; minIntervalSec: number }>
 	} = {},
 ): Map<string, { at: Date; accountId: string }> {
 	const maxDays = opts.maxDays ?? 60
@@ -183,7 +184,9 @@ export function planQueue(
 		for (const s of slots) {
 			s.day = day
 			s.cursor = Math.max(windowStart(now, c.windowFrom, day).getTime() + jitter(), s.floor)
-			s.left = s.quota
+			const reserved = (opts.reservations ?? []).filter(r=>r.accountId===s.id && mskDayKey(r.at)===mskDayKey(windowStart(now,0,day)))
+			s.left = Math.max(0,s.quota-reserved.length)
+			s.cursor = Math.max(s.cursor,...reserved.map(r=>r.at.getTime()+Math.max(minMs,r.minIntervalSec*1000)))
 		}
 	}
 	return out
