@@ -38,7 +38,7 @@ export function workspaceSnapshot(campaigns: any[], recipients: any[], capacity:
         const earliest = Math.max(r.scheduledAt?.getTime() ?? start, today ? now.getTime() : start, mskAt(day,c.windowFrom).getTime(), link?.nextSendAt?.getTime() ?? 0, link?.pausedUntil?.getTime() ?? 0, link?.account.busyUntil?.getTime() ?? 0, cursors.get(id) ?? 0);
         if (state === 'planned') {
             if (!link || !allow?.allowOutgoing || ['BANNED', 'ERROR', 'PAUSED'].includes(link.account.status) || link.account.mode === 'WARM' || !link.account.proxyId)
-                reason = deliveryReason(link?.lastError) || allow?.notes?.[0] || 'Аккаунт недоступен';
+                reason = reason || deliveryReason(link?.lastError) || allow?.notes?.[0] || 'Аккаунт недоступен';
             else if (today && link.pausedUntil && link.pausedUntil>now)
                 reason = deliveryReason(link.lastError) || 'Аккаунт на паузе';
             else if (r.scheduledAt < mskAt(day, c.windowFrom) || r.scheduledAt >= mskAt(day, c.windowTo))
