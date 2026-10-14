@@ -3685,7 +3685,7 @@ export class CampaignService {
             const link = c.accounts.find(l=>l.accountId===acc?.id)
             const failed = ['FAILED','BLOCKED','STOPPED'].includes(r.status) || !!recipientRejection(r.error??'')
             const paused = !sent && !!link?.pausedUntil && link.pausedUntil>new Date()
-            const unavailable = !sent && r.status==='QUEUED' && (!acc || !ready.has(acc.id))
+            const unavailable = !sent && r.status==='QUEUED' && dayKey(at)===dayKey(new Date()) && (!acc || !ready.has(acc.id))
             const state = failed ? 'error' : r.deliveryUnknown ? 'unknown' : sent ? 'sent' : paused ? 'paused' : unavailable ? 'unassigned' : 'planned'
             const reason = sent ? null : deliveryReason(r.error) ?? (paused ? deliveryReason(link?.lastError) ?? 'Аккаунт на паузе' : unavailable ? notReady.find(a=>a.id===acc?.id)?.why ?? 'Отправитель недоступен' : null)
 			return {
