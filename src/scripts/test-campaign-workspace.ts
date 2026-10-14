@@ -7,6 +7,7 @@ import { NestFactory } from '@nestjs/core';
 import { PassportModule } from '@nestjs/passport';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaClient } from '@prisma/client';
+import { TgWarmupService } from '../tg-warmup/tg-warmup.service';
 import { CampaignService } from '../tg-warmup/campaign.service';
 import { CampaignController } from '../tg-warmup/campaign.controller';
 import { JwtStrategy } from '../auth/jwt.strategy';
@@ -25,8 +26,9 @@ const p = new PrismaClient({ datasources: { db: { url: database } } });
 const service = Object.create(CampaignService.prototype) as any;
 service.prisma = p;
 let canSend = true;
+const denied = new Set<string>();
 const allowance = { allowOutgoing: true, dailyMessages: 7, maxMessagesPerDay: 7, readiness: 80, notes: [] };
-service.warmup = { allowanceFor: async () => ({ ...allowance, allowOutgoing: canSend }), allowancesFor: async (accounts: any[]) => new Map(accounts.map(a => [a.id, { ...allowance, allowOutgoing: canSend }])) };
+service.warmup = { claimAccount: async () => false, allowanceFor: async (a:any) => ({ ...allowance, allowOutgoing: canSend && !denied.has(a.id) }), allowancesFor: async (accounts: any[]) => new Map(accounts.map(a => [a.id, { ...allowance, allowOutgoing: canSend && !denied.has(a.id) }])) };
 // No Telegram SDK connections, jobs or schedulers are constructed in this module.
 service.activeHypotheses = async () => [];
 service.fillLeadVars = async () => { };
@@ -58,6 +60,14 @@ async function main() {
             accounts.push((await p.tgAccount.create({ data: { label: `Тестовый отправитель ${i + 1}`, session: 'not-a-telegram-session', apiId: 1, apiHash: 'fixture', deviceModel: 'test', systemVersion: 'test', appVersion: 'test', langCode: 'ru', systemLangCode: 'ru', status: 'READY', mode: 'SEND', proxyId: proxy.id } })).id);
         for (let i = 0; i < 30; i++)
             leads.push((await p.outreachLead.create({ data: { domain: `local-test-${i}.invalid`, message: '', firstName: 'Тест', telegram: `@zz_cfixture_${prefix.slice(0, 8)}_${i}`, telegramManual: true } })).id);
+
+        const draft = await service.create({name:'Old single sender'});
+        assert.equal(await p.tgCampaignAccount.count({where:{campaignId:draft.id}}),2,'Empty auto campaign selects all currently permitted senders');
+        await service.setAccounts(draft.id,[accounts[0]]);
+        assert.equal((await p.tgCampaign.findUniqueOrThrow({where:{id:draft.id}})).autoAccounts,false);
+        const legacyQuick = await service.quickFill(2,undefined,{date:tomorrow,windowFrom:0,windowTo:24,start:false});
+        assert.equal(await p.tgCampaignAccount.count({where:{campaignId:legacyQuick.campaignId}}),2,'New launch never inherits the single sender of the previous campaign');
+        await p.tgCampaign.delete({where:{id:legacyQuick.campaignId}});await p.tgCampaign.delete({where:{id:draft.id}});
         const norm = await service.dailyNorm(0, 24, tomorrow);
         assert.equal(norm.available, 14);
         assert.equal(norm.eligibleAccounts, 2);
@@ -115,6 +125,29 @@ async function main() {
         const late = workspaceSnapshot([pureCampaign],Array.from({length:3},(_,i)=>({...pureR,id:`late-${i}`})),norm,new Map([['a',allowance]]),new Map([['pure',new Map([['a',7]])]]),mskAt(now,0),mskAt(now,19,0,59),7);
         assert.equal(late.totals.planned,1,'Time left must constrain the existing queue, not just new campaigns');
         assert.equal(late.events.filter((e:any)=>e.state==='unassigned').length,2);
+
+
+        const lateAccount=await p.tgAccount.create({data:{label:'Late ready sender',session:'invalid-fixture',apiId:1,apiHash:'fixture',deviceModel:'test',systemVersion:'test',appVersion:'test',langCode:'ru',systemLangCode:'ru',mode:'BOTH',status:'READY',proxyId:proxy.id}});
+        accounts.push(lateAccount.id);denied.add(lateAccount.id);
+        const warmup=Object.create(TgWarmupService.prototype) as any;warmup.prisma=p;warmup.allowancesFor=service.warmup.allowancesFor;
+        await warmup.joinActiveCampaigns([lateAccount.id]);
+        await service.buildSchedule(id);
+        assert.equal(await p.tgCampaignAccount.count({where:{campaignId:id,accountId:lateAccount.id}}),0,'Not-ready accounts must not be enrolled');
+        denied.delete(lateAccount.id);
+        const factualBefore=await p.tgRecipient.count({where:{sentAt:{not:null}}});
+        await service.sendTick();
+        assert.equal(await p.tgRecipient.count({where:{sentAt:{not:null}}}),factualBefore,'No Telegram sending in scheduler tests');
+        assert.equal(await p.tgCampaignAccount.count({where:{campaignId:id,accountId:lateAccount.id}}),1,'Ready opt-in sender joins automatically, without toggling its mode');
+        assert.ok(await p.tgRecipient.count({where:{campaignId:id,status:'QUEUED',plannedAccountId:lateAccount.id}})>0,'Newly ready sender receives its part of the queue');
+        const limited={...(await p.tgCampaign.findUniqueOrThrow({where:{id},include:{accounts:{include:{account:true}}}})),dailyGoal:2};
+        const todayQuota=await service.dailyQuota(limited,mskDayKey(now),{settle:false});
+        assert.equal([...todayQuota.values()].reduce((n:number,v:any)=>n+v,0),2,'Already sent message counts toward the total goal after pool changes');
+        const manualDraft=await service.create({name:'Manual pool test'});
+        await p.tgRecipient.create({data:{campaignId:manualDraft.id,username:'zz_manual_fixture',firstName:'Тест',domain:'local.invalid'}});
+        await service.setAccounts(manualDraft.id,[accounts[0]]);
+        await service.setStatus(manualDraft.id,'RUNNING');
+        assert.equal(await p.tgCampaignAccount.count({where:{campaignId:manualDraft.id}}),1,'Explicit manual selection must survive launch');
+        await p.tgCampaign.delete({where:{id:manualDraft.id}});
         if (!process.argv.includes('--serve')) {
             const batch = await Promise.all(['A','B'].map(name=>p.tgCampaign.create({data:{name:'Parallel import '+name,firstMessage:'Здравствуйте',windowFrom:0,windowTo:24,sendDate:mskAt(now,0,3),accounts:{create:accounts.map(accountId=>({accountId}))}}})));
             const imported = await Promise.all(batch.map(c=>service.addRecipientsFromLeads(c.id,10)));

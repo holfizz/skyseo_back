@@ -631,8 +631,10 @@ export class CampaignService {
 		if ([body?.firstMessage, body?.secondMessage].some(text => typeof text === 'string' && containsDomainOrUrl(text))) {
 			throw new BadRequestException('Ссылки и полные домены в Telegram-сообщениях отключены. Используйте имя сайта без зоны')
 		}
+		const accountIds = await this.writingAccountIds()
 		return this.prisma.tgCampaign.create({
 			data: {
+				autoAccounts: true, accounts: {create:accountIds.map(accountId=>({accountId}))},
 				name: body?.name?.trim() || new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
 				firstMessage: body?.firstMessage?.trim() || FIRST_MESSAGE,
 				secondMessage: body?.secondMessage?.trim() || SECOND_MESSAGE,
@@ -655,6 +657,10 @@ export class CampaignService {
 		if (!existing) throw new NotFoundException('Кампания не найдена')
 
 		const data: any = {}
+		if (body?.autoAccounts !== undefined) {
+			if (typeof body.autoAccounts !== 'boolean') throw new BadRequestException('Выбор аккаунтов: автоматический или ручной')
+			data.autoAccounts = body.autoAccounts
+		}
 		for (const k of ['name', 'firstMessage', 'secondMessage']) {
 			if (typeof body?.[k] === 'string') data[k] = body[k].trim() || null
 		}
@@ -696,7 +702,7 @@ export class CampaignService {
 
 		// Окно, паузы и нормы задают само расписание. Сохранить их и оставить
 		// прежний план — значит показывать календарь по старым настройкам.
-		const affectsPlan = ['perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo', 'dailyGoal', 'sendDate']
+		const affectsPlan = ['autoAccounts', 'perAccountPerDay', 'minIntervalSec', 'maxIntervalSec', 'windowFrom', 'windowTo', 'dailyGoal', 'sendDate']
 		if (affectsPlan.some(k => data[k] !== undefined)) await this.buildSchedule(id)
 		return { ok: true }
 	}
@@ -738,6 +744,7 @@ export class CampaignService {
 	}
 
 	async setStatus(id: string, status: 'RUNNING' | 'PAUSED' | 'DONE') {
+		if (status === 'RUNNING') await this.syncAutoAccounts(id)
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id },
 			include: { _count: { select: { accounts: true, recipients: true } } },
@@ -817,26 +824,32 @@ export class CampaignService {
 
 	/** Аккаунты, которым режим разрешает писать и которые не выведены из строя. */
 	private async writingAccountIds(): Promise<string[]> {
-		const rows = await this.prisma.tgAccount.findMany({
-			where: { mode: { in: ['SEND', 'BOTH'] }, status: { notIn: ['BANNED', 'ERROR', 'PAUSED'] } },
-			select: { id: true },
-		})
-		return rows.map(r => r.id)
+		const accounts = await this.prisma.tgAccount.findMany({where:{mode:{in:['SEND','BOTH']},status:{notIn:['BANNED','ERROR','PAUSED']},proxyId:{not:null}}})
+		const allowances = await this.warmup.allowancesFor(accounts,0,{settle:false})
+		return accounts.filter(a=>maySend(a,allowances.get(a.id)) && (allowances.get(a.id)?.dailyMessages ?? 0)>0).map(a=>a.id)
+	}
+
+	private async syncAutoAccounts(campaignId: string) {
+		return this.prisma.$transaction(async tx=>{
+			await tx.$queryRaw`SELECT "id" FROM "tg_campaigns" WHERE "id"=${campaignId} FOR UPDATE`
+			const campaign = await tx.tgCampaign.findUnique({where:{id:campaignId},select:{autoAccounts:true,archivedAt:true}})
+			if (!campaign || !campaign.autoAccounts || campaign.archivedAt) return 0
+			const ids = await this.writingAccountIds()
+			if (!ids.length) return 0
+			const result = await tx.tgCampaignAccount.createMany({data:ids.map(accountId=>({campaignId,accountId})),skipDuplicates:true})
+			return result.count
+		},{timeout:30000})
 	}
 
 	/** Какие аккаунты работают в кампании. Полная замена списка. */
 	async setAccounts(campaignId: string, accountIds: string[]) {
 		const ids = [...new Set(accountIds ?? [])]
-		await this.prisma.tgCampaignAccount.deleteMany({
-			where: { campaignId, accountId: { notIn: ids.length ? ids : ['-'] } },
+		await this.prisma.$transaction(async tx=>{
+			await tx.tgCampaign.update({where:{id:campaignId},data:{autoAccounts:false}})
+			await tx.tgCampaignAccount.deleteMany({where:{campaignId,accountId:{notIn:ids.length?ids:['-']}}})
+			for(const accountId of ids) await tx.tgCampaignAccount.upsert({where:{campaignId_accountId:{campaignId,accountId}},create:{campaignId,accountId},update:{}})
 		})
-		for (const accountId of ids) {
-			await this.prisma.tgCampaignAccount.upsert({
-				where: { campaignId_accountId: { campaignId, accountId } },
-				create: { campaignId, accountId },
-				update: {},
-			})
-		}
+		await this.buildSchedule(campaignId)
 		return { accounts: ids.length }
 	}
 
@@ -1263,26 +1276,13 @@ export class CampaignService {
 			// Пределы и аккаунты, наоборот, наследуем: это настройки пула, они
 			// меняются редко, и выставлять их заново каждый день — лишний шаг.
 			const last = await this.prisma.tgCampaign.findFirst({ orderBy: { createdAt: 'desc' } })
-			const accounts = last
-				? await this.prisma.tgCampaignAccount.findMany({
-						where: { campaignId: last.id },
-						select: { accountId: true },
-					})
-				: []
-			// Не нашлось ни одной прошлой кампании — берём все аккаунты, которым
-			// разрешена рассылка. Иначе первое же нажатие кнопки упиралось бы в
-			// «не выбрано ни одного аккаунта», а выбирать негде: настроек нет.
-			// Из прошлой берём только тех, кому писать по-прежнему можно. Если
-			// никого не осталось — например, старые аккаунты удалили, — берём
-			// всех пишущих: иначе новая рассылка наследовала пустой список и
-			// молча стояла с «нет аккаунтов», хотя пишущие аккаунты были.
 			const writing = await this.writingAccountIds()
-			const inherited = accounts.map(a => a.accountId).filter(id => writing.includes(id))
-			const pool = opts?.norm ? opts.norm.rows.filter(r => r.available > 0).map(r => r.id) : last && inherited.length ? inherited : writing
+			const pool = opts?.norm ? opts.norm.rows.filter(r=>r.available>0).map(r=>r.id) : writing
 
 			target = await this.prisma.tgCampaign.create({
 				data: {
 					...(opts?.newId ? { id: opts.newId } : {}),
+					autoAccounts:true,
 					name: opts?.norm ? `Норма · ${opts.norm.date}` : new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
 					firstMessage: FIRST_MESSAGE,
 					secondMessage: SECOND_MESSAGE,
@@ -1297,7 +1297,7 @@ export class CampaignService {
 							}
 						: {}),
 					...(opts?.norm ? { perAccountPerDay: opts.norm.perAccount } : {}),
-					accounts: { create: pool.map(accountId => ({ accountId, ...(opts?.norm ? { dailyLimit: opts.norm.rows.find(r => r.id === accountId)!.available } : {}) })) },
+					accounts: { create: pool.map(accountId => ({ accountId })) },
 				},
 			})
 			created = true
@@ -1796,10 +1796,14 @@ export class CampaignService {
 
 		let sent = 0
 		for (const c of campaigns) {
+			if (await this.syncAutoAccounts(c.id)) {
+				await this.buildSchedule(c.id)
+				c.accounts = await this.prisma.tgCampaignAccount.findMany({where:{campaignId:c.id},include:{account:{include:{proxy:true}}}})
+			}
 			// Идущая рассылка без единого аккаунта — никогда не замысел, а
 			// последствие: аккаунты удалили, а новых в неё никто не добавил.
 			// Подтягиваем всех, кому разрешено писать.
-			if (!c.accounts.length) {
+			if (!c.accounts.length && c.autoAccounts) {
 				const ids = await this.writingAccountIds()
 				if (ids.length) {
 					await this.prisma.tgCampaignAccount.createMany({
@@ -2068,10 +2072,28 @@ export class CampaignService {
 			rows.push({
 				id: acc.id,
 				readiness: allow?.readiness ?? 0,
-				canSend: !dead && maySend(acc, allow),
+				canSend: !dead && acc.mode !== 'WARM' && !!acc.proxyId && maySend(acc, allow),
 				ceiling: Math.max(0, Math.min(campaign.perAccountPerDay, safe)),
-				manual: typeof l.dailyLimit === 'number' ? Math.max(0, l.dailyLimit) : null,
+				manual: campaign.autoAccounts === true ? null : typeof l.dailyLimit === 'number' ? Math.max(0, l.dailyLimit) : null,
 			})
+		}
+
+		if (campaign.autoAccounts === true) {
+			const target = validatedDay(today,new Date()), end = mskAt(target,24)
+			const future = today > mskDayKey(new Date())
+			const [sent,booked] = await Promise.all([
+				this.prisma.tgRecipient.groupBy({by:['accountId'],where:{campaignId:campaign.id,sentAt:{gte:target,lt:end}},_count:{_all:true}}),
+				this.prisma.tgRecipient.groupBy({by:['plannedAccountId'],where:{campaignId:{not:campaign.id},status:'QUEUED',scheduledAt:{gte:target,lt:end},campaign:{archivedAt:null,status:{in:['DRAFT','RUNNING','PAUSED']}}},_count:{_all:true}}),
+			])
+			const used = new Map(sent.map(r=>[r.accountId,r._count._all])), reserved = new Map(booked.map(r=>[r.plannedAccountId,r._count._all]))
+			// Delivery timestamps are authoritative after a crash between send and counter update.
+			// Normalize this request's in-memory links; read endpoints never write counters.
+			for (const link of links) { link.sentToday=used.get(link.accountId)??0; link.dayKey=today }
+			const candidates = rows.map(r=>{const allow=allowances.get(r.id),spent=used.get(r.id)??0
+				return {...r,cap:Math.max(0,Math.min(r.ceiling-spent,(future?allow?.dailyMessages:allow?.maxMessagesPerDay)??0)-(reserved.get(r.id)??0))} })
+			const goal = campaign.dailyGoal == null ? candidates.reduce((n,r)=>n+r.cap,0) : Math.max(0,campaign.dailyGoal-sent.reduce((n,r)=>n+r._count._all,0))
+			const shares = distributeDaily(goal,candidates)
+			return new Map(rows.map(r=>[r.id,(used.get(r.id)??0)+(shares.get(r.id)??0)]))
 		}
 
 		const out = new Map<string, number>()
@@ -2136,6 +2158,7 @@ export class CampaignService {
 			)
 		}
 
+		await this.prisma.tgCampaign.update({where:{id:campaignId},data:{autoAccounts:false}})
 		for (const l of c.accounts) {
 			const value = next.get(l.accountId) ?? null
 			if (value === (l.dailyLimit ?? null)) continue
@@ -3409,7 +3432,7 @@ export class CampaignService {
 	 */
 	private async slotsFor(c: any, now: Date, dayShift = 0): Promise<PlanSlot[]> {
 		const today = dayKey(now)
-		const quota = await this.dailyQuota(c, today, { settle: false })
+		const quota = await this.dailyQuota(c, dayKey(mskAt(now,0,dayShift)), { settle: false })
 		const slots: PlanSlot[] = []
 		const targetDay = mskAt(now, 0, dayShift)
 		const other = await this.prisma.tgRecipient.findMany({ where: { campaignId: { not: c.id }, status:'QUEUED',
@@ -3478,6 +3501,7 @@ export class CampaignService {
 	}
 
 	private async buildScheduleUnlocked(campaignId: string) {
+		await this.syncAutoAccounts(campaignId)
 		const c = await this.prisma.tgCampaign.findUnique({
 			where: { id: campaignId },
 			include: { hypotheses: true, accounts: { include: { account: true } } },
@@ -4591,7 +4615,7 @@ export class CampaignService {
 				quotaToday: quota.get(link.account.id) ?? 0,
 				// Что стоит в поле ввода (null — «считать самим») и какой у
 				// аккаунта потолок: выше него делить бессмысленно.
-				dailyLimit: link.dailyLimit ?? null,
+				dailyLimit: c.autoAccounts ? null : link.dailyLimit ?? null,
 				ceiling: Math.max(0, Math.min(c.perAccountPerDay,
 					allow.dailyMessages)),
 				readiness: allow.readiness,
@@ -4605,7 +4629,7 @@ export class CampaignService {
 		}
 
 		// Сколько цели дня уже роздано руками и сколько осталось делить.
-		const assigned = c.accounts.reduce((n, l) => n + (l.dailyLimit ?? 0), 0)
+		const assigned = c.autoAccounts ? 0 : c.accounts.reduce((n, l) => n + (l.dailyLimit ?? 0), 0)
 
 		const plan = await this.forecast(id)
 		const readiness = await this.accountsReadiness(id)
@@ -4617,7 +4641,7 @@ export class CampaignService {
 			today: plan.today,
 			firstMessage: refreshOpeningTemplate(c.firstMessage), secondMessage: usesLegacyReportOffer(c.secondMessage) ? SECOND_MESSAGE : c.secondMessage,
             activeHypotheses: activeHypotheses.map(v => ({ id: v.id, name: v.name, text: v.text })),
-			dailyGoal: c.dailyGoal,
+			dailyGoal: c.dailyGoal, autoAccounts: c.autoAccounts,
 			// День, на который назначена вся очередь.
 			sendDate: dayString(c.sendDate),
 			// Делёжка цели дня руками: роздано и сколько ещё можно раздать.

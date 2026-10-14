@@ -78,7 +78,7 @@ export function workspaceSnapshot(campaigns: any[], recipients: any[], capacity:
         }
     const summary = campaigns.map(c => {
         const rows = recipients.filter(r => r.campaignId === c.id), cohort = rows.filter(r => within(r.sentAt));
-        return { id: c.id, name: c.name, status: c.status, windowFrom: c.windowFrom, windowTo: c.windowTo, accounts: c.accounts.length,
+        return { id: c.id, name: c.name, status: c.status, windowFrom: c.windowFrom, windowTo: c.windowTo, accounts: c.accounts.length, autoAccounts:c.autoAccounts===true, eligibleAccounts:c.accounts.filter((l:any)=>l.account.mode!=='WARM' && !['BANNED','ERROR','PAUSED'].includes(l.account.status) && !!l.account.proxyId && allowances.get(l.accountId)?.allowOutgoing && (quotas.get(c.id)?.get(l.accountId)??0)>(l.dayKey===mskDayKey(day)?l.sentToday:0)).length,
             total: rows.length, sent: rows.filter(r => r.sentAt).length, queued: rows.filter(r => r.status === 'QUEUED').length,
             errors: rows.filter(r => ['FAILED', 'BLOCKED'].includes(r.status) || r.deliveryUnknown || (r.status === 'SENT' && !r.sentAt)).length,
             planned: events.filter(e => e.campaignId === c.id && e.state === 'planned').length,

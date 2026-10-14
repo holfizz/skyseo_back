@@ -937,7 +937,7 @@ export class TgWarmupService {
 
 	/**
 	 * Режим — единственный переключатель «пишет ли аккаунт». Аккаунт, которому
-	 * разрешено писать, сам попадает во все незавершённые рассылки. Раньше
+	 * разрешено писать, сам попадает в автоматические незавершённые рассылки. Ручной пул сохраняется. Раньше
 	 * список аккаунтов кампании был вторым, скрытым переключателем: владелец
 	 * ставил «греется и пишет», а рассылка аккаунт не видела и писала
 	 * «нет аккаунтов». Обратного шага нет намеренно: отправка и так пропускает
@@ -946,15 +946,15 @@ export class TgWarmupService {
 	 */
 	private async joinActiveCampaigns(accountIds: string[]) {
 		if (!accountIds.length) return
-		const active = await this.prisma.tgCampaign.findMany({
-			where: { status: { in: ['DRAFT', 'RUNNING', 'PAUSED'] } },
-			select: { id: true },
-		})
-		if (!active.length) return
-		await this.prisma.tgCampaignAccount.createMany({
-			data: active.flatMap(c => accountIds.map(accountId => ({ campaignId: c.id, accountId }))),
-			skipDuplicates: true,
-		})
+		const accounts = await this.prisma.tgAccount.findMany({where:{id:{in:accountIds},mode:{in:['SEND','BOTH']},status:{notIn:['BANNED','ERROR','PAUSED']},proxyId:{not:null}}})
+		const allowances = await this.allowancesFor(accounts,0,{settle:false})
+		const ids=accounts.filter(a=>allowances.get(a.id)?.allowOutgoing && (allowances.get(a.id)?.dailyMessages??0)>0).map(a=>a.id)
+		if (!ids.length) return
+		await this.prisma.$transaction(async tx=>{
+			await tx.$queryRaw`SELECT "id" FROM "tg_campaigns" WHERE "autoAccounts"=true AND "archivedAt" IS NULL AND "status" IN ('DRAFT','RUNNING','PAUSED') ORDER BY "id" FOR UPDATE`
+			const active = await tx.tgCampaign.findMany({where:{autoAccounts:true,archivedAt:null,status:{in:['DRAFT','RUNNING','PAUSED']}},select:{id:true}})
+			if (active.length) await tx.tgCampaignAccount.createMany({data:active.flatMap(c=>ids.map(accountId=>({campaignId:c.id,accountId}))),skipDuplicates:true})
+		},{timeout:30000})
 	}
 
 	async deleteAccount(id: string) {
@@ -996,8 +996,9 @@ export class TgWarmupService {
 		if (!['WARM', 'SEND', 'BOTH'].includes(value)) {
 			throw new BadRequestException('Режим: WARM, SEND или BOTH')
 		}
-		const a = await this.prisma.tgAccount.findUnique({ where: { id }, select: { status: true } })
+		const a = await this.prisma.tgAccount.findUnique({ where: { id }, select: { status: true, mode: true } })
 		if (!a) throw new NotFoundException('Аккаунт не найден')
+		if (a.mode === value) return { ok:true,mode:value,changed:false }
 		await this.prisma.tgAccount.update({ where: { id }, data: { mode: value } })
 		if (value !== 'WARM') await this.joinActiveCampaigns([id])
 
