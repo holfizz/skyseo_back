@@ -1,3 +1,4 @@
+import { confirmedDelivery, deliveryReason, recipientRejection } from './campaign-delivery';
 import { BadRequestException } from '@nestjs/common';
 import { mskAt, mskDayKey } from './msk';
 export function validatedDay(value: string | undefined, now: Date): Date {
@@ -23,21 +24,23 @@ export function workspaceSnapshot(campaigns: any[], recipients: any[], capacity:
     const cursors = new Map<string, number>();
     const queued = recipients.filter(r => r.status === 'QUEUED' && active.has(r.campaignId));
     const events: any[] = [];
-    for (const r of recipients.filter(r => inDay(r.sentAt) || (!r.sentAt && inDay(r.scheduledAt) && byCampaign.get(r.campaignId)?.status !== 'DONE')).sort((a, b) => (a.sentAt ?? a.scheduledAt).getTime() - (b.sentAt ?? b.scheduledAt).getTime())) {
+    for (const r of recipients.filter(r => (['FAILED','BLOCKED','STOPPED'].includes(r.status) && inDay(r.createdAt)) || inDay(r.sentAt) || (!r.sentAt && inDay(r.scheduledAt) && (byCampaign.get(r.campaignId)?.status !== 'DONE' || ['FAILED','BLOCKED','STOPPED'].includes(r.status)))).sort((a, b) => (a.sentAt ?? a.scheduledAt ?? a.createdAt).getTime() - (b.sentAt ?? b.scheduledAt ?? b.createdAt).getTime())) {
         const c = byCampaign.get(r.campaignId)!;
-        const id = r.sentAt ? r.accountId : r.plannedAccountId;
+        const id = r.accountId ?? r.plannedAccountId;
         const link = c.accounts.find((l: any) => l.accountId === id);
         const allow = allowances.get(id);
         const quota = quotas.get(c.id)?.get(id) ?? 0;
         const key = `${c.id}:${id}`;
         if (!campaignLeft.has(key))
             campaignLeft.set(key, Math.max(0, quota - (today && link?.dayKey === mskDayKey(day) ? link.sentToday : 0)));
-        let state = r.sentAt ? 'sent' : r.deliveryUnknown ? 'unknown' : r.status === 'SENT' ? (link?.account.busyBy === 'send' && link.account.busyUntil > now ? 'sending' : 'unknown') : ['FAILED', 'BLOCKED'].includes(r.status) ? 'error' : r.status === 'STOPPED' ? 'canceled' : c.status === 'DRAFT' ? 'draft' : c.status !== 'RUNNING' ? 'paused' : 'planned';
-        let reason: string | null = null;
+        let state = recipientRejection(r.error??'') ? 'error' : r.deliveryUnknown ? 'unknown' : confirmedDelivery(r) ? 'sent' : r.status === 'SENT' ? (link?.account.busyBy === 'send' && link.account.busyUntil > now ? 'sending' : 'unknown') : ['FAILED', 'BLOCKED'].includes(r.status) ? 'error' : r.status === 'STOPPED' ? 'canceled' : c.status === 'DRAFT' ? 'draft' : c.status !== 'RUNNING' ? 'paused' : 'planned';
+        let reason: string | null = state==='sent' ? null : deliveryReason(r.error);
         const earliest = Math.max(r.scheduledAt?.getTime() ?? start, today ? now.getTime() : start, mskAt(day,c.windowFrom).getTime(), link?.nextSendAt?.getTime() ?? 0, link?.pausedUntil?.getTime() ?? 0, link?.account.busyUntil?.getTime() ?? 0, cursors.get(id) ?? 0);
         if (state === 'planned') {
             if (!link || !allow?.allowOutgoing || ['BANNED', 'ERROR', 'PAUSED'].includes(link.account.status) || link.account.mode === 'WARM' || !link.account.proxyId)
-                reason = allow?.notes?.[0] || 'Аккаунт недоступен';
+                reason = deliveryReason(link?.lastError) || allow?.notes?.[0] || 'Аккаунт недоступен';
+            else if (today && link.pausedUntil && link.pausedUntil>now)
+                reason = deliveryReason(link.lastError) || 'Аккаунт на паузе';
             else if (r.scheduledAt < mskAt(day, c.windowFrom) || r.scheduledAt >= mskAt(day, c.windowTo))
                 reason = 'Время вне окна рассылки';
             else if ((globalLeft.get(id) ?? 0) <= 0 || (campaignLeft.get(key) ?? 0) <= 0)
@@ -53,14 +56,14 @@ export function workspaceSnapshot(campaigns: any[], recipients: any[], capacity:
             }
         }
         events.push({ id: r.id, campaignId: c.id, campaignName: c.name, campaignStatus: c.status,
-            at: state === 'planned' ? new Date(earliest) : r.sentAt ?? r.scheduledAt, scheduledAt: r.scheduledAt, state, reason,
+            at: state === 'planned' ? new Date(earliest) : r.sentAt ?? r.scheduledAt ?? r.createdAt, scheduledAt: r.scheduledAt, state, reason,
             accountId: id, accountLabel: link?.account.label || link?.account.tgUserId || 'Не назначен',
             name: [r.firstName, r.middleName].filter(Boolean).join(' ') || r.username || 'Контакт',
             status: r.status, readAt: r.readAt, repliedAt: r.repliedAt, error: r.error,
             movable: r.status === 'QUEUED' && !r.sentAt && !r.deliveryUnknown });
     }
     const noSlot = queued.filter(r => !r.scheduledAt || !r.plannedAccountId || r.scheduledAt.getTime() < start);
-    const sent = recipients.filter(r => inDay(r.sentAt)).length;
+    const sent = recipients.filter(r => confirmedDelivery(r) && inDay(r.sentAt)).length;
     const planned = events.filter(e => e.state === 'planned').length;
     const pending = events.filter(e => ['unassigned', 'paused', 'unknown', 'sending'].includes(e.state)).length;
     const deferred = noSlot.length + pending + queued.filter(r => r.scheduledAt && r.scheduledAt.getTime() >= end).length;
@@ -70,27 +73,28 @@ export function workspaceSnapshot(campaigns: any[], recipients: any[], capacity:
     const daily = Array.from({ length: days }, (_, i) => ({ date: mskDayKey(mskAt(since, 0, i)), sent: 0, read: 0, replied: 0 }));
     for (const r of recipients)
         for (const [field, at] of [['sent', r.sentAt], ['read', r.readAt], ['replied', r.repliedAt]] as const) {
-            if (within(at)) {
+            if (confirmedDelivery(r) && within(at)) {
                 const cell = daily.find(d => d.date === mskDayKey(at));
                 if (cell)
                     cell[field as 'sent' | 'read' | 'replied']++;
             }
         }
     const summary = campaigns.map(c => {
-        const rows = recipients.filter(r => r.campaignId === c.id), cohort = rows.filter(r => within(r.sentAt));
+        const rows = recipients.filter(r => r.campaignId === c.id), cohort = rows.filter(r => confirmedDelivery(r) && within(r.sentAt));
         return { id: c.id, name: c.name, status: c.status, windowFrom: c.windowFrom, windowTo: c.windowTo, accounts: c.accounts.length, autoAccounts:c.autoAccounts===true, eligibleAccounts:c.accounts.filter((l:any)=>l.account.mode!=='WARM' && !['BANNED','ERROR','PAUSED'].includes(l.account.status) && !!l.account.proxyId && allowances.get(l.accountId)?.allowOutgoing && (quotas.get(c.id)?.get(l.accountId)??0)>(l.dayKey===mskDayKey(day)?l.sentToday:0)).length,
-            total: rows.length, sent: rows.filter(r => r.sentAt).length, queued: rows.filter(r => r.status === 'QUEUED').length,
+            total: rows.length, sent: rows.filter(r => confirmedDelivery(r)).length, queued: rows.filter(r => r.status === 'QUEUED').length,
             errors: rows.filter(r => ['FAILED', 'BLOCKED'].includes(r.status) || r.deliveryUnknown || (r.status === 'SENT' && !r.sentAt)).length,
             planned: events.filter(e => e.campaignId === c.id && e.state === 'planned').length,
-            todaySent: rows.filter(r => inDay(r.sentAt)).length,
+            todaySent: rows.filter(r => confirmedDelivery(r) && inDay(r.sentAt)).length,
             unassigned: rows.filter(r => r.status === 'QUEUED' && (!r.scheduledAt || !r.plannedAccountId)).length,
             periodSent: cohort.length, periodRead: cohort.filter(r => r.readAt).length, periodReplies: cohort.filter(r => r.repliedAt).length,
             periodErrors: rows.filter(r => within(r.createdAt) && ['FAILED', 'BLOCKED'].includes(r.status)).length,
             periodCanceled: rows.filter(r => within(r.createdAt) && r.status === 'STOPPED').length,
+            reasons: [...new Set(events.filter(e=>e.campaignId===c.id && e.reason).map(e=>e.reason))],
             nextAt: next?.campaignId === c.id ? next.effectiveAt : events.filter(e => e.campaignId === c.id && e.state === 'planned')[0]?.at ?? null };
     });
     return { date: mskDayKey(day), now, capacity, totals: { sent, planned, available: capacity.available, deferred }, nextAt: next?.effectiveAt ?? null,
-        events, noSlot: noSlot.map(r => ({ id: r.id, campaignId: r.campaignId, campaignName: byCampaign.get(r.campaignId)!.name, name: r.firstName || r.username || 'Контакт' })),
+        events, noSlot: noSlot.map(r => ({ id: r.id, campaignId: r.campaignId, campaignName: byCampaign.get(r.campaignId)!.name, name: r.firstName || r.username || 'Контакт', reason:deliveryReason(r.error) || 'Время отправки не назначено' })),
         campaigns: summary, analytics: { days, daily, campaigns: summary,
             sent: summary.reduce((n, c) => n + c.periodSent, 0), read: summary.reduce((n, c) => n + c.periodRead, 0), replied: summary.reduce((n, c) => n + c.periodReplies, 0),
             errors: summary.reduce((n, c) => n + c.periodErrors, 0), canceled: summary.reduce((n, c) => n + c.periodCanceled, 0) } };

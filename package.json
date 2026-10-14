@@ -32,6 +32,7 @@
 		"seed:tg-outreach": "ts-node --transpile-only prisma/seed-tg-outreach.ts",
 		"seed:tg-demo": "ts-node --transpile-only prisma/seed-tg-demo.ts",
 		"test:campaign-workspace": "ts-node --transpile-only src/scripts/test-campaign-workspace.ts",
+		"test:campaign-delivery": "ts-node --transpile-only src/scripts/test-campaign-delivery.ts",
 		"test:account-modes": "ts-node --transpile-only src/scripts/test-account-modes.ts"
 	},
 	"dependencies": {

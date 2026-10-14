@@ -25,6 +25,7 @@ import { distributeDaily, type Allowance } from './warmup-plan'
 import { planQueue, startCursor, windowStart, slotCapacity, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
 import { workspaceSnapshot, validatedDay } from './campaign-workspace'
+import { confirmedDelivery, deliveryReason, recipientRejection, safeConnectionFallback } from './campaign-delivery'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 
@@ -1679,7 +1680,7 @@ export class CampaignService {
 		const rows = await this.prisma.tgRecipient.findMany({
 			where: { campaignId: { in: ids } },
 			select: {
-				campaignId: true, status: true,
+				campaignId: true, status: true, deliveryUnknown:true, error:true,
 				sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true,
 			},
 		})
@@ -1687,7 +1688,7 @@ export class CampaignService {
 		for (const r of rows) {
 			const f = out.get(r.campaignId)!
 			f.total++
-			if (r.sentAt) f.sent++
+			if (confirmedDelivery(r)) f.sent++
 			if (r.readAt) f.read++
 			if (r.repliedAt) f.replied++
 			if (r.secondSentAt) f.second++
@@ -1743,7 +1744,7 @@ export class CampaignService {
 
 		const rows = await this.prisma.tgRecipient.findMany({
 			where: { OR: [{ sentAt: { gte: since } }, { readAt: { gte: since } }, { repliedAt: { gte: since } }] },
-			select: { sentAt: true, readAt: true, repliedAt: true },
+			select: { sentAt: true, deliveryUnknown:true, error:true, readAt: true, repliedAt: true },
 		})
 
 		// Ряд строим сплошным, включая пустые дни: провалы в рассылке — это и
@@ -1760,7 +1761,7 @@ export class CampaignService {
 			if (cell) cell[field]++
 		}
 		for (const r of rows) {
-			bump(r.sentAt, 'sent')
+			if (confirmedDelivery(r)) bump(r.sentAt, 'sent')
 			bump(r.readAt, 'read')
 			bump(r.repliedAt, 'replied')
 		}
@@ -1796,6 +1797,7 @@ export class CampaignService {
 
 		let sent = 0
 		for (const c of campaigns) {
+			await this.reconcileRecipientRejections(c.id)
 			if (await this.syncAutoAccounts(c.id)) {
 				await this.buildSchedule(c.id)
 				c.accounts = await this.prisma.tgCampaignAccount.findMany({where:{campaignId:c.id},include:{account:{include:{proxy:true}}}})
@@ -1856,14 +1858,23 @@ export class CampaignService {
 
 			for (const link of c.accounts) {
 				if (link.pausedUntil && link.pausedUntil > now) continue
-				if (link.nextSendAt && link.nextSendAt > now) continue
+				if (link.nextSendAt && link.nextSendAt > now) {
+                    const orphan = await this.prisma.tgRecipient.findFirst({where:{campaignId:c.id,status:'QUEUED',sentAt:null,deliveryUnknown:false,scheduleLocked:false,scheduledAt:{lte:now},plannedAccountId:null,error:{not:null}}})
+                    if (!orphan || !/ECONNREFUSED|ECONNRESET|proxy|socks|timeout|таймаут/i.test(orphan.error ?? '')) continue
+                    const [latest, outgoing] = await Promise.all([
+                        this.prisma.tgRecipient.findFirst({where:{accountId:link.accountId,sentAt:{not:null}},orderBy:{sentAt:'desc'},select:{sentAt:true}}),
+                        this.prisma.tgDialogMessage.findFirst({where:{out:true,recipient:{accountId:link.accountId}},orderBy:{date:'desc'},select:{date:true}}),
+                    ])
+                    const lastAt=Math.max(latest?.sentAt?.getTime() ?? 0,outgoing?.date?.getTime() ?? 0)
+                    if (lastAt+Math.max(30,c.minIntervalSec)*1000>now.getTime()) continue
+                }
 
 				const acc = link.account
 				// PAUSED — ручная остановка: аккаунт не трогаем ничем.
 				if (acc.status === 'BANNED' || acc.status === 'ERROR' || acc.status === 'PAUSED') continue
 				// Аккаунт, отведённый только под прогрев, не рассылает: он сейчас
 				// набирает историю, и холодные исходящие эту работу перечёркивают.
-				if (acc.mode === 'WARM') continue
+				if (acc.mode === 'WARM' || !acc.proxyId) continue
 				// Занят прогревом — вернёмся на следующем тике.
 				if (acc.busyUntil && acc.busyUntil > now) continue
 
@@ -1913,7 +1924,7 @@ export class CampaignService {
 					// Сначала — тот, кому этому аккаунту пора писать по плану.
 					let recipient = await this.prisma.tgRecipient.findFirst({
 						where: {
-							campaignId: c.id, status: 'QUEUED',
+							campaignId: c.id, status: 'QUEUED', sentAt:null, deliveryUnknown:false,
 							plannedAccountId: acc.id, scheduledAt: { lte: now },
 						},
 						orderBy: { scheduledAt: 'asc' },
@@ -1926,16 +1937,16 @@ export class CampaignService {
 						 * Без расписания — кампании, заведённые до него, и
 						 * добавленные руками уже после сборки плана.
 						 *
-						 * Брошенные — просроченные больше чем на полчаса и
-						 * закреплённые за аккаунтом, который сегодня не работает.
-						 * Полчаса запаса нужны, чтобы не выхватывать чужое у
-						 * аккаунта, который просто немного отстал от плана.
+						 * Брошенные — уже наступившие слоты аккаунта, который
+						 * сейчас не может писать. Неизвестную доставку и отказ
+						 * Telegram из-за лимитов другому аккаунту не передаём.
 						 * Закреплённых вручную не трогаем: смысл закрепления в
 						 * том, чтобы отправка ушла именно с этого аккаунта.
 						 */
 						recipient = await this.prisma.tgRecipient.findFirst({
 							where: {
-								campaignId: c.id, status: 'QUEUED',
+								campaignId: c.id, status: 'QUEUED', sentAt:null, deliveryUnknown:false,
+                                AND:[{OR:[{error:null},{AND:[{NOT:{error:{contains:'PEER_FLOOD'}}},{NOT:{error:{contains:'FLOOD_WAIT'}}}]}]}],
 								OR: [
 									{ plannedAccountId: null, OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }] },
 									{
@@ -1969,13 +1980,14 @@ export class CampaignService {
 
 					// Захват адресата: без него два тика могли бы взять одного и того же.
 					const claimed = await this.prisma.tgRecipient.updateMany({
-						where: { id: recipient.id, status: 'QUEUED', scheduledAt: recipient.scheduledAt, plannedAccountId: recipient.plannedAccountId,
+						where: { id: recipient.id, status: 'QUEUED', sentAt:null, deliveryUnknown:false, scheduledAt: recipient.scheduledAt, plannedAccountId: recipient.plannedAccountId,
 							campaign: { status: 'RUNNING' } },
 						data: { status: 'SENT', accountId: acc.id, attempts: { increment: 1 } },
 					})
 					if (claimed.count !== 1) continue
 
 					verdict = await this.sendOne(c, link, acc, recipient)
+                    if (verdict === 'failed') { const i=working.indexOf(acc.id); if(i>=0) working.splice(i,1) }
 					if (verdict !== 'skipped') break
 				}
 				} finally {
@@ -2004,6 +2016,28 @@ export class CampaignService {
 		}
 		return sent
 	}
+
+    /** Repair the old classifier's explicit payment refusals, never requeue them. */
+    private async reconcileRecipientRejections(campaignId: string) {
+        const rows = await this.prisma.tgRecipient.findMany({
+            where: {campaignId, status:'SENT', deliveryUnknown:true, sentMsgId:null,
+                messages:{none:{out:true}}, OR:[
+                    {error:{contains:'ALLOW_PAYMENT_REQUIRED'}},
+                    {error:{contains:'PRIVACY_PREMIUM_REQUIRED'}},
+                    {error:{contains:'PREMIUM_ACCOUNT_REQUIRED'}},
+                ]},
+            select:{id:true,error:true},
+        })
+        for(const r of rows) {
+            const reason=recipientRejection(r.error ?? '')
+            if(!reason) continue
+            const code=r.error?.match(/ALLOW_PAYMENT_REQUIRED(?:_\d+)?|PRIVACY_PREMIUM_REQUIRED|PREMIUM_ACCOUNT_REQUIRED/)?.[0]
+            await this.prisma.tgRecipient.updateMany({
+                where:{id:r.id,status:'SENT',deliveryUnknown:true,sentMsgId:null,error:r.error,messages:{none:{out:true}}},
+                data:{status:'FAILED',sentAt:null,deliveryUnknown:false,error:`${reason} (${code})`},
+            })
+        }
+    }
 
 	/**
 	 * Когда этому аккаунту писать в следующий раз.
@@ -2072,7 +2106,8 @@ export class CampaignService {
 			rows.push({
 				id: acc.id,
 				readiness: allow?.readiness ?? 0,
-				canSend: !dead && acc.mode !== 'WARM' && !!acc.proxyId && maySend(acc, allow),
+				canSend: !dead && acc.mode !== 'WARM' && !!acc.proxyId && maySend(acc, allow)
+                    && !(today===mskDayKey(new Date()) && l.pausedUntil && l.pausedUntil>new Date()),
 				ceiling: Math.max(0, Math.min(campaign.perAccountPerDay, safe)),
 				manual: campaign.autoAccounts === true ? null : typeof l.dailyLimit === 'number' ? Math.max(0, l.dailyLimit) : null,
 			})
@@ -2288,6 +2323,7 @@ export class CampaignService {
 					client.sendMessage(peer.entity, { message: doEdit ? edited!.draft : text }),
 				)
 				const msgId = Number(msg?.id ?? 0)
+                if (!Number.isInteger(msgId) || msgId<=0) throw new Error('Telegram не подтвердил ID отправленного сообщения')
 				// Дописываем знак чуть позже. Best-effort: не вышло — сообщение уже
 				// ушло, ничего не ломаем и не повторяем (в записи и так финальный текст).
 				if (doEdit && msgId) {
@@ -2323,8 +2359,9 @@ export class CampaignService {
 		} catch (e: any) {
 			const failure = e instanceof TgError ? e.failure : classifyError(e)
 			const code = hopelessReason(failure.message)
+            const rejection = recipientRejection(failure.message)
 
-			if (code) {
+			if (code || rejection) {
 				// Сервер сказал прямо: писать этому человеку нельзя.
 				const blocking = code === 'USER_PRIVACY_RESTRICTED' || code === 'USER_IS_BLOCKED' || code === 'YOU_BLOCKED_USER'
 				await this.prisma.tgRecipient.update({
@@ -2332,7 +2369,7 @@ export class CampaignService {
 					data: {
 						status: blocking ? 'BLOCKED' : 'FAILED',
 						blockedAt: blocking ? new Date() : null,
-						sentAt: null, error: REASON_RU[code] ?? code,
+						sentAt: null, deliveryUnknown:false, sentMsgId:null, error: rejection ?? REASON_RU[code!] ?? code,
 					},
 				})
 				/*
@@ -2382,15 +2419,8 @@ export class CampaignService {
 				return 'failed'
 			}
 
-			// Общая беда аккаунта: возвращаем адресата в очередь, аккаунт паузим.
-			//
-			// При спам-лимите (PEER_FLOOD) снимаем и привязку к аккаунту: контакт
-			// возвращается в ОБЩИЙ стакан «как будто его никто не брал», и его берёт
-			// другой аккаунт уже на следующем тике. Если спам-блок висит на всех —
-			// контакт просто ждёт свободным в очереди, пока кто-нибудь снова сможет
-			// писать. При FLOOD_WAIT привязку не трогаем: это не спам, а темп, и
-			// аккаунт сам вернётся к работе через положенную паузу.
-			const repool = failure.kind === 'peerFlood'
+			// Network failure before send is safe to move; Telegram limits retain sender.
+            const repool = safeConnectionFallback(attempted, failure.kind) && !recipient.scheduleLocked
 			await this.prisma.tgRecipient.update({
 				where: { id: recipient.id },
 				data: {
@@ -2409,7 +2439,7 @@ export class CampaignService {
 				await this.notifyAdmin(
 					`⚠️ <b>PEER_FLOOD</b>\n\nАккаунт <b>${esc(account.label ?? account.id)}</b> получил спам-лимит ` +
 						`в кампании «${esc(campaign.name)}». Отправка с него остановлена на сутки, рейтинг снижен.\n` +
-						`Контакт возвращён в общий стакан — его возьмёт другой аккаунт.\n\n` +
+						`Контакт останется за этим аккаунтом до окончания ограничения.\n\n` +
 						`Снять ограничение: откройте карточку аккаунта и нажмите «Спросить @SpamBot».`,
 				)
 			} else {
@@ -2451,7 +2481,7 @@ export class CampaignService {
 				),
 			)
 			const user = (res?.users ?? [])[0]
-			if (!user) throw new TgError({ kind: 'other', message: 'PHONE_NUMBER_INVALID' })
+			if (!user) throw new TgError({ kind: 'other', message: 'CONTACT_ID_INVALID' })
 			return { entity: user, userId: String(user.id) }
 		}
 		throw new TgError({ kind: 'other', message: 'PEER_ID_INVALID' })
@@ -3592,7 +3622,7 @@ export class CampaignService {
 		const pick = {
 			id: true, username: true, phone: true, status: true,
 			firstName: true, middleName: true, lastName: true, company: true, domain: true, leadVars: true, hypothesis: { select: { text: true } },
-			scheduledAt: true, plannedAccountId: true, sentAt: true, accountId: true, error: true,
+			scheduledAt: true, plannedAccountId: true, sentAt: true, accountId: true, error: true, deliveryUnknown:true, createdAt:true,
 			scheduleLocked: true,
 		}
 		const [queued, done] = await Promise.all([
@@ -3604,7 +3634,7 @@ export class CampaignService {
 			// Уже ушедшее берём с начала сегодняшних суток: раньше это уже не
 			// «что происходит», а история, и ей место в списке адресатов.
 			this.prisma.tgRecipient.findMany({
-				where: { campaignId, sentAt: { gte: startOfDay(new Date()) } },
+				where: { campaignId, OR:[{sentAt:{gte:startOfDay(new Date())}},{status:{in:['FAILED','BLOCKED','STOPPED']},OR:[{scheduledAt:{gte:startOfDay(new Date())}},{createdAt:{gte:startOfDay(new Date())}}]}] },
 				orderBy: { sentAt: 'asc' },
 				select: pick,
 			}),
@@ -3651,14 +3681,19 @@ export class CampaignService {
 			|| 'без имени'
 
 		const event = (r: any, at: Date, sent: boolean) => {
-			const acc = byId.get(sent ? r.accountId : r.plannedAccountId) ?? null
+			const acc = byId.get(r.accountId ?? r.plannedAccountId) ?? null
+            const link = c.accounts.find(l=>l.accountId===acc?.id)
+            const failed = ['FAILED','BLOCKED','STOPPED'].includes(r.status) || !!recipientRejection(r.error??'')
+            const paused = !sent && !!link?.pausedUntil && link.pausedUntil>new Date()
+            const state = failed ? 'error' : r.deliveryUnknown ? 'unknown' : sent ? 'sent' : paused ? 'paused' : 'planned'
+            const reason = deliveryReason(r.error) ?? (paused ? deliveryReason(link?.lastError) ?? 'Аккаунт на паузе' : null)
 			return {
 				id: r.id,
 				at: at.toISOString(),
 				name: name(r),
 				username: r.username,
 				domain: r.domain,
-				sent,
+				sent, state, reason,
 				status: r.status,
 				accountId: acc?.id ?? null,
 				accountLabel: acc?.label ?? null,
@@ -3675,7 +3710,7 @@ export class CampaignService {
 			if (list) list.push(event(r, at, sent))
 			else days.set(key, [event(r, at, sent)])
 		}
-		for (const r of done) if (r.sentAt) add(r, r.sentAt, true)
+		for (const r of done) add(r, r.sentAt ?? r.scheduledAt ?? r.createdAt, confirmedDelivery(r))
 		for (const r of queued) if (r.scheduledAt) add(r, r.scheduledAt, false)
 
 		// Кому времени не досталось: не хватает данных для текста, кончились
@@ -4080,9 +4115,9 @@ export class CampaignService {
 			const [total, sentTotal, queued, sentToday, blockedToday, plannedToday, next, sentByAccount] = await Promise.all([
 				// Вся рассылка целиком: «из 20 человек ушло 7» — первое, что хотят видеть.
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id } }),
-				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { not: null } } }),
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, deliveryUnknown:false, sentAt: { not: null } } }),
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id, status: 'QUEUED' } }),
-				this.prisma.tgRecipient.count({ where: { campaignId: c.id, sentAt: { gte: midnight } } }),
+				this.prisma.tgRecipient.count({ where: { campaignId: c.id, deliveryUnknown:false, sentAt: { gte: midnight } } }),
 				// Считаем только то, у чего есть отметка времени. У FAILED её нет,
 				// и приписывать сегодняшнему дню все прошлые сбои — вранье.
 				this.prisma.tgRecipient.count({ where: { campaignId: c.id, blockedAt: { gte: midnight } } }),

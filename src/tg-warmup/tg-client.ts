@@ -79,8 +79,8 @@ export type Failure = { kind: FailureKind; message: string; seconds?: number }
 export function classifyError(e: any): Failure {
 	const message = String(e?.errorMessage || e?.message || e || 'неизвестная ошибка')
 
-	if (e instanceof Errors.FloodWaitError || e instanceof Errors.SlowModeWaitError) {
-		const seconds = Number(e.seconds)
+	if (e instanceof Errors.FloodWaitError || e instanceof Errors.SlowModeWaitError || /(?:FLOOD_WAIT|SLOWMODE_WAIT)_\d+/i.test(message)) {
+		const seconds = Number(e.seconds ?? message.match(/(?:FLOOD_WAIT|SLOWMODE_WAIT)_(\d+)/i)?.[1])
 		return { kind: 'flood', message, seconds: Number.isFinite(seconds) ? seconds : undefined }
 	}
 	// Текстовый фоллбэк обязателен: PEER_FLOOD иногда прилетает не инстансом

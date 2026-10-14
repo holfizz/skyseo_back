@@ -155,6 +155,44 @@ async function main() {
             const contacts = await p.tgRecipient.findMany({select:{username:true}});
             assert.equal(new Set(contacts.map(r=>r.username)).size,contacts.length);
         }
+        if (!process.argv.includes('--serve')) {
+            await p.tgCampaign.updateMany({where:{status:'RUNNING'},data:{status:'PAUSED'}});
+            await p.tgAccount.updateMany({where:{id:{in:accounts}},data:{busyUntil:null,busyBy:null}});
+            const fallback=await p.tgCampaign.create({data:{name:'Connection fallback',status:'RUNNING',autoAccounts:false,firstMessage:'Здравствуйте',windowFrom:0,windowTo:24,minIntervalSec:60,maxIntervalSec:60,perAccountPerDay:7,accounts:{create:accounts.slice(0,2).map((accountId,i)=>({accountId,nextSendAt:i?new Date(Date.now()+3600000):null}))}}});
+            const paid=await p.tgRecipient.create({data:{campaignId:fallback.id,username:'fake_paid',status:'SENT',accountId:accounts[0],sentAt:new Date(),deliveryUnknown:true,error:'Связь оборвалась: ALLOW_PAYMENT_REQUIRED_2'}});
+            const pending=await p.tgRecipient.create({data:{campaignId:fallback.id,username:'fake_fallback',status:'QUEUED',plannedAccountId:accounts[0],scheduledAt:new Date(Date.now()-60000)}});
+            const calls:string[]=[];
+            const originalSend=service.sendOne;
+            service.warmup.claimAccount=async()=>true;
+            service.warmup.releaseAccount=async()=>{};
+            service.sendOne=async(_c:any,_l:any,a:any,r:any)=>{
+                calls.push(a.id);
+                if(a.id===accounts[0]) {
+                    await p.tgRecipient.update({where:{id:r.id},data:{status:'QUEUED',sentAt:null,accountId:null,plannedAccountId:null,error:'connect ECONNREFUSED 127.0.0.1:1'}});
+                    return 'failed';
+                }
+                await p.tgRecipient.update({where:{id:r.id},data:{status:'SENT',accountId:a.id,sentAt:new Date(),sentMsgId:1,error:null}});
+                return 'sent';
+            };
+            try {
+                assert.equal(await service.sendTick(),1,'Try an eligible sender in the same tick after a proven connection failure');
+                assert.deepEqual(calls,accounts.slice(0,2));
+                const repaired=await p.tgRecipient.findUniqueOrThrow({where:{id:paid.id}});
+                assert.equal(repaired.status,'FAILED');
+                assert.equal(repaired.sentAt,null);
+                assert.equal(repaired.deliveryUnknown,false);
+                assert.equal((await p.tgRecipient.findUniqueOrThrow({where:{id:pending.id}})).accountId,accounts[1]);
+                await p.tgRecipient.create({data:{campaignId:fallback.id,username:'fake_restricted',status:'QUEUED',plannedAccountId:accounts[0],scheduledAt:new Date(Date.now()-60000),error:'PEER_FLOOD'}});
+                await p.tgCampaignAccount.updateMany({where:{campaignId:fallback.id,accountId:accounts[0]},data:{pausedUntil:new Date(Date.now()+86400000)}});
+                calls.length=0;
+                assert.equal(await service.sendTick(),0,'Never move a rate-limited recipient to another sender');
+                assert.deepEqual(calls,[]);
+            } finally {
+                service.sendOne=originalSend;
+                service.warmup.claimAccount=async()=>false;
+                await p.tgCampaign.delete({where:{id:fallback.id}});
+            }
+        }
         const multi = planQueue(['one','two','three'],[{id:'a',quota:2,left:0,cursor:mskAt(now,24).getTime(),floor:0,day:0,readiness:80}],{windowFrom:0,windowTo:24,minIntervalSec:240,maxIntervalSec:1200},now,{maxDays:2,reservations:[{accountId:'a',at:mskAt(now,10,1),minIntervalSec:240}]});
         assert.equal([...multi.values()].filter(v=>mskDayKey(v.at)===tomorrow).length,1,'Multiday planning must honor tomorrow reservations of another campaign');
         console.log('Campaign workspace DB/API: authorization, empty day, exact reservations, excess confirmation, concurrent idempotency, transfer persistence/conflicts, unavailable sender, pause/resume, confirmed sends, unknown delivery, period analytics and read-only polling passed.');
