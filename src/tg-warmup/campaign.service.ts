@@ -3309,7 +3309,6 @@ export class CampaignService {
 		const photos = extra?.photos ?? []
 		const replyToTgId = extra?.replyToTgId ?? null
 		if (!body && !photos.length) throw new BadRequestException('Пустое сообщение')
-		if (containsDomainOrUrl(body)) throw new BadRequestException('Ссылки и полные домены в Telegram-сообщениях отключены. Уберите доменную зону')
 		if (body.length > 4000) throw new BadRequestException('Сообщение длиннее 4000 символов Telegram не примет')
 		if (photos.length > PHOTO_COUNT_LIMIT) {
 			throw new BadRequestException(`За раз можно приложить не больше ${PHOTO_COUNT_LIMIT} фото`)
@@ -3326,6 +3325,15 @@ export class CampaignService {
 			include: { campaign: true, account: { include: { proxy: true } } },
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
+		if (containsDomainOrUrl(body)) {
+			const confirmedFirst = !r.deliveryUnknown && !!r.sentAt && (r.sentMsgId ?? 0) > 0
+			const outgoing = !r.deliveryUnknown && !confirmedFirst
+				? await this.prisma.tgDialogMessage.findFirst({where:{recipientId, out:true, tgId:{gt:0}},select:{id:true}})
+				: null
+			if (!confirmedFirst && !outgoing) {
+				throw new BadRequestException('В первом сообщении ссылки запрещены. Их можно отправлять вручную после подтвержденной первой отправки')
+			}
+		}
 		if (!r.account) throw new BadRequestException('Не известно, с какого аккаунта шла переписка')
 		if (r.account.status === 'BANNED') throw new BadRequestException('Аккаунт заблокирован — с него уже не написать')
 
