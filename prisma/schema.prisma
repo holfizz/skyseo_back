@@ -1330,6 +1330,7 @@ model TgProxy {
 model TgAccount {
   restrictedUntil DateTime?
   premiumCheckedAt DateTime?
+  premiumUntil DateTime? // exclusive end: midnight Moscow after the last paid day
   purchasedAt DateTime @default(now())
   outreachStartedAt DateTime?
   id        String  @id @default(uuid())

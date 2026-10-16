@@ -88,6 +88,11 @@ export class TgWarmupController {
 		return this.svc.accountCard(id)
 	}
 
+	@Post('accounts/:id/premium')
+	premiumUntil(@Param('id') id: string, @Body() body: { until: string | null }) {
+		return this.svc.setPremiumUntil(id, body?.until)
+	}
+
 	/**
 	 * Загрузка сессий. Ограничение по размеру задано явно: у multer его по
 	 * умолчанию нет вовсе, и архив на гигабайт лёг бы целиком в память.

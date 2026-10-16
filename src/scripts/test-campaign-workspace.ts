@@ -8,6 +8,7 @@ import { PassportModule } from '@nestjs/passport';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaClient } from '@prisma/client';
 import { TgWarmupService } from '../tg-warmup/tg-warmup.service';
+import { TgWarmupController } from '../tg-warmup/tg-warmup.controller';
 import { CampaignService } from '../tg-warmup/campaign.service';
 import { CampaignController } from '../tg-warmup/campaign.controller';
 import { JwtStrategy } from '../auth/jwt.strategy';
@@ -25,6 +26,8 @@ if (!['127.0.0.1', 'localhost'].includes(url.hostname) || !url.pathname.startsWi
 const p = new PrismaClient({ datasources: { db: { url: database } } });
 const service = Object.create(CampaignService.prototype) as any;
 service.prisma = p;
+const premiumService = Object.create(TgWarmupService.prototype) as any;
+premiumService.prisma = p;
 let canSend = true;
 const denied = new Set<string>();
 const allowance = { allowOutgoing: true, dailyMessages: 7, maxMessagesPerDay: 7, readiness: 80, notes: [] };
@@ -33,7 +36,7 @@ service.warmup = { claimAccount: async () => false, allowanceFor: async (a:any) 
 service.activeHypotheses = async () => [];
 service.fillLeadVars = async () => { };
 const secret = 'campaign-local-test-fixture';
-@Module({ imports: [PassportModule], controllers: [CampaignController], providers: [{ provide: CampaignService, useValue: service },
+@Module({ imports: [PassportModule], controllers: [CampaignController,TgWarmupController], providers: [{ provide: CampaignService, useValue: service }, {provide:TgWarmupService,useValue:premiumService},
         { provide: JwtStrategy, useFactory: () => new JwtStrategy({ get: () => secret } as any, { findById: (id: string) => p.user.findUnique({ where: { id } }) } as any) }, JwtAuthGuard, AdminGuard] })
 class TestModule {
 }
@@ -58,6 +61,29 @@ async function main() {
         assert.equal(empty.totals.sent, 0);
         for (let i = 0; i < 2; i++)
             accounts.push((await p.tgAccount.create({ data: { label: `Тестовый отправитель ${i + 1}`, session: 'not-a-telegram-session', apiId: 1, apiHash: 'fixture', deviceModel: 'test', systemVersion: 'test', appVersion: 'test', langCode: 'ru', systemLangCode: 'ru', status: 'READY', mode: 'SEND', proxyId: proxy.id } })).id);
+        const checkedAt=new Date(Date.now()-30*86400000), boughtAt=new Date(Date.now()-3*86400000);
+        await p.tgAccount.updateMany({where:{id:{in:accounts}},data:{purchasedAt:boughtAt,probe:{premium:true},premiumCheckedAt:checkedAt}});
+        premiumService.clientOptions=()=>{throw new Error('Premium tests must never connect to Telegram')};
+        assert.equal(await premiumService.refreshEligibleAccounts(),0,'Do not recheck known Premium, even when confirmation is a month old');
+        assert.equal(await premiumService.claimAccount(accounts[0],'send',60),true,'Atomic sender claim accepts old confirmed Premium');
+        await premiumService.releaseAccount(accounts[0]);
+        const premiumUrl=base+`/admin/warmup/accounts/${accounts[0]}/premium`;
+        const premiumRequest=(until:unknown,auth?:string)=>fetch(premiumUrl,{method:'POST',headers:{...(auth?{Authorization:'Bearer '+auth}:{}),'Content-Type':'application/json'},body:JSON.stringify({until})});
+        assert.equal((await premiumRequest('2027-01-01')).status,401);
+        assert.equal((await premiumRequest('2027-01-01',jwt.sign({sub:manager.id}))).status,403);
+        assert.equal((await premiumRequest('2026-02-30',token)).status,400);
+        const futureDate=mskDayKey(mskAt(now,0,5));
+        const saved=await premiumRequest(futureDate,token);assert.equal(saved.status,201);
+        assert.equal((await saved.json()).premiumUntil,new Date(`${futureDate}T21:00:00Z`).toISOString());
+        assert.equal((await p.tgAccount.findUniqueOrThrow({where:{id:accounts[0]}})).premiumCheckedAt!.getTime(),checkedAt.getTime(),'Saving a date does not forge a Telegram verification');
+        assert.equal(await premiumService.claimAccount(accounts[0],'send',60),true);await premiumService.releaseAccount(accounts[0]);
+        await p.tgAccount.update({where:{id:accounts[0]},data:{premiumUntil:new Date(Date.now()-1000)}});
+        assert.equal(await premiumService.claimAccount(accounts[0],'send',60),false,'Expired subscription cannot claim a sender');
+        await p.tgAccount.update({where:{id:accounts[0]},data:{premiumUntil:new Date(Date.now()+86400000),restrictedUntil:new Date(Date.now()+86400000)}});
+        assert.equal(await premiumService.claimAccount(accounts[0],'send',60),false,'Subscription date cannot bypass Telegram restriction');
+        await p.tgAccount.update({where:{id:accounts[0]},data:{premiumUntil:null,restrictedUntil:null,probe:{premium:false}}});
+        assert.equal(await premiumService.claimAccount(accounts[0],'send',60),false,'Explicit negative verification remains blocked');
+        await p.tgAccount.update({where:{id:accounts[0]},data:{probe:{premium:true}}});
         for (let i = 0; i < 30; i++)
             leads.push((await p.outreachLead.create({ data: { domain: `local-test-${i}.invalid`, message: '', firstName: 'Тест', telegram: `@zz_cfixture_${prefix.slice(0, 8)}_${i}`, telegramManual: true } })).id);
 

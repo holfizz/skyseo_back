@@ -251,6 +251,7 @@ export function throttleFor(i: ThrottleInput): Throttle {
 
 export type AllowanceInput = {
  premium?: boolean
+ premiumExpired?: boolean
  /** Полные сутки с первого исходящего. null — отправок ещё не было. */
  outreachDays?: number | null
 	/** Какой день прогрева идёт, начиная с 1. Ноль — прогрев не запущен. */
@@ -377,7 +378,8 @@ function times(n: number): string {
 export function outgoingAllowance(i: AllowanceInput): Allowance {
  const deny = (why: string): Allowance => ({allowOutgoing:false,maxJoinsPerDay:0,maxMessagesPerDay:0,maxReactionsPerDay:0,dailyMessages:0,baseMessages:0,readiness:0,signals:[],throttle:i.throttle??null,notes:[why]})
  if (i.daysManaged < PREMIUM_IDLE_DAYS) return deny('Первые 24 часа после покупки: полный покой, без подключений')
- if (i.premium !== true) return deny('Premium не подтверждён: отправки закрыты до проверки аккаунта с действующей подпиской')
+ if (i.premiumExpired) return deny('Срок Premium истек: укажите новую дату подписки в карточке аккаунта')
+ if (i.premium !== true) return deny('Premium не подтвержден: нужна однократная проверка аккаунта с действующей подпиской')
  if (i.spamBlock === 'permanent' || i.spamBlock === 'temporary') return deny('Ограничение Telegram: отправки остановлены')
  if (i.peerFloods >= 2) return deny('Повторный PEER_FLOOD: отправки остановлены')
  if (i.floodWaits >= 6) return deny('Повторные FLOOD_WAIT: отправки остановлены')

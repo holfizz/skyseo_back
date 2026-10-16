@@ -34,7 +34,8 @@
 		"test:campaign-workspace": "ts-node --transpile-only src/scripts/test-campaign-workspace.ts",
 		"test:manual-links": "ts-node --transpile-only src/scripts/test-manual-message-links.ts",
 		"test:campaign-delivery": "ts-node --transpile-only src/scripts/test-campaign-delivery.ts",
-		"test:account-modes": "ts-node --transpile-only src/scripts/test-account-modes.ts"
+		"test:account-modes": "ts-node --transpile-only src/scripts/test-account-modes.ts",
+		"test:premium": "ts-node --transpile-only src/scripts/test-premium.ts"
 	},
 	"dependencies": {
 		"@mtcute/convert": "^0.32.1",

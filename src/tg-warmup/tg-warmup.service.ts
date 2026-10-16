@@ -22,6 +22,7 @@ import {
 import { mskAt, mskDayKey, mskMinuteOfDay } from './msk'
 import { GEO_SURVIVAL, scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
 import { estimateRegistration } from './account-age'
+import { activePremiumWhere, hasActivePremium, parsePremiumUntil } from './premium'
 
 const DAY_MS = 86400000
 
@@ -195,7 +196,7 @@ export class TgWarmupService {
 			? {}
 			: {
 				purchasedAt: { lte: new Date(now.getTime() - DAY_MS) },
-				AND: [{ OR: [{ restrictedUntil: null }, { restrictedUntil: { lte: now } }] }, ...(by === 'send' ? [{ probe: { path: ['premium'], equals: true }, premiumCheckedAt: { gt: new Date(now.getTime()-DAY_MS) } }] : [])],
+				AND: [{ OR: [{ restrictedUntil: null }, { restrictedUntil: { lte: now } }] }, ...(by === 'send' ? [activePremiumWhere(now)] : [])],
 			}
 		const claimed = await this.prisma.tgAccount.updateMany({
 			where: {
@@ -645,7 +646,8 @@ export class TgWarmupService {
 				id: a.id,
                 purchasedAt: a.purchasedAt,
                 outreachStartedAt: a.outreachStartedAt,
-                premium: (a.probe as any)?.premium === true,
+                premium: hasActivePremium(a),
+                premiumUntil: a.premiumUntil,
 				label: a.label,
 				avatar: a.avatar,
 				mode: a.mode,
@@ -758,7 +760,7 @@ export class TgWarmupService {
 			id: a.id, label: a.label, avatar: a.avatar, mode: a.mode, phone: a.phone, username: a.username,
 			firstName: a.firstName, lastName: a.lastName, tgUserId: a.tgUserId,
 			status: a.status, score: a.score, warmness: a.warmness, scoredAt: a.scoredAt,
-			registeredAt: a.registeredAt, purchasedAt: a.purchasedAt, outreachStartedAt: a.outreachStartedAt, premiumCheckedAt: a.premiumCheckedAt, probe: a.probe, advice: a.advice,
+			registeredAt: a.registeredAt, purchasedAt: a.purchasedAt, outreachStartedAt: a.outreachStartedAt, premiumCheckedAt: a.premiumCheckedAt, premiumUntil: a.premiumUntil, premium: hasActivePremium(a), probe: a.probe, advice: a.advice,
 			fingerprint: {
 				deviceModel: a.deviceModel, systemVersion: a.systemVersion,
 				appVersion: a.appVersion, langCode: a.langCode, systemLangCode: a.systemLangCode,
@@ -2359,9 +2361,19 @@ export class TgWarmupService {
 	 * READY и снимает прогон, а дальше фон подхватывается ближайшим тиком.
 	 * Отдельной ветки в finishRun для этого не нужно — одно место вместо двух.
 	 */
+	async setPremiumUntil(id: string, value: unknown) {
+		let premiumUntil: Date | null
+		try { premiumUntil = parsePremiumUntil(value) }
+		catch (e: any) { throw new BadRequestException(e.message) }
+		if (!await this.prisma.tgAccount.findUnique({ where: { id }, select: { id: true } })) throw new NotFoundException('Аккаунт не найден')
+		const account = await this.prisma.tgAccount.update({ where: { id }, data: { premiumUntil } })
+		return { ok: true, premiumUntil: account.premiumUntil, premium: hasActivePremium(account) }
+	}
+
+ /** Only the initial confirmation after rest. Known Premium is not rechecked every day. */
  async refreshEligibleAccounts(): Promise<number> {
   const now = new Date()
-  const due = await this.prisma.tgAccount.findMany({where:{status:{in:['NEW','READY']}, purchasedAt:{lte:new Date(now.getTime()-DAY_MS)}, OR:[{premiumCheckedAt:null},{premiumCheckedAt:{lt:new Date(now.getTime()-DAY_MS)}}]}, orderBy:{premiumCheckedAt:{sort:'asc',nulls:'first'}}, take:3, include:{proxy:true}})
+  const due = await this.prisma.tgAccount.findMany({where:{status:{in:['NEW','READY']}, purchasedAt:{lte:new Date(now.getTime()-DAY_MS)}, premiumCheckedAt:null}, orderBy:{purchasedAt:'asc'}, take:3, include:{proxy:true}})
   let checked=0
   for (const a of due) {
    if (!(await this.claimAccount(a.id,'check',90))) continue
@@ -2904,7 +2916,8 @@ export class TgWarmupService {
 				? Math.floor((Date.now() - account.registeredAt.getTime()) / DAY_MS)
 				: null,
 			daysManaged: Math.max(0, Math.floor((now.getTime() - (account.purchasedAt ?? account.createdAt).getTime()) / DAY_MS)),
-            premium: probe.premium === true && !!account.premiumCheckedAt && now.getTime()-account.premiumCheckedAt.getTime() < DAY_MS,
+            premium: hasActivePremium(account, now),
+            premiumExpired: !!account.premiumUntil && account.premiumUntil <= now,
             outreachDays: account.outreachStartedAt ? Math.max(0, Math.floor((now.getTime() - account.outreachStartedAt.getTime()) / DAY_MS)) : null,
 			actionsTotal: account.actionsTotal ?? 0,
 			dialogs: probe.dialogs ?? 0,
