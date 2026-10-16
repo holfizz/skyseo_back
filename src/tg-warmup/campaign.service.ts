@@ -10,7 +10,7 @@ import { ReportService } from '../report/report.service'
 import { CustomFile } from 'teleproto/client/uploads'
 import { TgWarmupService } from './tg-warmup.service'
 import { call, classifyError, TgError, withClient } from './tg-client'
-import { adaptTopTenClaim, fillTemplate, missingPlaceholders } from './campaign-text'
+import { fillTemplate, missingPlaceholders } from './campaign-text'
 import { FIRST_MESSAGE, SECOND_MESSAGE } from './campaign-preset'
 import { buildLeadVars, type LeadVars } from './lead-vars'
 import { OUTCOME_KEYS, outcomeLabel } from './outcomes'
@@ -18,7 +18,7 @@ import { pickCompetitors } from '../outreach/competitors'
 import { containsDomainOrUrl, displayDomain } from '../common/domain'
 import { domainToASCII } from 'node:url'
 import {
-	buildOutreachMessage, MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
+	MESSAGE_POSITION_MAX, MESSAGE_POSITION_MIN,
 	type MessageCompetitor, type MessageKeyword,
 } from '../outreach/outreach-message'
 import { distributeDaily, type Allowance } from './warmup-plan'
@@ -28,6 +28,7 @@ import { workspaceSnapshot, validatedDay } from './campaign-workspace'
 import { confirmedDelivery, deliveryReason, recipientRejection, reusableUnsentRecipient, safeConnectionFallback } from './campaign-delivery'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
+import { followUpKeywords, personalFollowUp } from './personal-followup'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -3090,6 +3091,7 @@ export class CampaignService {
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
 		const page = await this.dialogMessages(recipientId)
+		const secondPreview = await this.secondMessageFor(r)
 		return {
 			id: r.id,
 			who: [r.firstName, r.middleName, r.lastName].filter(Boolean).join(' ') || null,
@@ -3110,7 +3112,8 @@ export class CampaignService {
 			lead: r.leadId ? await this.report.leadBrief(r.leadId) : null,
 			// Полный текст: с позициями лида и теми, кто выше него. Заготовка из
 			// кода остаётся хвостом, а начало собирается по его выдаче.
-			secondPreview: await this.secondMessageFor(r),
+			secondPreview,
+			secondPreviewReason: secondPreview ? null : 'Нет сохраненных запросов и позиций для персонального сообщения',
 			messages: page.messages,
 			hasMore: page.hasMore,
 		}
@@ -3171,72 +3174,28 @@ export class CampaignService {
 	}
 
  private async secondMessageFor(r: any): Promise<string | null> {
-  // A prepared continuation belongs to this dialog, not to the first-message experiment.
   if (r.secondMessageDraft) return !containsDomainOrUrl(r.secondMessageDraft) && !/\{[^{}]+\}/.test(r.secondMessageDraft) ? r.secondMessageDraft : null
-  if (r.hypothesis) {
-   if (!r.hypothesis.hasSecondMessage || !r.hypothesis.secondMessage) return null
-   // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
-   if (r.leadId && r.leadVars == null) r = { ...r, leadVars: (await this.leadVarsFor([r.leadId])).get(r.leadId) ?? {} }
-   // Missing ranking data must not hide the continuation after a real reply.
-   // Use the approved call invitation without numeric claims in that case.
-   const template = adaptTopTenClaim(
-    usesLegacyReportOffer(r.hypothesis.secondMessage) ? SECOND_MESSAGE : r.hypothesis.secondMessage,
-    r,
-   )
-   const prepared = missingPlaceholders(template, r).length ? SECOND_MESSAGE : template
-   const text = fillTemplate(prepared, r)
-   return text && !containsDomainOrUrl(text) ? text : null
-  }
-  // The variant is not assigned until sending. Do not show a different variant's follow-up.
-  if (!r.sentAt && (await this.activeHypotheses()).length) return null
-  const stored = r.campaign.secondMessage || SECOND_MESSAGE
-  return this.fullSecondMessage(r, fillTemplate(usesLegacyReportOffer(stored) ? SECOND_MESSAGE : stored, r))
+  if (!r.leadId) return null
+  const lead = await this.prisma.outreachLead.findUnique({
+   where: { id: r.leadId },
+   select: { domain: true, importId: true, firstName: true, middleName: true, import: { select: { region: true, createdAt: true } } },
+  })
+  if (!lead?.importId || (r.domain && displayDomain(r.domain) !== displayDomain(lead.domain))) return null
+  const rows = await this.prisma.serpRow.findMany({
+   where: { importId: lead.importId, domain: lead.domain }, select: { keyword: true, position: true },
+  })
+  const keywords = followUpKeywords(rows)
+  if (!keywords.length) return null
+  const pool = await this.prisma.serpRow.findMany({
+   where: { importId: lead.importId, keyword: { in: keywords.map(k => k.keyword) } },
+   select: { keyword: true, position: true, domain: true },
+  })
+  return personalFollowUp({
+   domain: lead.domain, firstName: r.firstName || lead.firstName, middleName: r.middleName || lead.middleName,
+   keywords, competitors: pickCompetitors([], pool, lead.domain, keywords.slice(0, 1)),
+   region: lead.import?.region, savedAt: lead.import?.createdAt,
+  })
  }
-
-	private async fullSecondMessage(r: {
-		leadId: string | null
-		domain: string | null
-		firstName: string | null
-		middleName: string | null
-	}, fallback: string | null): Promise<string | null> {
-		if (!r.leadId) return fallback
-
-		const lead = await this.prisma.outreachLead.findUnique({
-			where: { id: r.leadId },
-			select: { domain: true, importId: true, competitors: true },
-		})
-		if (!lead) return fallback
-
-		let keywords: MessageKeyword[] = []
-		if (lead.importId) {
-			const rows = await this.prisma.serpRow.findMany({
-				where: { importId: lead.importId, domain: lead.domain },
-				orderBy: { position: 'asc' },
-				select: { keyword: true, position: true },
-			})
-			// Берём ЛУЧШУЮ позицию по каждому запросу и только те, где есть что
-			// улучшать: писать «вы на первом месте, давайте поднимем» нелепо.
-			// Логика та же, что в кабинете менеджера, — см. leadKeywords.
-			const best = new Map<string, MessageKeyword>()
-			for (const row of rows) if (!best.has(row.keyword)) best.set(row.keyword, row)
-			keywords = [...best.values()].filter(
-				k => k.position >= MESSAGE_POSITION_MIN && k.position <= MESSAGE_POSITION_MAX,
-			)
-		}
-
-		const competitors = await this.competitorsFor(lead, keywords)
-		// Ни позиций, ни конкурентов — значит рассказать нечего, и полный текст
-		// выродится в ту же заготовку. Тогда честнее её и оставить.
-		if (!keywords.length && !competitors.length) return fallback
-
-		return buildOutreachMessage({
-			domain: r.domain ?? lead.domain,
-			firstName: r.firstName,
-			middleName: r.middleName,
-			keywords,
-			competitors,
-		})
-	}
 
 	/**
 	 * Исправить своё сообщение в переписке. Telegram даёт править только

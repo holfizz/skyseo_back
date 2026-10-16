@@ -4,7 +4,8 @@ import { CampaignService } from '../tg-warmup/campaign.service';
 import { workspaceSnapshot } from '../tg-warmup/campaign-workspace';
 import { mskAt } from '../tg-warmup/msk';
 import { reusableUnsentRecipient } from '../tg-warmup/campaign-delivery';
-import { SECOND_MESSAGE } from '../tg-warmup/campaign-preset';
+import { containsDomainOrUrl } from '../common/domain';
+import { followUpKeywords, personalFollowUp } from '../tg-warmup/personal-followup';
 
 // Exercise the real sendOne catch branches with a fake Telegram transport.
 // No sessions, Telegram requests or database connections.
@@ -35,14 +36,32 @@ async function attempt(phase: 'connect' | 'send', message: string) {
 
 async function main() {
     const previews = Object.create(CampaignService.prototype) as any;
-    const reply = {firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'rival.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
+    const reply = {leadId:'lead',firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'wrong.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
+    previews.prisma={
+        outreachLead:{findUnique:async()=>({domain:'fixture.ru',importId:'import',import:{region:'Москва',createdAt:new Date('2026-08-30T12:00:00Z')}})},
+        serpRow:{findMany:async({where}:any)=>where.domain ? [{keyword:'стекло',position:6},{keyword:'стекло',position:28}] : [{keyword:'стекло',position:6,domain:'fixture.ru'},{keyword:'стекло',position:3,domain:'higher.ru'},{keyword:'стекло',position:10,domain:'lower.ru'}]},
+    };
     const personal='Тест, добрый вечер. По запросу «стекло» сайт fixture не найден в первых 50 результатах. Удобно созвониться?';
-    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:personal}),personal,'Use the approved dialog-specific draft without changing the assigned hypothesis');
-    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:'Посмотрите fixture.ru'}),null,'Prepared personalized text cannot bypass the link guard');
-    assert.equal(await previews.secondMessageFor(reply),SECOND_MESSAGE,'Missing positions must leave an available call invitation, without invented ranks');
-    assert.equal(await previews.secondMessageFor({...reply,leadVars:{...reply.leadVars,позиции:'«запрос»: 15 место'}}),'Сайт fixture: «запрос»: 15 место. Выше rival.','Complete personalized follow-up stays unchanged and strips domain suffixes');
-    assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:false,secondMessage:'disabled'}}),null,'Respect disabled second messages');
-    assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:true,secondMessage:'https://fixture.ru'}}),null,'Prepared replies must not use manual link permission');
+    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:personal}),personal,'Keep the approved personal draft');
+    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:'Посмотрите fixture.ru'}),null,'Prepared text cannot bypass the link guard');
+    const generated=await previews.secondMessageFor(reply);
+    assert.match(generated,/«стекло» вы на 6 месте/,'Top-10 data must not disappear');
+    assert.match(generated,/сохранено 30.08.2026/,'Do not call an old snapshot current');
+    assert.ok(generated.includes('higher')&&!generated.includes('lower')&&!generated.includes('wrong'),'Only use competitors actually above the selected keyword');
+    assert.ok(!generated.includes('28 месте'),'Use the best URL rank for each keyword');
+    assert.equal(containsDomainOrUrl(generated),false);
+    assert.equal(await previews.secondMessageFor({...reply,leadId:null}),null,'No generic fallback when real keyword data is missing');
+    assert.equal(await previews.secondMessageFor({...reply,domain:'another.ru'}),null,'Never use another website data');
+    assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:false}}),generated,'Manual personalized continuation is shared across all first-message hypotheses');
+    assert.deepEqual(followUpKeywords([{keyword:'best',position:1},{keyword:'growth',position:25},{keyword:'growth',position:15},{keyword:'bad',position:0}]),[{keyword:'growth',position:15},{keyword:'best',position:1}]);
+    assert.equal(personalFollowUp({domain:'fixture.ru',keywords:[],competitors:[]}),null);
+    const topOne=personalFollowUp({domain:'fixture.ru',keywords:[{keyword:'стекло',position:1}],competitors:[]})!;
+    assert.ok(topOne.includes('1 месте')&&!topOne.includes('выше'),'Do not invent competitors above the first place');
+    previews.prisma.serpRow.findMany=async({where}:any)=>where.domain
+        ? [{keyword:'рост',position:15},{keyword:'стекло',position:6}]
+        : [{keyword:'рост',position:10,domain:'first-rival.ru'},{keyword:'стекло',position:5,domain:'unrelated-rival.ru'}];
+    const multi=await previews.secondMessageFor(reply);
+    assert.ok(multi.includes('По «рост» выше вас first-rival')&&!multi.includes('unrelated-rival'),'Competitor evidence must match the query named in the comparison');
     const unsent = { status:'FAILED', error:'не хватает данных для текста: позиции', campaign:{status:'DONE'}, _count:{messages:0} };
     assert.equal(reusableUnsentRecipient(unsent),true);
     for (const patch of [{deliveryUnknown:true},{sentAt:new Date()},{sentMsgId:1},{sentMsgId:0},{accountId:'a'},

@@ -44,7 +44,7 @@ async function main() {
     assert.equal(await p.tgCampaign.count(), 0, 'Use an empty isolated test database');
     const now = new Date(), tomorrow = mskDayKey(mskAt(now, 0, 1)), later = mskDayKey(mskAt(now, 0, 2));
     assert.throws(() => validatedDay('2026-02-30', now));
-    const accounts: string[] = [], leads: string[] = [], retryHypotheses: string[] = [], retryCrm: string[] = [], prefix = randomUUID();
+    const accounts: string[] = [], leads: string[] = [], imports: string[] = [], retryHypotheses: string[] = [], retryCrm: string[] = [], prefix = randomUUID();
     const admin = await p.user.create({ data: { email: `campaign-${prefix}@example.invalid`, password: 'fixture', role: 'ADMIN', roles: ['ADMIN'], isActive: true } });
     const manager = await p.user.create({ data: { email: `campaign-manager-${prefix}@example.invalid`, password: 'fixture', role: 'MANAGER', roles: ['MANAGER'], isActive: true } });
     const proxy = await p.tgProxy.create({ data: { host: '127.0.0.1', port: 1, note: 'local-test-no-network' } });
@@ -86,6 +86,23 @@ async function main() {
         await p.tgAccount.update({where:{id:accounts[0]},data:{probe:{premium:true}}});
         for (let i = 0; i < 30; i++)
             leads.push((await p.outreachLead.create({ data: { domain: `local-test-${i}.invalid`, message: '', firstName: 'Тест', telegram: `@zz_cfixture_${prefix.slice(0, 8)}_${i}`, telegramManual: true } })).id);
+
+        const followupImport=await p.serpImport.create({data:{query:'Follow-up fixture',region:'Москва',createdAt:new Date('2026-08-30T12:00:00Z')}});
+        imports.push(followupImport.id);
+        await p.outreachLead.update({where:{id:leads[0]},data:{importId:followupImport.id}});
+        await p.serpRow.createMany({data:[
+            {keyword:'стекло',position:6,domain:'local-test-0.invalid'},
+            {keyword:'стекло',position:28,domain:'local-test-0.invalid'},
+            {keyword:'стекло',position:3,domain:'higher.invalid'},
+            {keyword:'стекло',position:10,domain:'lower.invalid'},
+        ].map(r=>({...r,importId:followupImport.id,url:'https://'+r.domain+'/fixture'}))});
+        const recipientCount=await p.tgRecipient.count();
+        const automatic=await service.secondMessageFor({leadId:leads[0],domain:'local-test-0.invalid',firstName:'Тест',hypothesis:{hasSecondMessage:false},leadVars:{позиции:'99 место'}});
+        assert.match(automatic,/«стекло» вы на 6 месте/);
+        assert.ok(automatic.includes('higher')&&!automatic.includes('lower')&&!automatic.includes('99 место'));
+        assert.ok(automatic.includes('сохранено 30.08.2026'));
+        assert.equal(await service.secondMessageFor({leadId:leads[1],domain:'local-test-1.invalid'}),null,'Never replace missing measurements with a generic SEO pitch');
+        assert.equal(await p.tgRecipient.count(),recipientCount,'Generating personalized previews is read-only');
 
         const draftCampaign=await p.tgCampaign.create({data:{name:'Personal follow-up fixture',firstMessage:'Тест'}});
         const draftRecipient=await p.tgRecipient.create({data:{campaignId:draftCampaign.id,username:'zz_personal_followup',status:'REPLIED',accountId:accounts[0],sentAt:now,sentMsgId:77}});
@@ -305,6 +322,7 @@ async function main() {
         await p.crmLead.deleteMany({where:{id:{in:retryCrm}}});
         await p.tgHypothesis.deleteMany({where:{id:{in:retryHypotheses}}});
         await p.outreachLead.deleteMany({ where: { id: { in: leads } } });
+        await p.serpImport.deleteMany({where:{id:{in:imports}}});
         await p.tgAccount.deleteMany({ where: { id: { in: accounts } } });
         await p.tgProxy.delete({ where: { id: proxy.id } });
         await p.user.deleteMany({ where: { id: { in: [admin.id, manager.id] } } });
