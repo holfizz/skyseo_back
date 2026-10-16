@@ -254,6 +254,11 @@ export class CampaignController {
 		return this.svc.dialogMessages(id, before ? Number(before) : undefined)
 	}
 
+	@Patch('recipients/:id/second-message')
+	secondMessageDraft(@Param('id') id: string, @Body() body: { text: string | null }) {
+		return this.svc.setSecondMessageDraft(id, body?.text)
+	}
+
 	/** Итог разговора и напоминание «написать позже». */
 	@Patch('recipients/:id/outcome')
 	setOutcome(@Param('id') id: string, @Body() body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {

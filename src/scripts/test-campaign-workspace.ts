@@ -87,6 +87,22 @@ async function main() {
         for (let i = 0; i < 30; i++)
             leads.push((await p.outreachLead.create({ data: { domain: `local-test-${i}.invalid`, message: '', firstName: 'Тест', telegram: `@zz_cfixture_${prefix.slice(0, 8)}_${i}`, telegramManual: true } })).id);
 
+        const draftCampaign=await p.tgCampaign.create({data:{name:'Personal follow-up fixture',firstMessage:'Тест'}});
+        const draftRecipient=await p.tgRecipient.create({data:{campaignId:draftCampaign.id,username:'zz_personal_followup',status:'REPLIED',accountId:accounts[0],sentAt:now,sentMsgId:77}});
+        const personalText='Тест, добрый вечер. По запросу «стекло» сайт fixture не найден в первых 50 результатах. Удобно созвониться?';
+        const draftUrl=`/recipients/${draftRecipient.id}/second-message`;
+        assert.equal((await req(draftUrl,{text:personalText},'PATCH',jwt.sign({sub:manager.id}))).status,403);
+        for(const text of ['fixture.ru','https://fixture.ru','Позиция {позиция}','', 'x'.repeat(4001)]) assert.equal((await req(draftUrl,{text},'PATCH')).status,400);
+        assert.equal((await req(draftUrl,{text:personalText},'PATCH')).status,200);
+        const savedDraft=await p.tgRecipient.findUniqueOrThrow({where:{id:draftRecipient.id},include:{campaign:true,hypothesis:true}});
+        assert.equal(savedDraft.secondMessageDraft,personalText);
+        assert.equal(await service.secondMessageFor(savedDraft),personalText);
+        assert.equal(savedDraft.status,'REPLIED');assert.equal(savedDraft.secondSentAt,null);assert.equal(savedDraft.hypothesisId,draftRecipient.hypothesisId);
+        assert.equal(await p.tgDialogMessage.count({where:{recipientId:draftRecipient.id}}),0,'Saving a prepared reply must never send or record an outgoing message');
+        await p.tgRecipient.update({where:{id:draftRecipient.id},data:{deliveryUnknown:true}});
+        assert.equal((await req(draftUrl,{text:personalText},'PATCH')).status,400);
+        await p.tgCampaign.delete({where:{id:draftCampaign.id}});
+
         const draft = await service.create({name:'Old single sender'});
         assert.equal(await p.tgCampaignAccount.count({where:{campaignId:draft.id}}),2,'Empty auto campaign selects all currently permitted senders');
         await service.setAccounts(draft.id,[accounts[0]]);

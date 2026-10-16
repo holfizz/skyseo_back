@@ -36,6 +36,9 @@ async function attempt(phase: 'connect' | 'send', message: string) {
 async function main() {
     const previews = Object.create(CampaignService.prototype) as any;
     const reply = {firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'rival.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
+    const personal='Тест, добрый вечер. По запросу «стекло» сайт fixture не найден в первых 50 результатах. Удобно созвониться?';
+    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:personal}),personal,'Use the approved dialog-specific draft without changing the assigned hypothesis');
+    assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:'Посмотрите fixture.ru'}),null,'Prepared personalized text cannot bypass the link guard');
     assert.equal(await previews.secondMessageFor(reply),SECOND_MESSAGE,'Missing positions must leave an available call invitation, without invented ranks');
     assert.equal(await previews.secondMessageFor({...reply,leadVars:{...reply.leadVars,позиции:'«запрос»: 15 место'}}),'Сайт fixture: «запрос»: 15 место. Выше rival.','Complete personalized follow-up stays unchanged and strips domain suffixes');
     assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:false,secondMessage:'disabled'}}),null,'Respect disabled second messages');

@@ -3156,7 +3156,23 @@ export class CampaignService {
 	 * же прогона парсера, конкурентов — из карточки. Если адресат добавлен
 	 * руками и лида за ним нет, остаётся заготовка: сочинять позиции нельзя.
 	 */
+	async setSecondMessageDraft(id: string, value: unknown) {
+		if (value !== null && (typeof value !== 'string' || !value.trim() || value.trim().length > 4000))
+			throw new BadRequestException('Укажите готовый текст второго сообщения до 4000 символов')
+		const text = typeof value === 'string' ? value.trim() : null
+		if (text && (containsDomainOrUrl(text) || /\{[^{}]+\}/.test(text)))
+			throw new BadRequestException('В заготовке нужны готовые данные и имена сайтов без ссылок и доменных зон')
+		const r = await this.prisma.tgRecipient.findUnique({ where: { id }, select: { id: true, sentAt: true, sentMsgId: true, deliveryUnknown: true } })
+		if (!r) throw new NotFoundException('Адресат не найден')
+		if (!r.sentAt || !r.sentMsgId || r.sentMsgId < 1 || r.deliveryUnknown)
+			throw new BadRequestException('Сначала должна быть подтверждена отправка первого сообщения')
+		await this.prisma.tgRecipient.update({ where: { id }, data: { secondMessageDraft: text } })
+		return { ok: true, secondPreview: text }
+	}
+
  private async secondMessageFor(r: any): Promise<string | null> {
+  // A prepared continuation belongs to this dialog, not to the first-message experiment.
+  if (r.secondMessageDraft) return !containsDomainOrUrl(r.secondMessageDraft) && !/\{[^{}]+\}/.test(r.secondMessageDraft) ? r.secondMessageDraft : null
   if (r.hypothesis) {
    if (!r.hypothesis.hasSecondMessage || !r.hypothesis.secondMessage) return null
    // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
