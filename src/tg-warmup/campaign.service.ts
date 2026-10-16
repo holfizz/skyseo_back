@@ -25,7 +25,7 @@ import { distributeDaily, type Allowance } from './warmup-plan'
 import { planQueue, startCursor, windowStart, slotCapacity, type PlanSlot } from './campaign-plan'
 import { mskAt, mskDayKey, mskHour } from './msk'
 import { workspaceSnapshot, validatedDay } from './campaign-workspace'
-import { confirmedDelivery, deliveryReason, recipientRejection, safeConnectionFallback } from './campaign-delivery'
+import { confirmedDelivery, deliveryReason, recipientRejection, reusableUnsentRecipient, safeConnectionFallback } from './campaign-delivery'
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 
@@ -52,6 +52,14 @@ import { keysOf, optOutReason, type StopKey } from './stop-list'
  */
 
 type SendVerdict = 'sent' | 'skipped' | 'failed'
+
+const reimportSelect = Prisma.validator<Prisma.TgRecipientSelect>()({
+	id: true, username: true, phone: true, status: true, sentAt: true, sentMsgId: true, accountId: true,
+	deliveryUnknown: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true,
+	outcome: true, error: true, hypothesisId: true, campaign: { select: { status: true } },
+	_count: { select: { messages: true } },
+})
+type ReimportRecipient = Prisma.TgRecipientGetPayload<{ select: typeof reimportSelect }>
 
 /** Картинка, приложенная к ответу руками. */
 export type OutPhoto = { buffer: Buffer; name: string; mime?: string | null }
@@ -1005,20 +1013,15 @@ export class CampaignService {
 				campaignId: { not: campaignId },
 				OR: [{ username: { in: keys } }, { phone: { in: keys } }],
 			},
-			select: {
-				id: true, username: true, phone: true, status: true, sentAt: true, accountId: true,
-				deliveryUnknown: true, campaign: { select: { status: true } },
-			},
+			select: reimportSelect,
 		})
-		// Исключение — брошенные: остались в очереди завершённой рассылки, и им
-		// ничего не отправлялось. Эту рассылку уже никто не запустит, так что
-		// считать их «разобранными» нельзя — такой контакт переносим сюда.
+		// Reuse the existing row only when the previous attempt provably never sent.
+		const retryPlans = await this.unsentRetryPlans(rows, contacted)
 		const written = new Set<string>()
 		const abandoned = new Map<string, string>()
 		for (const e of contacted) {
 			const keysOf = [e.username, e.phone].filter(Boolean) as string[]
-			const isAbandoned = e.campaign.status === 'DONE' && e.status === 'QUEUED'
-				&& !e.sentAt && !e.accountId && !e.deliveryUnknown
+			const isAbandoned = reusableUnsentRecipient(e) && (e.status !== 'FAILED' || retryPlans.has(e.id))
 			for (const k of keysOf) {
 				if (isAbandoned) { if (!abandoned.has(k)) abandoned.set(k, e.id) }
 				else written.add(k)
@@ -1079,18 +1082,30 @@ export class CampaignService {
 						throw new BadRequestException('Повторно добавляемый диалог уже связан с другим CRM-лидом')
 				}
 			}
-			await this.prisma.$transaction([
-				...move.map(r => this.prisma.tgRecipient.update({
-					where: { id: abandoned.get(r.username ?? r.phone)! },
-					data: {
-						campaignId, leadId: r.leadId, crmLeadId: r.crmLeadId,
-						firstName: r.firstName, middleName: r.middleName, lastName: r.lastName,
-						company: r.company, domain: r.domain,
-						scheduledAt: null, plannedAccountId: null, scheduleLocked: false, error: null,
-					},
-				})),
-				...(create.length ? [this.prisma.tgRecipient.createMany({ data: create })] : []),
-			])
+			await this.prisma.$transaction(async tx => {
+				for (const r of move) {
+					const id = abandoned.get(r.username ?? r.phone)!
+					const old = contacted.find(e => e.id === id)!
+					const retry = retryPlans.get(id)
+					const changed = await tx.tgRecipient.updateMany({
+						where: {
+							id, campaignId: { not: campaignId }, status: old.status, error: old.error,
+							sentAt: null, sentMsgId: null, accountId: null, deliveryUnknown: false,
+							readAt: null, repliedAt: null, secondSentAt: null, blockedAt: null, outcome: null,
+							messages: { none: {} }, ...(old.status === 'QUEUED' ? { campaign: { status: 'DONE' as const } } : {}),
+						},
+						data: {
+							campaignId, leadId: r.leadId, crmLeadId: r.crmLeadId,
+							firstName: r.firstName, middleName: r.middleName, lastName: r.lastName,
+							company: r.company, domain: r.domain,
+							status: 'QUEUED', ...(retry ?? {}),
+							scheduledAt: null, plannedAccountId: null, scheduleLocked: false, error: null,
+						},
+					})
+					if (changed.count !== 1) throw new BadRequestException('Адресат изменился во время возврата в очередь. Обновите список')
+				}
+				if (create.length) await tx.tgRecipient.createMany({ data: create })
+			})
 			// Добавили — сразу раскладываем по времени. Иначе новый адресат
 			// висел бы в календаре «без времени» до следующего запуска.
 			await this.buildSchedule(campaignId)
@@ -1109,14 +1124,42 @@ export class CampaignService {
 	 * они уже выверены, а начинать каждый раз с пустого поля — верный способ
 	 * запустить рассылку с недописанным текстом.
 	 */
+	/** Read-only retry preflight shared by capacity and import. */
+	private async unsentRetryPlans(rows: any[], existing: ReimportRecipient[]) {
+		const plans = new Map<string, { hypothesisId: string | null; leadVars: LeadVars }>()
+		const failed = existing.filter(r => r.status === 'FAILED' && reusableUnsentRecipient(r))
+		if (!failed.length) return plans
+		const variants = await this.activeHypotheses()
+		const failedContacts = new Set(failed.map(r => r.username ?? r.phone))
+		const relevant = rows.filter(r => failedContacts.has(r.username ?? r.phone))
+		const vars = await this.leadVarsFor([...new Set<string>(relevant.map(r => r.leadId).filter(Boolean))])
+		for (const old of failed) {
+			const row = rows.find(r => (r.username ?? r.phone) === (old.username ?? old.phone))
+			if (!row) continue
+			const leadVars = vars.get(row.leadId) ?? {}
+			const data = { ...row, leadVars }
+			// Prefer the original variant; fall back only to a currently enabled, renderable one.
+			const choices = variants.length ? [...variants].sort((a, b) => Number(b.id === old.hypothesisId) - Number(a.id === old.hypothesisId))
+				: [{ id: null, text: FIRST_MESSAGE }]
+			const chosen = choices.find(v => {
+				const text = refreshOpeningTemplate(v.text)
+				return missingPlaceholders(text, data).length === 0 && !containsDomainOrUrl(fillTemplate(text, data))
+			})
+			if (chosen) plans.set(old.id, { hypothesisId: chosen.id, leadVars })
+		}
+		return plans
+	}
+
 	/** Read-only daily capacity; no Telegram connections or warmup work. */
 	private async availableLeadCount() {
-		const leads = await this.prisma.outreachLead.findMany({ where: { telegramManual:true, telegram:{not:null}, OR:[{notes:null},{NOT:{notes:{contains:'дев-сид'}}}] }, select:{telegram:true} })
-		const candidates = leads.map(l=>parseContact(l.telegram)).filter(Boolean) as any[]
+		const leads = await this.prisma.outreachLead.findMany({ where: { telegramManual:true, telegram:{not:null}, OR:[{notes:null},{NOT:{notes:{contains:'дев-сид'}}}] },
+			select:{id:true,telegram:true,firstName:true,middleName:true,lastName:true,domain:true,companyName:true} })
+		const candidates = leads.flatMap(l => { const c = parseContact(l.telegram); return c ? [{...c,leadId:l.id,firstName:l.firstName,middleName:l.middleName,lastName:l.lastName,domain:l.domain,company:l.companyName}] : [] })
 		if (!candidates.length) return 0
 		const contacts = candidates.map(c=>c.username??c.phone)
-		const existing = await this.prisma.tgRecipient.findMany({ where:{OR:[{username:{in:contacts}},{phone:{in:contacts}}]}, select:{username:true,phone:true,status:true,sentAt:true,accountId:true,deliveryUnknown:true,campaign:{select:{status:true}}} })
-		const written = new Set(existing.filter(e=>!(e.campaign.status==='DONE'&&e.status==='QUEUED'&&!e.sentAt&&!e.accountId&&!e.deliveryUnknown)).flatMap(e=>[e.username,e.phone].filter(Boolean)))
+		const existing = await this.prisma.tgRecipient.findMany({ where:{OR:[{username:{in:contacts}},{phone:{in:contacts}}]}, select:reimportSelect })
+		const retryPlans = await this.unsentRetryPlans(candidates, existing)
+		const written = new Set(existing.filter(e=>!reusableUnsentRecipient(e) || (e.status==='FAILED'&&!retryPlans.has(e.id))).flatMap(e=>[e.username,e.phone].filter(Boolean)))
 		const stopped = await this.stopped(candidates), fresh = new Set<string>()
 		for (const c of candidates) {
 			const key = c.username??c.phone

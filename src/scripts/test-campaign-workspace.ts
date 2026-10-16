@@ -41,7 +41,7 @@ async function main() {
     assert.equal(await p.tgCampaign.count(), 0, 'Use an empty isolated test database');
     const now = new Date(), tomorrow = mskDayKey(mskAt(now, 0, 1)), later = mskDayKey(mskAt(now, 0, 2));
     assert.throws(() => validatedDay('2026-02-30', now));
-    const accounts: string[] = [], leads: string[] = [], prefix = randomUUID();
+    const accounts: string[] = [], leads: string[] = [], retryHypotheses: string[] = [], retryCrm: string[] = [], prefix = randomUUID();
     const admin = await p.user.create({ data: { email: `campaign-${prefix}@example.invalid`, password: 'fixture', role: 'ADMIN', roles: ['ADMIN'], isActive: true } });
     const manager = await p.user.create({ data: { email: `campaign-manager-${prefix}@example.invalid`, password: 'fixture', role: 'MANAGER', roles: ['MANAGER'], isActive: true } });
     const proxy = await p.tgProxy.create({ data: { host: '127.0.0.1', port: 1, note: 'local-test-no-network' } });
@@ -193,6 +193,60 @@ async function main() {
                 await p.tgCampaign.delete({where:{id:fallback.id}});
             }
         }
+        if (!process.argv.includes('--serve')) {
+            const originalVariants=service.activeHypotheses;
+            const variants=await Promise.all([
+                p.tgHypothesis.create({data:{name:'Retry original fixture',text:'{фио}, {позиции}',position:9000}}),
+                p.tgHypothesis.create({data:{name:'Retry compatible fixture',text:'{фио}, здравствуйте. Могу пообщаться по поводу {сайт}?',position:9001}}),
+            ]);
+            retryHypotheses.push(...variants.map(v=>v.id));
+            service.activeHypotheses=async()=>variants;
+            try {
+                const baseline=await service.availableLeadCount();
+                const previous=await p.tgCampaign.create({data:{name:'Unsent retry source',status:'DONE',firstMessage:'{фио}'}});
+                const cases:any[]=[
+                    {label:'positions'}, {label:'fixed_link',error:'ссылка или домен в тексте: отправка отменена'},
+                    {label:'updated_name',firstName:null},
+                    {label:'unknown',deliveryUnknown:true}, {label:'history',history:true},
+                    {label:'inbound',inbound:true}, {label:'paid',error:'ALLOW_PAYMENT_REQUIRED_2'},
+                    {label:'missing_name',noName:true}, {label:'restriction',error:'PEER_FLOOD'},
+                    {label:'sent_at',sentAt:now}, {label:'sent_id',sentMsgId:11},
+                    {label:'refused',outcome:'refused'}, {label:'blocked',blockedAt:now},
+                    {label:'sender',accountId:accounts[0]}, {label:'duplicate_sent',duplicate:true},
+                    {label:'stopped',status:'STOPPED'},
+                ];
+                const source:any[]=[];const recipientIds:string[]=[];
+                for (let i=0;i<cases.length;i++) {
+                    const {label,noName,history,inbound,duplicate,...patch}=cases[i];
+                    const username=`zz_retry_${prefix.slice(0,8)}_${i}`;
+                    const lead=await p.outreachLead.create({data:{domain:'retry-fixture.invalid',message:'',telegram:'@'+username,telegramManual:true,firstName:noName?null:'Тест'}});
+                    leads.push(lead.id);
+                    source.push({leadId:lead.id,username,phone:null,firstName:lead.firstName,domain:lead.domain});
+                    const r=await p.tgRecipient.create({data:{campaignId:previous.id,leadId:lead.id,username,firstName:'Тест',domain:lead.domain,status:'FAILED',attempts:1,error:'не хватает данных для текста: позиции',hypothesisId:variants[0].id,...patch}});
+                    recipientIds.push(r.id);
+                    if(history||inbound) await p.tgDialogMessage.create({data:{recipientId:r.id,tgId:1,out:!!history,text:'fixture',date:now}});
+                    if(duplicate) await p.tgRecipient.create({data:{campaignId:previous.id,username,status:'SENT',sentAt:now,sentMsgId:1}});
+                }
+                const crm=await p.crmLead.create({data:{title:'Retry fixture',outreachLeadId:source[0].leadId,sourceRecipientId:recipientIds[0]}});
+                retryCrm.push(crm.id);
+                await p.tgRecipient.update({where:{id:recipientIds[0]},data:{crmLeadId:crm.id}});
+                assert.equal(await service.availableLeadCount(),baseline+3,'Only corrected, renderable pre-send failures count as available');
+                const targets=await Promise.all(['A','B'].map(name=>p.tgCampaign.create({data:{name:'Retry target '+name,firstMessage:'{фио}',windowFrom:0,windowTo:24,sendDate:mskAt(now,0,1)}})));
+                const imports=await Promise.all(targets.map(c=>service.insertRecipients(c.id,source,20)));
+                assert.equal(imports.reduce((n,r)=>n+r.added,0),3,'Concurrent retries reserve each corrected contact once');
+                for(const id of recipientIds.slice(0,3)) {
+                    const row=await p.tgRecipient.findUniqueOrThrow({where:{id}});
+                    assert.ok(targets.some(c=>c.id===row.campaignId));
+                    assert.equal(row.status,'QUEUED');assert.equal(row.attempts,1,'Keep prior attempt count');
+                    assert.equal(row.hypothesisId,variants[1].id,'Use an enabled template with available real data');
+                    assert.equal(row.sentAt,null);assert.equal(row.error,null);
+                }
+                assert.equal((await p.crmLead.findUniqueOrThrow({where:{id:crm.id}})).sourceRecipientId,recipientIds[0]);
+                assert.equal((await p.tgRecipient.findUniqueOrThrow({where:{id:recipientIds[0]}})).crmLeadId,crm.id,'Preserve CRM links and recipient identity');
+                assert.equal(await service.availableLeadCount(),baseline);
+                assert.equal(await p.tgRecipient.count({where:{campaignId:previous.id}}),cases.length-3+1,'Unsafe and still incomplete records stay untouched');
+            } finally {service.activeHypotheses=originalVariants}
+        }
         const multi = planQueue(['one','two','three'],[{id:'a',quota:2,left:0,cursor:mskAt(now,24).getTime(),floor:0,day:0,readiness:80}],{windowFrom:0,windowTo:24,minIntervalSec:240,maxIntervalSec:1200},now,{maxDays:2,reservations:[{accountId:'a',at:mskAt(now,10,1),minIntervalSec:240}]});
         assert.equal([...multi.values()].filter(v=>mskDayKey(v.at)===tomorrow).length,1,'Multiday planning must honor tomorrow reservations of another campaign');
         console.log('Campaign workspace DB/API: authorization, empty day, exact reservations, excess confirmation, concurrent idempotency, transfer persistence/conflicts, unavailable sender, pause/resume, confirmed sends, unknown delivery, period analytics and read-only polling passed.');
@@ -206,6 +260,8 @@ async function main() {
     }
     finally {
         await p.tgCampaign.deleteMany();
+        await p.crmLead.deleteMany({where:{id:{in:retryCrm}}});
+        await p.tgHypothesis.deleteMany({where:{id:{in:retryHypotheses}}});
         await p.outreachLead.deleteMany({ where: { id: { in: leads } } });
         await p.tgAccount.deleteMany({ where: { id: { in: accounts } } });
         await p.tgProxy.delete({ where: { id: proxy.id } });

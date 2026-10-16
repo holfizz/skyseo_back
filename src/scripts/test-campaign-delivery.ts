@@ -3,6 +3,7 @@ import * as transport from '../tg-warmup/tg-client';
 import { CampaignService } from '../tg-warmup/campaign.service';
 import { workspaceSnapshot } from '../tg-warmup/campaign-workspace';
 import { mskAt } from '../tg-warmup/msk';
+import { reusableUnsentRecipient } from '../tg-warmup/campaign-delivery';
 
 // Exercise the real sendOne catch branches with a fake Telegram transport.
 // No sessions, Telegram requests or database connections.
@@ -32,6 +33,18 @@ async function attempt(phase: 'connect' | 'send', message: string) {
 }
 
 async function main() {
+    const unsent = { status:'FAILED', error:'не хватает данных для текста: позиции', campaign:{status:'DONE'}, _count:{messages:0} };
+    assert.equal(reusableUnsentRecipient(unsent),true);
+    for (const patch of [{deliveryUnknown:true},{sentAt:new Date()},{sentMsgId:1},{sentMsgId:0},{accountId:'a'},
+        {readAt:new Date()},{repliedAt:new Date()},{secondSentAt:new Date()},{blockedAt:new Date()},
+        {outcome:'refused'},{_count:{messages:1}},{status:'STOPPED'},
+        {error:'номер записан неверно'},{error:'ALLOW_PAYMENT_REQUIRED_2'},
+        {error:'PEER_FLOOD'},{error:'FLOOD_WAIT_100'},{error:'ECONNRESET'},{error:null}]) {
+        assert.equal(reusableUnsentRecipient({...unsent,...patch}),false,JSON.stringify(patch));
+    }
+    assert.equal(reusableUnsentRecipient({...unsent,status:'QUEUED',error:null}),true);
+    assert.equal(reusableUnsentRecipient({...unsent,status:'QUEUED',error:null,campaign:{status:'RUNNING'}}),false);
+    assert.equal(reusableUnsentRecipient({...unsent,status:'QUEUED',error:'PEER_FLOOD'}),false);
     for(const message of ['ALLOW_PAYMENT_REQUIRED_2','USERNAME_NOT_OCCUPIED','USER_PRIVACY_RESTRICTED']) {
         const r=await attempt('send',message);
         assert.equal(r.verdict,'skipped');
