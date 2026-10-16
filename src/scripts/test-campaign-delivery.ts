@@ -4,6 +4,7 @@ import { CampaignService } from '../tg-warmup/campaign.service';
 import { workspaceSnapshot } from '../tg-warmup/campaign-workspace';
 import { mskAt } from '../tg-warmup/msk';
 import { reusableUnsentRecipient } from '../tg-warmup/campaign-delivery';
+import { SECOND_MESSAGE } from '../tg-warmup/campaign-preset';
 
 // Exercise the real sendOne catch branches with a fake Telegram transport.
 // No sessions, Telegram requests or database connections.
@@ -33,6 +34,12 @@ async function attempt(phase: 'connect' | 'send', message: string) {
 }
 
 async function main() {
+    const previews = Object.create(CampaignService.prototype) as any;
+    const reply = {firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'rival.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
+    assert.equal(await previews.secondMessageFor(reply),SECOND_MESSAGE,'Missing positions must leave an available call invitation, without invented ranks');
+    assert.equal(await previews.secondMessageFor({...reply,leadVars:{...reply.leadVars,позиции:'«запрос»: 15 место'}}),'Сайт fixture: «запрос»: 15 место. Выше rival.','Complete personalized follow-up stays unchanged and strips domain suffixes');
+    assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:false,secondMessage:'disabled'}}),null,'Respect disabled second messages');
+    assert.equal(await previews.secondMessageFor({...reply,hypothesis:{hasSecondMessage:true,secondMessage:'https://fixture.ru'}}),null,'Prepared replies must not use manual link permission');
     const unsent = { status:'FAILED', error:'не хватает данных для текста: позиции', campaign:{status:'DONE'}, _count:{messages:0} };
     assert.equal(reusableUnsentRecipient(unsent),true);
     for (const patch of [{deliveryUnknown:true},{sentAt:new Date()},{sentMsgId:1},{sentMsgId:0},{accountId:'a'},

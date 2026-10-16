@@ -3161,13 +3161,15 @@ export class CampaignService {
    if (!r.hypothesis.hasSecondMessage || !r.hypothesis.secondMessage) return null
    // Данные по выдаче считаются при отправке; у старых адресатов их могло не быть.
    if (r.leadId && r.leadVars == null) r = { ...r, leadVars: (await this.leadVarsFor([r.leadId])).get(r.leadId) ?? {} }
-   // Без данных заготовка вышла бы с пустыми местами. Лучше без неё: напишет человек.
+   // Missing ranking data must not hide the continuation after a real reply.
+   // Use the approved call invitation without numeric claims in that case.
    const template = adaptTopTenClaim(
     usesLegacyReportOffer(r.hypothesis.secondMessage) ? SECOND_MESSAGE : r.hypothesis.secondMessage,
     r,
    )
-   if (missingPlaceholders(template, r).length) return null
-   return fillTemplate(template, r)
+   const prepared = missingPlaceholders(template, r).length ? SECOND_MESSAGE : template
+   const text = fillTemplate(prepared, r)
+   return text && !containsDomainOrUrl(text) ? text : null
   }
   // The variant is not assigned until sending. Do not show a different variant's follow-up.
   if (!r.sentAt && (await this.activeHypotheses()).length) return null
