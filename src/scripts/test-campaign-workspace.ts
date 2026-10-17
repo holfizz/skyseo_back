@@ -60,7 +60,7 @@ async function main() {
         assert.equal(empty.events.length, 0);
         assert.equal(empty.totals.sent, 0);
         for (let i = 0; i < 2; i++)
-            accounts.push((await p.tgAccount.create({ data: { label: `Тестовый отправитель ${i + 1}`, session: 'not-a-telegram-session', apiId: 1, apiHash: 'fixture', deviceModel: 'test', systemVersion: 'test', appVersion: 'test', langCode: 'ru', systemLangCode: 'ru', status: 'READY', mode: 'SEND', proxyId: proxy.id } })).id);
+            accounts.push((await p.tgAccount.create({ data: { label: `Тестовый отправитель ${i + 1}`, gender:'MALE', session: 'not-a-telegram-session', apiId: 1, apiHash: 'fixture', deviceModel: 'test', systemVersion: 'test', appVersion: 'test', langCode: 'ru', systemLangCode: 'ru', status: 'READY', mode: 'SEND', proxyId: proxy.id } })).id);
         const checkedAt=new Date(Date.now()-30*86400000), boughtAt=new Date(Date.now()-3*86400000);
         await p.tgAccount.updateMany({where:{id:{in:accounts}},data:{purchasedAt:boughtAt,probe:{premium:true},premiumCheckedAt:checkedAt}});
         premiumService.clientOptions=()=>{throw new Error('Premium tests must never connect to Telegram')};
@@ -97,13 +97,31 @@ async function main() {
             {keyword:'стекло',position:10,domain:'lower.invalid'},
         ].map(r=>({...r,importId:followupImport.id,url:'https://'+r.domain+'/fixture'}))});
         const recipientCount=await p.tgRecipient.count();
-        const automatic=await service.secondMessageFor({leadId:leads[0],domain:'local-test-0.invalid',firstName:'Тест',hypothesis:{hasSecondMessage:false},leadVars:{позиции:'99 место'}});
+        const automatic=await service.secondMessageFor({leadId:leads[0],domain:'local-test-0.invalid',firstName:'Тест',account:{gender:'MALE'},hypothesis:{hasSecondMessage:false},leadVars:{позиции:'99 место'}});
         assert.match(automatic,/«стекло» вы на 6 месте/);
         assert.ok(automatic.includes('higher')&&!automatic.includes('lower')&&!automatic.includes('99 место'));
         assert.ok(automatic.includes('Посмотрел сайт в Яндексе:'));
         assert.doesNotMatch(automatic,/сохраненн|сохранено|30\.08\.2026|Москва/);
         assert.equal(await service.secondMessageFor({leadId:leads[1],domain:'local-test-1.invalid'}),null,'Never replace missing measurements with a generic SEO pitch');
         assert.equal(await p.tgRecipient.count(),recipientCount,'Generating personalized previews is read-only');
+
+        const genderUrl=base+'/admin/warmup/accounts/'+accounts[0]+'/gender';
+        const genderRequest=(body?:unknown, auth=token)=>fetch(genderUrl,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+auth,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+        assert.equal((await genderRequest({gender:'FEMALE'},jwt.sign({sub:manager.id}))).status,403);
+        for(const gender of ['female','UNKNOWN',null,1]) assert.equal((await genderRequest({gender})).status,400);
+        assert.equal((await genderRequest({gender:'FEMALE'})).status,201);
+        assert.equal((await (await genderRequest()).json()).gender,'FEMALE');
+        // This account has no real Telegram session; changing gender never calls Telegram.
+        const genderCampaign=await p.tgCampaign.create({data:{name:'Gender fixture',firstMessage:'Смотрел {сайт}. По вашему сайту уже посмотрел позиции. Могу показать, что нашёл.'}});
+        try {
+            const r=await p.tgRecipient.create({data:{campaignId:genderCampaign.id,plannedAccountId:accounts[0],leadId:leads[0],firstName:'Тест',domain:'local-test-0.invalid'}});
+            const preview=await service.preview(r.id);
+            assert.match(preview.first,/Смотрела local-test-0/);assert.match(preview.first,/уже посмотрела/);assert.match(preview.first,/что нашла/);
+            assert.match(preview.second,/Посмотрела сайт/);
+            assert.equal(await p.tgDialogMessage.count({where:{recipientId:r.id}}),0);
+            assert.equal((await genderRequest({gender:'UNSPECIFIED'})).status,201);
+            const blocked=await service.preview(r.id);assert.equal(blocked.first,null);assert.ok(blocked.missing.includes('пол аккаунта'));
+        } finally {await p.tgCampaign.delete({where:{id:genderCampaign.id}});await genderRequest({gender:'MALE'})}
 
         const draftCampaign=await p.tgCampaign.create({data:{name:'Personal follow-up fixture',firstMessage:'Тест'}});
         const draftRecipient=await p.tgRecipient.create({data:{campaignId:draftCampaign.id,username:'zz_personal_followup',status:'REPLIED',accountId:accounts[0],sentAt:now,sentMsgId:77}});
@@ -112,7 +130,7 @@ async function main() {
         assert.equal((await req(draftUrl,{text:personalText},'PATCH',jwt.sign({sub:manager.id}))).status,403);
         for(const text of ['fixture.ru','https://fixture.ru','Позиция {позиция}','', 'x'.repeat(4001)]) assert.equal((await req(draftUrl,{text},'PATCH')).status,400);
         assert.equal((await req(draftUrl,{text:personalText},'PATCH')).status,200);
-        const savedDraft=await p.tgRecipient.findUniqueOrThrow({where:{id:draftRecipient.id},include:{campaign:true,hypothesis:true}});
+        const savedDraft=await p.tgRecipient.findUniqueOrThrow({where:{id:draftRecipient.id},include:{campaign:true,hypothesis:true,account:true}});
         assert.equal(savedDraft.secondMessageDraft,personalText);
         assert.equal(await service.secondMessageFor(savedDraft),personalText);
         assert.equal(savedDraft.status,'REPLIED');assert.equal(savedDraft.secondSentAt,null);assert.equal(savedDraft.hypothesisId,draftRecipient.hypothesisId);
@@ -217,7 +235,7 @@ async function main() {
         assert.equal(late.events.filter((e:any)=>e.state==='unassigned').length,2);
 
 
-        const lateAccount=await p.tgAccount.create({data:{label:'Late ready sender',session:'invalid-fixture',apiId:1,apiHash:'fixture',deviceModel:'test',systemVersion:'test',appVersion:'test',langCode:'ru',systemLangCode:'ru',mode:'BOTH',status:'READY',proxyId:proxy.id}});
+        const lateAccount=await p.tgAccount.create({data:{label:'Late ready sender',gender:'MALE',session:'invalid-fixture',apiId:1,apiHash:'fixture',deviceModel:'test',systemVersion:'test',appVersion:'test',langCode:'ru',systemLangCode:'ru',mode:'BOTH',status:'READY',proxyId:proxy.id}});
         accounts.push(lateAccount.id);denied.add(lateAccount.id);
         const warmup=Object.create(TgWarmupService.prototype) as any;warmup.prisma=p;warmup.allowancesFor=service.warmup.allowancesFor;
         await warmup.joinActiveCampaigns([lateAccount.id]);

@@ -23,6 +23,7 @@ import { mskAt, mskDayKey, mskMinuteOfDay } from './msk'
 import { GEO_SURVIVAL, scoreAccount, type AccountOrigin, type AccountTelemetry, type ScoreResult } from './warmup-score'
 import { estimateRegistration } from './account-age'
 import { activePremiumWhere, hasActivePremium, parsePremiumUntil } from './premium'
+import { hasSenderGender } from './sender-voice'
 
 const DAY_MS = 86400000
 
@@ -1495,6 +1496,20 @@ export class TgWarmupService {
 	}
 
 	// ── профиль в Telegram ───────────────────────────────────────────────────
+
+	async getGender(id: string) {
+		const account = await this.prisma.tgAccount.findUnique({ where: { id }, select: { gender: true } })
+		if (!account) throw new NotFoundException('Аккаунт не найден')
+		return account
+	}
+
+	/** Local metadata only: no Telegram session, proxy or profile RPC is needed. */
+	async setGender(id: string, value: unknown) {
+		if (value !== 'UNSPECIFIED' && !hasSenderGender(value)) throw new BadRequestException('Выберите пол аккаунта')
+		const account = await this.prisma.tgAccount.findUnique({ where: { id }, select: { id: true } })
+		if (!account) throw new NotFoundException('Аккаунт не найден')
+		return this.prisma.tgAccount.update({ where: { id }, data: { gender: value }, select: { gender: true } })
+	}
 
 	/** Текущий профиль прямо из Telegram: «о себе» и день рождения у нас не хранятся. */
 	async getProfile(id: string) {

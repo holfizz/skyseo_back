@@ -29,6 +29,7 @@ import { confirmedDelivery, deliveryReason, recipientRejection, reusableUnsentRe
 import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloading } from './media'
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 import { followUpKeywords, personalFollowUp } from './personal-followup'
+import { hasSenderGender, senderVoice } from './sender-voice'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -364,7 +365,7 @@ function missingForCampaign(campaign: any, recipient: any): string[] {
 }
 
 export function maySend(acc: any, allow: { allowOutgoing: boolean } | null): boolean {
-	return !!allow?.allowOutgoing
+	return !!allow?.allowOutgoing && hasSenderGender(acc.gender)
 }
 
 /** Аккаунты, которые действительно могут забрать назначенного на сегодня адресата. */
@@ -1214,7 +1215,7 @@ export class CampaignService {
 			const timeSlots = Math.max(0, Math.ceil((mskAt(day, windowTo).getTime() - start - margin) / (Math.max(30, last?.minIntervalSec ?? 240) * 1000)))
 			return { id: a.id, label: a.label || a.tgUserId || 'Аккаунт', limit, spent, reserved,
 				available: Math.min(Math.max(0, remaining - reserved), timeSlots),
-				reason: blocked ? allow?.notes?.[0] || 'Исходящие недоступны' : timeSlots === 0 ? 'Окно или пауза' : remaining <= reserved ? 'Норма занята' : null }
+				reason: blocked ? !hasSenderGender(a.gender) ? 'Выберите пол аккаунта в профиле' : allow?.notes?.[0] || 'Исходящие недоступны' : timeSlots === 0 ? 'Окно или пауза' : remaining <= reserved ? 'Норма занята' : null }
 		})
 		// A recipient reserves exactly one slot, never one slot on every account.
 		let unreserved = 0
@@ -1423,6 +1424,7 @@ export class CampaignService {
 			include: { account: true },
 		})
 		if (!links.length) return 'К рассылке не привязан ни один аккаунт.'
+		if (links.every(l => !hasSenderGender(l.account.gender))) return 'Выберите пол аккаунтов в профиле для рассылки'
 
 		let canSend = 0
 		let spamPaused = 0
@@ -1432,7 +1434,7 @@ export class CampaignService {
 			const dead = a.status === 'BANNED' || a.status === 'ERROR' || a.status === 'PAUSED'
 			const linkPaused = !!(l.pausedUntil && l.pausedUntil > now)
 			const allow = dead ? null : await this.warmup.allowanceFor(a, 0)
-			if (!dead && !linkPaused && allow?.allowOutgoing) { canSend++; continue }
+			if (!dead && !linkPaused && maySend(a, allow)) { canSend++; continue }
 			const spam = String(a.lastError ?? '').startsWith('PEER_FLOOD')
 				|| ['temporary', 'permanent'].includes(String((a.probe as any)?.spamBlock ?? ''))
 			if (spam || linkPaused) {
@@ -1471,7 +1473,7 @@ export class CampaignService {
 			const a = l.account
 			if (a.status === 'BANNED' || a.status === 'ERROR' || a.status === 'PAUSED') continue
 			const allow = await this.warmup.allowanceFor(a, 0)
-			if (allow.allowOutgoing) usable++
+			if (maySend(a, allow)) usable++
 		}
 		if (!usable) return 'ни один аккаунт не может отправлять — проверьте статусы и спам-блок'
 
@@ -1620,8 +1622,8 @@ export class CampaignService {
 						status: true, windowFrom: true, windowTo: true,
 					},
 				},
-				plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
-				account: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+				plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true, gender: true } },
+				account: { select: { id: true, label: true, avatar: true, tgUserId: true, gender: true } },
 			},
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
@@ -1629,6 +1631,9 @@ export class CampaignService {
 		r.campaign.hypotheses = await this.activeHypotheses()
 		const firstTemplate = refreshOpeningTemplate(r.hypothesis?.text ?? r.campaign.hypotheses[0]?.text ?? r.campaign.firstMessage)
 		const missing = r.hypothesis ? missingPlaceholders(firstTemplate, r) : missingForCampaign(r.campaign, r)
+
+		const voicedFirst = senderVoice(firstTemplate, (r.account ?? r.plannedAccount)?.gender)
+		if (voicedFirst === null) missing.push('пол аккаунта')
 
 		/*
 		 * Почему до сих пор не ушло, если время прошло.
@@ -1687,7 +1692,7 @@ export class CampaignService {
 			// Чего не хватает для подстановки. Пока не хватает — не уйдёт вовсе.
 			missing,
 			hypothesisNote: r.hypothesis ? `Гипотеза: ${r.hypothesis.name}` : r.campaign.hypotheses.length ? 'Пример первого варианта. Вариант будет назначен равномерно при отправке.' : null,
-			first: missing.length ? null : fillTemplate(firstTemplate, r),
+			first: missing.length || voicedFirst === null ? null : fillTemplate(voicedFirst, r),
 			// Второе не уходит само: его отправляет человек из переписки, после
 			// ответа. Показываем целиком — с позициями и конкурентами, ровно
 			// так, как оно уйдёт.
@@ -2327,7 +2332,15 @@ export class CampaignService {
 			})
 			return 'skipped'
 		}
-		const text = fillTemplate(variantText, recipient)
+		const current = await this.prisma.tgAccount.findUnique({ where: { id: account.id }, select: { gender: true } })
+		const voiced = senderVoice(variantText, current?.gender)
+		if (!hasSenderGender(current?.gender) || voiced === null) {
+			await this.prisma.tgRecipient.update({ where: { id: recipient.id }, data: {
+				status: 'QUEUED', sentAt: null, accountId: null, error: 'Выберите пол аккаунта в профиле',
+			} })
+			return 'skipped'
+		}
+		const text = fillTemplate(voiced, recipient)
 		if (containsDomainOrUrl(text)) {
 			await this.prisma.tgRecipient.update({
 				where: { id: recipient.id },
@@ -3086,7 +3099,7 @@ export class CampaignService {
 			include: {
 				hypothesis: true,
 				campaign: { select: { id: true, name: true, secondMessage: true } },
-				account: { select: { id: true, label: true, username: true, status: true } },
+				account: { select: { id: true, label: true, username: true, status: true, gender: true } },
 			},
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
@@ -3165,16 +3178,16 @@ export class CampaignService {
 		const text = typeof value === 'string' ? value.trim() : null
 		if (text && (containsDomainOrUrl(text) || /\{[^{}]+\}/.test(text)))
 			throw new BadRequestException('В заготовке нужны готовые данные и имена сайтов без ссылок и доменных зон')
-		const r = await this.prisma.tgRecipient.findUnique({ where: { id }, select: { id: true, sentAt: true, sentMsgId: true, deliveryUnknown: true } })
+		const r = await this.prisma.tgRecipient.findUnique({ where: { id }, select: { id: true, sentAt: true, sentMsgId: true, deliveryUnknown: true, account: { select: { gender: true } } } })
 		if (!r) throw new NotFoundException('Адресат не найден')
 		if (!r.sentAt || !r.sentMsgId || r.sentMsgId < 1 || r.deliveryUnknown)
 			throw new BadRequestException('Сначала должна быть подтверждена отправка первого сообщения')
 		await this.prisma.tgRecipient.update({ where: { id }, data: { secondMessageDraft: text } })
-		return { ok: true, secondPreview: text }
+		return { ok: true, secondPreview: text ? senderVoice(text, r.account?.gender) : null }
 	}
 
  private async secondMessageFor(r: any): Promise<string | null> {
-  if (r.secondMessageDraft) return !containsDomainOrUrl(r.secondMessageDraft) && !/\{[^{}]+\}/.test(r.secondMessageDraft) ? r.secondMessageDraft : null
+  if (r.secondMessageDraft) return !containsDomainOrUrl(r.secondMessageDraft) && !/\{[^{}]+\}/.test(r.secondMessageDraft) ? senderVoice(r.secondMessageDraft, (r.account ?? r.plannedAccount)?.gender) : null
   if (!r.leadId) return null
   const lead = await this.prisma.outreachLead.findUnique({
    where: { id: r.leadId },
@@ -3192,6 +3205,7 @@ export class CampaignService {
   })
   return personalFollowUp({
    domain: lead.domain, firstName: r.firstName || lead.firstName, middleName: r.middleName || lead.middleName,
+   senderGender: (r.account ?? r.plannedAccount)?.gender ?? 'UNSPECIFIED',
    keywords, competitors: pickCompetitors([], pool, lead.domain, keywords.slice(0, 1)),
   })
  }
@@ -4165,7 +4179,7 @@ export class CampaignService {
 					orderBy: { scheduledAt: 'asc' },
 					select: {
 						scheduledAt: true, firstName: true, lastName: true, company: true, username: true, phone: true,
-						plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true } },
+						plannedAccount: { select: { id: true, label: true, avatar: true, tgUserId: true, gender: true } },
 					},
 				}),
 				this.prisma.tgRecipient.groupBy({
@@ -4780,6 +4794,7 @@ export class CampaignService {
 		if (!account) throw new NotFoundException('Аккаунт не найден')
 
         const allowance=await this.warmup.allowanceFor(account,0)
+        if (!hasSenderGender(account.gender)) throw new BadRequestException('Выберите пол аккаунта в профиле')
         if (!maySend(account,allowance) || ['BANNED','ERROR','PAUSED'].includes(account.status)) throw new BadRequestException(allowance.notes[0] ?? 'Отправки недоступны')
 
 		const handle = String(target ?? '').trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '')
@@ -4797,7 +4812,9 @@ export class CampaignService {
         const template = assigned?.text ?? (await this.activeHypotheses())[0]?.text ?? c.firstMessage
         const missing = missingPlaceholders(template, data)
         if (missing.length) throw new BadRequestException(`Не хватает данных: ${missing.join(', ')}`)
-		const text = fillTemplate(template, data as any)
+		const voiced = senderVoice(template, account.gender)
+		if (voiced === null) throw new BadRequestException('Выберите пол аккаунта в профиле')
+		const text = fillTemplate(voiced, data as any)
 		if (containsDomainOrUrl(text)) throw new BadRequestException('Тестовое сообщение содержит ссылку или полный домен')
 
 		if (!(await this.warmup.claimAccount(account.id, 'send', 120))) {

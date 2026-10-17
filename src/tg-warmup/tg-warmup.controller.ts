@@ -93,6 +93,16 @@ export class TgWarmupController {
 		return this.svc.setPremiumUntil(id, body?.until)
 	}
 
+	@Get('accounts/:id/gender')
+	gender(@Param('id') id: string) {
+		return this.svc.getGender(id)
+	}
+
+	@Post('accounts/:id/gender')
+	setGender(@Param('id') id: string, @Body() body: { gender?: unknown }) {
+		return this.svc.setGender(id, body?.gender)
+	}
+
 	/**
 	 * Загрузка сессий. Ограничение по размеру задано явно: у multer его по
 	 * умолчанию нет вовсе, и архив на гигабайт лёг бы целиком в память.

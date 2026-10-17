@@ -9,34 +9,34 @@ import { followUpKeywords, personalFollowUp } from '../tg-warmup/personal-follow
 
 // Exercise the real sendOne catch branches with a fake Telegram transport.
 // No sessions, Telegram requests or database connections.
-async function attempt(phase: 'connect' | 'send', message: string) {
-    const changes: any[] = [], pauses: any[] = [];
+async function attempt(phase: 'connect' | 'send', message: string, gender = 'MALE', template = 'Здравствуйте') {
+    const changes: any[] = [], pauses: any[] = [], outgoing: string[] = [];
     const original = transport.withClient;
     (transport as any).withClient = async (_: any, fn: any) => {
         if (phase === 'connect') throw new Error(message);
-        return fn({sendMessage: async () => {throw new Error(message)}});
+        return fn({sendMessage: async (_peer:any, body:any) => {outgoing.push(body.message);throw new Error(message)}});
     };
     const s = Object.create(CampaignService.prototype) as any;
     s.prisma = {
         tgRecipient: {findFirst:async()=>null,update:async(x:any)=>{changes.push(x.data);return x.data}},
-        tgAccount:{updateMany:async()=>({count:1})},
+        tgAccount:{findUnique:async()=>({gender}),updateMany:async()=>({count:1})},
     };
     s.logger = {warn:()=>{}};
     s.stopReason = async()=>null;
-    s.hypothesisText = async()=> 'Здравствуйте';
+    s.hypothesisText = async()=> template;
     s.resolvePeer = async()=>({entity:'fake',userId:'1'});
     s.warmup = {clientOptions:()=>({}),applyFailure:async()=>{}};
     s.pauseAccount = async(...args:any[])=>pauses.push(args);
     s.notifyAdmin = async()=>{};
     try {
         const verdict = await s.sendOne({id:'c',name:'test',firstMessage:'Здравствуйте'}, {id:'l'}, {id:'a'}, {id:'r',username:'fake',scheduleLocked:false});
-        return {verdict,row:changes.at(-1),pauses};
+        return {verdict,row:changes.at(-1),pauses,outgoing};
     } finally {(transport as any).withClient=original}
 }
 
 async function main() {
     const previews = Object.create(CampaignService.prototype) as any;
-    const reply = {leadId:'lead',firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'wrong.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
+    const reply = {account:{gender:'MALE'},leadId:'lead',firstName:'Тест',domain:'fixture.ru',leadVars:{конкуренты:'wrong.ru'},hypothesis:{hasSecondMessage:true,secondMessage:'Сайт {сайт}: {позиции}. Выше {конкуренты}.'}};
     previews.prisma={
         outreachLead:{findUnique:async()=>({domain:'fixture.ru',importId:'import',import:{region:'Москва',createdAt:new Date('2026-08-30T12:00:00Z')}})},
         serpRow:{findMany:async({where}:any)=>where.domain ? [{keyword:'стекло',position:6},{keyword:'стекло',position:28}] : [{keyword:'стекло',position:6,domain:'fixture.ru'},{keyword:'стекло',position:3,domain:'higher.ru'},{keyword:'стекло',position:10,domain:'lower.ru'}]},
@@ -45,6 +45,8 @@ async function main() {
     assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:personal}),personal,'Keep the approved personal draft');
     assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:'Посмотрите fixture.ru'}),null,'Prepared text cannot bypass the link guard');
     const generated=await previews.secondMessageFor(reply);
+    assert.match(await previews.secondMessageFor({...reply,account:{gender:'FEMALE'}}),/Посмотрела сайт/);
+    assert.equal(await previews.secondMessageFor({...reply,account:{gender:'UNSPECIFIED'}}),null);
     assert.match(generated,/«стекло» вы на 6 месте/,'Top-10 data must not disappear');
     assert.match(generated,/Посмотрел сайт в Яндексе:/,'Use the approved outreach wording');
     assert.doesNotMatch(generated,/сохраненн|сохранено|30\.08\.2026|Москва/,'Import metadata must not be presented as a measurement date');
@@ -94,6 +96,10 @@ async function main() {
         assert.equal(r.row.sentAt,null);
         assert.notEqual(r.row.plannedAccountId,null,'Telegram restriction must not rotate sender');
     }
+    const femaleSend=await attempt('send','USERNAME_NOT_OCCUPIED','FEMALE','Смотрел сайт, нашел возможности. Могу показать, что нашёл.');
+    assert.deepEqual(femaleSend.outgoing,['Смотрела сайт, нашла возможности. Могу показать, что нашла.']);
+    const unconfigured=await attempt('send','ECONNRESET','UNSPECIFIED','Смотрел сайт.');
+    assert.deepEqual(unconfigured.outgoing,[]);assert.equal(unconfigured.row.status,'QUEUED');assert.equal(unconfigured.row.sentAt,null);
     const now=new Date(), day=mskAt(now,0);
     const c={id:'c',name:'test',status:'RUNNING',windowFrom:0,windowTo:24,minIntervalSec:60,accounts:[]};
     const base={campaignId:'c',status:'SENT',scheduledAt:now,sentAt:now,createdAt:now};

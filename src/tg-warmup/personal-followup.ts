@@ -1,3 +1,4 @@
+import { hasSenderGender, type SenderGender } from './sender-voice'
 import { containsDomainOrUrl, domainName } from '../common/domain'
 import { normalizeName } from '../common/normalize-name'
 import type { MessageCompetitor, MessageKeyword } from '../outreach/outreach-message'
@@ -16,8 +17,10 @@ export function followUpKeywords(rows: MessageKeyword[]): MessageKeyword[] {
 
 export function personalFollowUp(input: {
 	domain: string; firstName?: string | null; middleName?: string | null;
-	keywords: MessageKeyword[]; competitors: MessageCompetitor[];
+	keywords: MessageKeyword[]; competitors: MessageCompetitor[]; senderGender?: SenderGender;
 }): string | null {
+	const gender = input.senderGender ?? 'MALE'
+	if (!hasSenderGender(gender)) return null
 	const site = domainName(input.domain), keywords = followUpKeywords(input.keywords)
 	if (!site || !keywords.length) return null
 	const name = [input.firstName, input.middleName].map(normalizeName).filter(Boolean).join(' ')
@@ -27,7 +30,7 @@ export function personalFollowUp(input: {
 	const text = [
 		name ? `${name}, добрый день.` : 'Здравствуйте.',
 		`Правильно понимаю, что хотелось бы получать с ${site} больше заявок из поиска?`,
-		`Посмотрел сайт в Яндексе: ${positions}.${rivals.length ? ` По «${keywords[0].keyword}» выше вас ${rivals.join(' и ')}.` : ''}`,
+		`${gender === 'FEMALE' ? 'Посмотрела' : 'Посмотрел'} сайт в Яндексе: ${positions}.${rivals.length ? ` По «${keywords[0].keyword}» выше вас ${rivals.join(' и ')}.` : ''}`,
 		'Занимаюсь SEO и продвижением в нейросетях. Могу на коротком созвоне показать позиции сайта, конкурентов и что можно улучшить в первую очередь.',
 		'Удобно будет на 10-15 минут созвониться?',
 	].join('\n\n').replace(/ё/g, 'е').replace(/Ё/g, 'Е').replace(/[—–]/g, '-')

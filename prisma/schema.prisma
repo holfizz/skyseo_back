@@ -1327,6 +1327,12 @@ model TgProxy {
   @@map("tg_proxies")
 }
 
+enum TgAccountGender {
+  UNSPECIFIED
+  MALE
+  FEMALE
+}
+
 model TgAccount {
   restrictedUntil DateTime?
   premiumCheckedAt DateTime?
@@ -1340,6 +1346,7 @@ model TgAccount {
   username  String?
   firstName String?
   lastName  String?
+  gender    TgAccountGender @default(UNSPECIFIED)
 
   // Строковая сессия, зашифрованная aes-256-gcm (см. src/common/secrets.ts).
   // Файл сессии — это полный доступ к аккаунту, в открытом виде не хранится.
