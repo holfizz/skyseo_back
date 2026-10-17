@@ -100,7 +100,8 @@ async function main() {
         const automatic=await service.secondMessageFor({leadId:leads[0],domain:'local-test-0.invalid',firstName:'Тест',hypothesis:{hasSecondMessage:false},leadVars:{позиции:'99 место'}});
         assert.match(automatic,/«стекло» вы на 6 месте/);
         assert.ok(automatic.includes('higher')&&!automatic.includes('lower')&&!automatic.includes('99 место'));
-        assert.ok(automatic.includes('сохранено 30.08.2026'));
+        assert.ok(automatic.includes('Посмотрел сайт в Яндексе:'));
+        assert.doesNotMatch(automatic,/сохраненн|сохранено|30\.08\.2026|Москва/);
         assert.equal(await service.secondMessageFor({leadId:leads[1],domain:'local-test-1.invalid'}),null,'Never replace missing measurements with a generic SEO pitch');
         assert.equal(await p.tgRecipient.count(),recipientCount,'Generating personalized previews is read-only');
 

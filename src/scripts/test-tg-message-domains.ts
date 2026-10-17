@@ -28,7 +28,8 @@ assert.equal(fromOldVars, 'Выше rival и rival и other')
 assert.equal(containsDomainOrUrl(fromOldVars), false)
 
 const followUp = buildOutreachMessage({ domain: recipient.domain, firstName: recipient.firstName, middleName: recipient.middleName, keywords, competitors })
-assert.match(followUp, /выше вас rival и other/)
+assert.match(followUp, /Выше вас rival и other/)
+assert.doesNotMatch(followUp, /сохраненной выдаче|сохранено \d/)
 assert.equal(containsDomainOrUrl(followUp), false)
 
 // H5's manually sent continuation must use real saved positions and stripped

@@ -89,9 +89,9 @@ export function buildOutreachMessage(input: MessageInput): string {
 
 	const rivals = input.competitors.slice(0, 2)
 	if (rivals.length >= 2) {
-		blocks.push(`В сохраненной выдаче выше вас ${domainName(rivals[0].domain)} и ${domainName(rivals[1].domain)}.`)
+		blocks.push(`Выше вас ${domainName(rivals[0].domain)} и ${domainName(rivals[1].domain)}.`)
 	} else if (rivals.length === 1) {
-		blocks.push(`В сохраненной выдаче выше вас ${domainName(rivals[0].domain)}.`)
+		blocks.push(`Выше вас ${domainName(rivals[0].domain)}.`)
 	}
 
 	blocks.push('Я занимаюсь SEO и видимостью сайтов в ответах нейросетей. По вашему сайту видимость в нейропоиске пока отдельно не проверял.')

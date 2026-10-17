@@ -3178,7 +3178,7 @@ export class CampaignService {
   if (!r.leadId) return null
   const lead = await this.prisma.outreachLead.findUnique({
    where: { id: r.leadId },
-   select: { domain: true, importId: true, firstName: true, middleName: true, import: { select: { region: true, createdAt: true } } },
+   select: { domain: true, importId: true, firstName: true, middleName: true },
   })
   if (!lead?.importId || (r.domain && displayDomain(r.domain) !== displayDomain(lead.domain))) return null
   const rows = await this.prisma.serpRow.findMany({
@@ -3193,7 +3193,6 @@ export class CampaignService {
   return personalFollowUp({
    domain: lead.domain, firstName: r.firstName || lead.firstName, middleName: r.middleName || lead.middleName,
    keywords, competitors: pickCompetitors([], pool, lead.domain, keywords.slice(0, 1)),
-   region: lead.import?.region, savedAt: lead.import?.createdAt,
   })
  }
 

@@ -46,7 +46,8 @@ async function main() {
     assert.equal(await previews.secondMessageFor({...reply,secondMessageDraft:'Посмотрите fixture.ru'}),null,'Prepared text cannot bypass the link guard');
     const generated=await previews.secondMessageFor(reply);
     assert.match(generated,/«стекло» вы на 6 месте/,'Top-10 data must not disappear');
-    assert.match(generated,/сохранено 30.08.2026/,'Do not call an old snapshot current');
+    assert.match(generated,/Посмотрел сайт в Яндексе:/,'Use the approved outreach wording');
+    assert.doesNotMatch(generated,/сохраненн|сохранено|30\.08\.2026|Москва/,'Import metadata must not be presented as a measurement date');
     assert.ok(generated.includes('higher')&&!generated.includes('lower')&&!generated.includes('wrong'),'Only use competitors actually above the selected keyword');
     assert.ok(!generated.includes('28 месте'),'Use the best URL rank for each keyword');
     assert.equal(containsDomainOrUrl(generated),false);
