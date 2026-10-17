@@ -121,6 +121,36 @@ async function main() {
         assert.equal((await req(draftUrl,{text:personalText},'PATCH')).status,400);
         await p.tgCampaign.delete({where:{id:draftCampaign.id}});
 
+        // Regression: a full page of old replies must not hide today's first sends.
+        const inboxCampaign = await p.tgCampaign.create({data:{name:'Inbox ordering fixture',firstMessage:'Тест'}});
+        try {
+            const old = new Date(now.getTime()-86400000);
+            await p.tgRecipient.createMany({data:Array.from({length:35},(_,i)=>({
+                campaignId:inboxCampaign.id,username:`old_reply_${i}`,status:'REPLIED' as const,
+                sentAt:old,repliedAt:old,
+            }))});
+            const fresh=await p.tgRecipient.create({data:{campaignId:inboxCampaign.id,username:'fresh_outgoing',status:'SENT',sentAt:now,sentMsgId:1}});
+            const messageOnly=await p.tgRecipient.create({data:{campaignId:inboxCampaign.id,username:'message_only',messages:{create:{tgId:1,out:false,text:'Hello',date:new Date(now.getTime()+1000)}}}});
+            const followup=await p.tgRecipient.create({data:{campaignId:inboxCampaign.id,username:'fresh_followup',status:'SECOND_SENT',sentAt:old,secondSentAt:new Date(now.getTime()+2000)}});
+            const incoming=await p.tgRecipient.create({data:{campaignId:inboxCampaign.id,username:'fresh_reply',status:'REPLIED',sentAt:old,repliedAt:old,messages:{create:{tgId:2,out:false,text:'Reply',date:new Date(now.getTime()+3000)}}}});
+            await p.tgRecipient.create({data:{campaignId:inboxCampaign.id,username:'not_sent_yet'}});
+            const list=(await req('/conversations?limit=30')).data;
+            assert.equal(list.rows.length,30);assert.equal(list.more,true);
+            assert.deepEqual(list.rows.slice(0,4).map((r:any)=>r.id),[incoming.id,followup.id,messageOnly.id,fresh.id]);
+            assert.equal(list.counts.all,39);assert.equal(list.counts.replied,36);
+            const small=(await req('/conversations?limit=2')).data;
+            assert.deepEqual(small.rows.map((r:any)=>r.id),[incoming.id,followup.id]);
+            assert.equal(small.more,true);
+            const replied=(await req('/conversations?replied=1&limit=2')).data;
+            assert.equal(replied.rows[0].id,incoming.id);assert.ok(replied.rows.every((r:any)=>r.repliedAt));
+            const waiting=(await req('/conversations?waiting=1')).data;
+            assert.deepEqual(waiting.rows.map((r:any)=>r.id),[incoming.id]);
+            const search=(await req('/conversations?q=fresh_outgoing')).data;
+            assert.deepEqual(search.rows.map((r:any)=>r.id),[fresh.id]);assert.equal(search.more,false);
+            assert.equal((await service.conversations({q:"' OR true --"})).rows.length,0,'Search stays parameterized');
+            assert.equal(await p.tgRecipient.count({where:{campaignId:inboxCampaign.id}}),40,'Polling must not modify recipients');
+        } finally { await p.tgCampaign.delete({where:{id:inboxCampaign.id}}) }
+
         const draft = await service.create({name:'Old single sender'});
         assert.equal(await p.tgCampaignAccount.count({where:{campaignId:draft.id}}),2,'Empty auto campaign selects all currently permitted senders');
         await service.setAccounts(draft.id,[accounts[0]]);

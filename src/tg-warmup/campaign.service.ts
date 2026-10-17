@@ -3987,8 +3987,8 @@ export class CampaignService {
 	 * Переписка — это тот, кому уже написали хотя бы первое касание, или тот,
 	 * от кого есть входящее. Свежие сверху: считаем «последнюю активность» как
 	 * максимум из времени отправки, второго касания, ответа и последнего
-	 * сообщения в ленте, и по нему сортируем. Ответившие всплывают наверх сами
-	 * — их repliedAt свежее любого нашего исходящего.
+	 * сообщения в ленте, и по нему сортируем до выбора страницы. Новое первое
+	 * сообщение поднимает диалог так же, как новый ответ собеседника.
 	 */
 	async conversations(opts: { limit?: number; q?: string; onlyReplied?: boolean; waiting?: boolean } = {}) {
 		const take = Math.max(1, Math.min(300, Math.round(opts.limit ?? 30)))
@@ -3996,8 +3996,6 @@ export class CampaignService {
 
 		// База: написали первое ИЛИ есть хоть одно сообщение в ленте.
 		const base: any = { OR: [{ sentAt: { not: null } }, { messages: { some: {} } }] }
-		const where: any = { ...base }
-		if (opts.onlyReplied) where.repliedAt = { not: null }
 
 		/*
 		 * «Ждут ответа» — те, у кого ПОСЛЕДНЕЕ сообщение входящее: мяч на нашей
@@ -4032,32 +4030,40 @@ export class CampaignService {
 				LIMIT 1
 			) = false
 		`
-		if (opts.waiting) where.id = { in: waiting.map(r => r.id) }
+		const filters = [Prisma.sql`(r."sentAt" IS NOT NULL OR EXISTS (
+			SELECT 1 FROM "tg_dialog_messages" m WHERE m."recipientId" = r."id"
+		))`]
+		if (opts.onlyReplied) filters.push(Prisma.sql`r."repliedAt" IS NOT NULL`)
+		if (opts.waiting) filters.push(waiting.length
+			? Prisma.sql`r."id" IN (${Prisma.join(waiting.map(r => r.id))})`
+			: Prisma.sql`false`)
 		if (q) {
-			where.AND = [{
-				OR: [
-					{ username: { contains: q, mode: 'insensitive' } },
-					{ phone: { contains: q } },
-					{ firstName: { contains: q, mode: 'insensitive' } },
-					{ lastName: { contains: q, mode: 'insensitive' } },
-					{ company: { contains: q, mode: 'insensitive' } },
-					{ domain: { contains: q, mode: 'insensitive' } },
-				],
-			}]
+			const search = `%${q}%`
+			filters.push(Prisma.sql`(
+				r."username" ILIKE ${search} OR r."phone" LIKE ${search}
+				OR r."firstName" ILIKE ${search} OR r."lastName" ILIKE ${search}
+				OR r."company" ILIKE ${search} OR r."domain" ILIKE ${search}
+			)`)
 		}
 
+		// Sort the whole matching set BEFORE limiting it. Prioritizing repliedAt
+		// first hid new outgoing dialogs behind a full page of older replies.
+		const ordered = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+			SELECT r."id" FROM "tg_recipients" r
+			LEFT JOIN LATERAL (
+				SELECT m."date" FROM "tg_dialog_messages" m
+				WHERE m."recipientId" = r."id"
+				ORDER BY m."tgId" DESC LIMIT 1
+			) last_message ON true
+			WHERE ${Prisma.join(filters, ' AND ')}
+			ORDER BY GREATEST(r."sentAt", r."secondSentAt", r."repliedAt", last_message."date") DESC NULLS LAST,
+				r."id" DESC
+			LIMIT ${take + 1}
+		`)
+		const more = ordered.length > take
+		const ids = ordered.slice(0, take).map(r => r.id)
 		const rows = await this.prisma.tgRecipient.findMany({
-			where,
-			// Порядок в БД — сильный прокси свежести (ответ важнее нашего
-			// исходящего). Точную сортировку по «последней активности» доводим
-			// в JS ниже, уже на выбранной странице.
-			orderBy: [
-				{ repliedAt: { sort: 'desc', nulls: 'last' } },
-				{ secondSentAt: { sort: 'desc', nulls: 'last' } },
-				{ sentAt: { sort: 'desc', nulls: 'last' } },
-				{ id: 'desc' },
-			],
-			take: take + 1,
+			where: { id: { in: ids } },
 			select: {
 				id: true, username: true, phone: true, status: true,
 				firstName: true, lastName: true, company: true, domain: true,
@@ -4070,8 +4076,8 @@ export class CampaignService {
 			},
 		})
 
-		const more = rows.length > take
-		const page = (more ? rows.slice(0, take) : rows).map(r => {
+		const byId = new Map(rows.map(r => [r.id, r]))
+		const page = ids.flatMap(id => byId.has(id) ? [byId.get(id)!] : []).map(r => {
 			const last = r.messages[0] ?? null
 			const ms = [r.sentAt, r.secondSentAt, r.repliedAt, last?.date]
 				.filter(Boolean)
@@ -4104,9 +4110,6 @@ export class CampaignService {
 				lastActivity,
 			}
 		})
-		page.sort((a, b) =>
-			(b.lastActivity ? Date.parse(b.lastActivity) : 0) -
-			(a.lastActivity ? Date.parse(a.lastActivity) : 0))
 
 		const [all, replied] = await Promise.all([
 			this.prisma.tgRecipient.count({ where: base }),
