@@ -1640,6 +1640,12 @@ model TgRecipient {
   // Сколько сообщений собеседника ещё не открыто в админке. Растёт, когда
   // опросник записывает ответ, обнуляется при открытии переписки.
   unreadIn           Int       @default(0)
+  // Закрывает только уже известные сообщения. Новое входящее снова ждёт ответа.
+  replyHandledThroughTgId Int @default(0)
+  replyHandledAt DateTime?
+  // Ручные пометки не являются доказательством блокировки со стороны Telegram.
+  conversationMark String?
+  conversationMarkedAt DateTime?
 
   status    TgRecipientStatus @default(QUEUED)
   // Аккаунт, с которого писали. Закрепляется при первой отправке и больше не
@@ -1686,6 +1692,7 @@ model TgRecipient {
   peerStatus      String?
   peerSeenAt      DateTime?
   peerCheckedAt   DateTime?
+  peerDeleted     Boolean @default(false)
 
   createdAt DateTime @default(now())
 

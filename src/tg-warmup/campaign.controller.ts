@@ -260,6 +260,11 @@ export class CampaignController {
 	}
 
 	/** Итог разговора и напоминание «написать позже». */
+	@Patch('recipients/:id/conversation-state')
+	conversationState(@Param('id') id: string, @Body() body: { replyNeeded?: boolean; mark?: string | null; expectedTgId?: number }) {
+		return this.svc.setConversationState(id, body)
+	}
+
 	@Patch('recipients/:id/outcome')
 	setOutcome(@Param('id') id: string, @Body() body: { outcome?: string | null; followUpAt?: string | null; followUpNote?: string | null }) {
 		return this.svc.setOutcome(id, body ?? {})

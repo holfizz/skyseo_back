@@ -31,6 +31,7 @@ import { keysOf, optOutReason, type StopKey } from './stop-list'
 import { followUpKeywords, personalFollowUp } from './personal-followup'
 import { hasSenderGender, senderVoice } from './sender-voice'
 import { ReplyReminderService } from './reply-reminder.service'
+import { replyState, waitingConversationsSql } from './conversation-state'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -2922,6 +2923,7 @@ export class CampaignService {
 					peerStatus: item.presence.status,
 					peerSeenAt: item.presence.at,
 					peerCheckedAt: new Date(),
+					...(item.entity?.className === 'User' ? { peerDeleted: item.entity.deleted === true } : {}),
 				},
 			}).catch(() => undefined)
 			const before = !!item.recipient.repliedAt
@@ -3109,6 +3111,7 @@ export class CampaignService {
 		})
 		if (!r) throw new NotFoundException('Адресат не найден')
 		const page = await this.dialogMessages(recipientId)
+		const last = page.messages[page.messages.length - 1] ?? null
 		const secondPreview = await this.secondMessageFor(r)
 		return {
 			id: r.id,
@@ -3119,6 +3122,10 @@ export class CampaignService {
 			secondSentAt: r.secondSentAt, blockedAt: r.blockedAt, error: r.error,
 			outcome: r.outcome, outcomeAt: r.outcomeAt, followUpAt: r.followUpAt, followUpNote: r.followUpNote,
 			outcomeOverdue: isOutcomeOverdue(r),
+			replyState: replyState(r, last), last,
+			replyHandledThroughTgId: r.replyHandledThroughTgId, replyHandledAt: r.replyHandledAt,
+			conversationMark: r.conversationMark, conversationMarkedAt: r.conversationMarkedAt,
+			peerDeleted: r.peerDeleted,
 			deliveryUnknown: r.deliveryUnknown,
 			// Для галочек и «был в сети» в шапке.
 			readOutboxMaxId: r.readOutboxMaxId,
@@ -4026,29 +4033,8 @@ export class CampaignService {
 		 * выражается, а перебирать ленты в JS — это вся переписка пула в память
 		 * ради одного числа. Один список id даёт разом и счётчик, и фильтр.
 		 */
-		/*
-		 * Кто ждёт ответа: последнее сообщение в переписке — входящее.
-		 *
-		 * Условие repliedAt IS NOT NULL обязательно, и не ради смысла, а ради
-		 * цены. Без него это полный проход по таблице адресатов с отдельным
-		 * поиском последнего сообщения на КАЖДУЮ строку, включая десятки тысяч
-		 * тех, кому мы только собираемся писать и у кого переписки нет вовсе.
-		 * Ждать ответа может только тот, кто уже ответил хоть раз, а таких
-		 * всегда на порядки меньше.
-		 *
-		 * Имена таблиц и колонок здесь записаны руками: переименование в
-		 * schema.prisma компилятор не поймает, сломается только в работе.
-		 */
-		const waiting = await this.prisma.$queryRaw<Array<{ id: string }>>`
-			SELECT r."id" FROM "tg_recipients" r
-			WHERE r."repliedAt" IS NOT NULL
-			  AND (
-				SELECT m."out" FROM "tg_dialog_messages" m
-				WHERE m."recipientId" = r."id"
-				ORDER BY m."tgId" DESC
-				LIMIT 1
-			) = false
-		`
+		// «Ответ не нужен» закрывает конкретные сообщения, а не весь контакт.
+		const waiting = await this.prisma.$queryRaw<Array<{ id: string }>>(waitingConversationsSql)
 		const filters = [Prisma.sql`(r."sentAt" IS NOT NULL OR EXISTS (
 			SELECT 1 FROM "tg_dialog_messages" m WHERE m."recipientId" = r."id"
 		))`]
@@ -4088,6 +4074,8 @@ export class CampaignService {
 				firstName: true, lastName: true, company: true, domain: true,
 				sentAt: true, readAt: true, repliedAt: true, secondSentAt: true, blockedAt: true,
 				deliveryUnknown: true, error: true,
+				replyHandledThroughTgId: true, replyHandledAt: true, conversationMark: true, conversationMarkedAt: true,
+				peerDeleted: true, peerStatus: true,
 				campaign: { select: { id: true, name: true } },
 				account: { select: { id: true, label: true, avatar: true, tgUserId: true, status: true } },
 				messages: { orderBy: { tgId: 'desc' }, take: 1, select: { tgId: true, out: true, text: true, date: true, mediaKind: true } },
@@ -4124,6 +4112,10 @@ export class CampaignService {
 				error: r.error,
 				account: r.account,
 				last,
+				replyState: replyState(r, last),
+				replyHandledThroughTgId: r.replyHandledThroughTgId, replyHandledAt: r.replyHandledAt,
+				conversationMark: r.conversationMark, conversationMarkedAt: r.conversationMarkedAt,
+				peerDeleted: r.peerDeleted, peerStatus: r.peerStatus,
 				// Галочки в списке: прочитано ли наше последнее сообщение.
 				lastRead: !!last?.out && last.tgId <= r.readOutboxMaxId,
 				lastActivity,
@@ -4136,6 +4128,39 @@ export class CampaignService {
 		])
 
 		return { counts: { all, replied, waiting: waiting.length }, rows: page, more }
+	}
+
+	/** Local operator decisions only: no Telegram calls, sends, blocks or deletions. */
+	async setConversationState(id: string, body: { replyNeeded?: boolean; mark?: string | null; expectedTgId?: number }) {
+		if (!body || (body.replyNeeded === undefined && body.mark === undefined)) throw new BadRequestException('Выберите действие')
+		if (body.replyNeeded !== undefined && typeof body.replyNeeded !== 'boolean') throw new BadRequestException('Некорректное состояние ответа')
+		if (body.mark !== undefined && body.mark !== null && !['BLOCKED', 'HISTORY_DELETED'].includes(body.mark)) throw new BadRequestException('Неизвестная пометка')
+		if (body.mark && body.replyNeeded === true) throw new BadRequestException('Выберите одно действие')
+		if (!Number.isSafeInteger(body.expectedTgId) || body.expectedTgId! < 0) throw new BadRequestException('Обновите переписку перед изменением')
+		return this.prisma.$transaction(async tx => {
+			const recipient = await tx.tgRecipient.findUnique({ where: { id } })
+			if (!recipient) throw new NotFoundException('Адресат не найден')
+			const last = await tx.tgDialogMessage.findFirst({ where: { recipientId: id }, orderBy: { tgId: 'desc' }, select: { tgId: true, out: true } })
+			if ((last?.tgId ?? 0) !== body.expectedTgId) throw new BadRequestException('Появилось новое сообщение. Обновите переписку')
+			if (body.replyNeeded === true && (!last || last.out)) throw new BadRequestException('Нет входящего сообщения для ответа')
+			const now = new Date()
+			const handled = body.replyNeeded === false || Boolean(body.mark)
+			const updated = await tx.tgRecipient.update({ where: { id }, data: {
+				...(body.mark !== undefined ? { conversationMark: body.mark, conversationMarkedAt: body.mark ? now : null } : {}),
+				...(handled ? { replyHandledThroughTgId: Math.max(last?.tgId ?? 0, recipient.replyHandledThroughTgId), replyHandledAt: now } : {}),
+				...(body.replyNeeded === true ? { replyHandledThroughTgId: 0, replyHandledAt: null } : {}),
+			} })
+			if (handled) await tx.tgReplyReminder.updateMany({
+				where: { recipientId: id, anchorTgId: { lte: last?.tgId ?? 0 } }, data: { nextAt: null },
+			})
+			if (body.replyNeeded === true) {
+				const data = { anchorTgId: last!.tgId, anchorAt: now, attempts: 0,
+					nextAt: new Date(now.getTime() + 30 * 60_000), lastAttemptAt: null, lastSentAt: null, lastError: null }
+				await tx.tgReplyReminder.upsert({ where: { recipientId: id }, create: { recipientId: id, ...data }, update: data })
+			}
+			return { ok: true, replyState: replyState(updated, last), replyHandledThroughTgId: updated.replyHandledThroughTgId,
+				replyHandledAt: updated.replyHandledAt, conversationMark: updated.conversationMark, conversationMarkedAt: updated.conversationMarkedAt }
+		})
 	}
 
 	/**

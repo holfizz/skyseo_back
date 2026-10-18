@@ -23,6 +23,7 @@
 		"test:tg-domains": "ts-node --transpile-only src/scripts/test-tg-message-domains.ts",
 		"test:sender-voice": "ts-node --transpile-only src/scripts/test-sender-voice.ts",
 		"test:reply-reminders": "ts-node --transpile-only src/scripts/test-reply-reminders.ts",
+		"test:conversation-state": "ts-node --transpile-only src/scripts/test-conversation-state.ts",
 		"test:campaign-today": "ts-node --transpile-only src/scripts/test-campaign-today.ts",
 		"test:site-lead-notifications": "ts-node --transpile-only src/scripts/test-site-lead-notifications.ts",
 		"test:call-calendar": "ts-node --transpile-only src/scripts/test-call-calendar.ts",

@@ -38,7 +38,10 @@ export class ReplyReminderService implements OnModuleInit, OnModuleDestroy {
 			where: { recipientId, out: true, tgId: { gt: 0 } }, orderBy: { tgId: 'desc' }, select: { tgId: true },
 		})
 		const outId = outgoing?.tgId ?? 0
-		const first = incoming.filter(m => m.tgId > outId).sort((a, b) => a.tgId - b.tgId)[0]
+		const recipient = await this.prisma.tgRecipient.findUnique({ where: { id: recipientId }, select: { replyHandledThroughTgId: true, peerDeleted: true } })
+		if (!recipient || recipient.peerDeleted) return
+		const handledId = Math.max(outId, recipient.replyHandledThroughTgId)
+		const first = incoming.filter(m => m.tgId > handledId).sort((a, b) => a.tgId - b.tgId)[0]
 		if (!first) return
 		const data = {
 			anchorTgId: first.tgId, anchorAt: first.date, attempts: 0,
@@ -49,7 +52,7 @@ export class ReplyReminderService implements OnModuleInit, OnModuleDestroy {
 		// Only a confirmed outgoing between the two anchors may start a new cycle.
 		await this.prisma.tgReplyReminder.createMany({ data: [{ recipientId, ...data }], skipDuplicates: true })
 		await this.prisma.tgReplyReminder.updateMany({
-			where: { recipientId, anchorTgId: { lte: outId } }, data,
+			where: { recipientId, anchorTgId: { lte: handledId } }, data,
 		})
 	}
 
@@ -134,6 +137,8 @@ export class ReplyReminderService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private async hasAnswer(recipientId: string, anchorTgId: number) {
+		const recipient = await this.prisma.tgRecipient.findUnique({ where: { id: recipientId }, select: { replyHandledThroughTgId: true, peerDeleted: true } })
+		if (!recipient || recipient.peerDeleted || recipient.replyHandledThroughTgId >= anchorTgId) return true
 		return Boolean(await this.prisma.tgDialogMessage.findFirst({
 			where: { recipientId, out: true, tgId: { gt: anchorTgId } }, select: { id: true },
 		}))
