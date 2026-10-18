@@ -1696,6 +1696,7 @@ model TgRecipient {
   crmLead           CrmLead?          @relation("LeadRecipients", fields: [crmLeadId], references: [id], onDelete: SetNull)
   originatedCrmLead CrmLead?          @relation("LeadOriginRecipient")
   followUpTask      CrmTask?          @relation("RecipientFollowUpTask")
+  replyReminder     TgReplyReminder?
 
   @@index([campaignId, status])
   @@index([status])
@@ -1714,6 +1715,25 @@ model TgRecipient {
   // аккаунта. Без него это перебор всей очереди кампании на каждый аккаунт.
   @@index([campaignId, plannedAccountId, status, scheduledAt])
   @@map("tg_recipients")
+}
+
+// Два уведомления оператору на одну непрерывную серию входящих без ответа.
+// Прочтение чата не завершает серию; подтвержденное исходящее завершает.
+model TgReplyReminder {
+  recipientId   String   @id
+  anchorTgId    Int
+  anchorAt      DateTime
+  attempts      Int      @default(0)
+  nextAt        DateTime?
+  lastAttemptAt DateTime?
+  lastSentAt    DateTime?
+  lastError     String?
+  createdAt     DateTime @default(now())
+
+  recipient TgRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([nextAt])
+  @@map("tg_reply_reminders")
 }
 
 // История переписки. Хранится у нас, а не тянется из Telegram каждый раз:

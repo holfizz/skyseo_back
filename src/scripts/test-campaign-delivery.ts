@@ -12,6 +12,7 @@ import { followUpKeywords, personalFollowUp } from '../tg-warmup/personal-follow
 async function attempt(phase: 'connect' | 'send', message: string, gender = 'MALE', template = 'Здравствуйте') {
     const changes: any[] = [], pauses: any[] = [], outgoing: string[] = [];
     const original = transport.withClient;
+    const originalRandom = Math.random;
     (transport as any).withClient = async (_: any, fn: any) => {
         if (phase === 'connect') throw new Error(message);
         return fn({sendMessage: async (_peer:any, body:any) => {outgoing.push(body.message);throw new Error(message)}});
@@ -29,9 +30,11 @@ async function attempt(phase: 'connect' | 'send', message: string, gender = 'MAL
     s.pauseAccount = async(...args:any[])=>pauses.push(args);
     s.notifyAdmin = async()=>{};
     try {
+        // Inspect the complete outgoing text, not the random pre-edit draft.
+        Math.random = () => 0.99;
         const verdict = await s.sendOne({id:'c',name:'test',firstMessage:'Здравствуйте'}, {id:'l'}, {id:'a'}, {id:'r',username:'fake',scheduleLocked:false});
         return {verdict,row:changes.at(-1),pauses,outgoing};
-    } finally {(transport as any).withClient=original}
+    } finally {(transport as any).withClient=original;Math.random=originalRandom}
 }
 
 async function main() {

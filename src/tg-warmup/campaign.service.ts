@@ -30,6 +30,7 @@ import { MEDIA_LIMIT, humanSize, mediaCaption, mediaOf, mimeFor, worthDownloadin
 import { keysOf, optOutReason, type StopKey } from './stop-list'
 import { followUpKeywords, personalFollowUp } from './personal-followup'
 import { hasSenderGender, senderVoice } from './sender-voice'
+import { ReplyReminderService } from './reply-reminder.service'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -446,6 +447,7 @@ export class CampaignService {
 		private telegram: TelegramService,
 		private report: ReportService,
 		private followUp: FollowUpService,
+		private replyReminders: ReplyReminderService,
 	) {
 		// Прогрев в паузах между действиями проверяет переписку через своё
 		// подключение — иначе ответы ждали бы конца захода, до двадцати минут.
@@ -3067,6 +3069,9 @@ export class CampaignService {
 		// Пишем в бот о КАЖДОМ новом сообщении клиента, а не только о первом
 		// ответе: дальше идёт живой разговор, и без уведомления его пропускают.
 		if (incoming.length) {
+			await this.replyReminders.trackIncoming(r.id, incoming).catch(() => {
+				this.logger.warn('Не удалось запланировать повторное уведомление об ответе')
+			})
 			await this.prisma.tgRecipient.update({ where: { id: r.id }, data: { unreadIn: { increment: incoming.length } } })
 			const who = [r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? '@' + r.username : r.phone)
 			// Показываем ВСЕ пришедшие реплики, а не последнюю: человек часто

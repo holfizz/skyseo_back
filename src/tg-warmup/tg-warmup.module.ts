@@ -12,6 +12,7 @@ import { CampaignService } from './campaign.service'
 import { TgWarmupController } from './tg-warmup.controller'
 import { TgWarmupScheduler } from './tg-warmup.scheduler'
 import { TgWarmupService } from './tg-warmup.service'
+import { ReplyReminderService } from './reply-reminder.service'
 
 // Прогрев Telegram и рассылка с прогретых аккаунтов.
 // Один модуль, потому что пул аккаунтов у них общий: рассылка спрашивает у
@@ -23,6 +24,6 @@ import { TgWarmupService } from './tg-warmup.service'
 	imports: [PrismaModule, TelegramModule.forRoot(), ReportModule, OutreachModule, FollowUpModule],
 	controllers: [TgWarmupController, CampaignController, CampaignManagerController, LeadImportController],
 	exports: [TgWarmupService],
-	providers: [TgWarmupService, TgWarmupScheduler, CampaignService, CampaignScheduler],
+	providers: [TgWarmupService, TgWarmupScheduler, CampaignService, CampaignScheduler, ReplyReminderService],
 })
 export class TgWarmupModule {}
