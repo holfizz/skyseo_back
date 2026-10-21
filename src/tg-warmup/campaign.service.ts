@@ -32,6 +32,7 @@ import { followUpKeywords, personalFollowUp } from './personal-followup'
 import { hasSenderGender, senderVoice } from './sender-voice'
 import { ReplyReminderService } from './reply-reminder.service'
 import { replyState, waitingConversationsSql } from './conversation-state'
+import { senderLabel } from './sender-label'
 
 /**
  * Рассылка в Telegram с прогретых аккаунтов.
@@ -3088,7 +3089,7 @@ export class CampaignService {
 				(r.repliedAt ? `💬 <b>Новое сообщение</b>\n\n` : `💬 <b>Ответили в рассылке</b>\n\n`) +
 					`<b>${esc(who ?? '')}</b>${r.domain ? ` · ${esc(r.domain)}` : ''}\n` +
 					`Кампания: ${esc(r.campaign?.name ?? '')}\n` +
-					`Аккаунт: ${esc(account.label ?? account.id)}\n\n` +
+					`С аккаунта: <b>${esc(senderLabel(account))}</b>\n\n` +
 					`<blockquote>${body}</blockquote>\n` +
 					`<a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${r.id}">Открыть переписку</a>`,
 			)

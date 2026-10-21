@@ -6,6 +6,10 @@
 
 Manual conversation exception: URLs and full domains are allowed in messages typed by the operator only after a confirmed outgoing message in that conversation. The first outgoing message, including a manual one, must still reject links. Keep automated templates and prepared replies without domain suffixes.
 
+## Operator notification attribution
+
+- In incoming-message notifications and unanswered-message reminders, visibly show the actual sending account's Telegram profile name and, when available, its username. Prefer `firstName`/`lastName` over the internal `label`; never show only an internal ID when the name is known.
+
 # Client SEO presentations
 
 - For a website review or client presentation, follow `docs/presentation/CLIENT_PRESENTATION_PLAYBOOK.md`. Reuse the approved shared style and the single verified before/after case. Use the common preparation pipeline through `npm run prepare:call` or the CRM preparation queue; do not create per-client copies of hardcoded SKB-4 generators. The playbook defines evidence requirements and the shared CRM/PDF speaking script.

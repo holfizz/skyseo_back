@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
 import { ReplyReminderService } from '../tg-warmup/reply-reminder.service'
 import { CampaignService } from '../tg-warmup/campaign.service'
+import { senderLabel } from '../tg-warmup/sender-label'
 
 const database = process.env.REPLY_REMINDER_TEST_DATABASE_URL
 if (!database) throw new Error('Set REPLY_REMINDER_TEST_DATABASE_URL to an isolated local test database')
@@ -19,6 +20,7 @@ const telegram = { sendOutreachNotification: async (html: string) => { alerts.pu
 const service = new ReplyReminderService(prisma as any, telegram as any)
 const worker2 = new ReplyReminderService(prisma as any, telegram as any)
 let campaignId: string
+let accountId: string
 
 async function recipient(name: string) {
 	return prisma.tgRecipient.create({ data: { campaignId, firstName: name, domain: 'fixture.invalid', status: 'SENT', sentAt: at(-1), sentMsgId: 1,
@@ -31,9 +33,17 @@ async function incoming(recipientId: string, tgId: number, minute: number, text 
 }
 
 async function main() {
+	assert.equal(senderLabel({ firstName: 'Анна', label: 'internal-id', username: 'anna_fixture' }), 'Анна (@anna_fixture)')
+	assert.equal(senderLabel({ label: 'Сергей' }), 'Сергей')
+	assert.equal(senderLabel({ username: 'fixture' }), '@fixture')
+	assert.equal(senderLabel(null), 'не указан')
 	campaignId = (await prisma.tgCampaign.create({ data: { name: `reminder-test-${randomUUID()}`, firstMessage: 'Fixture' } })).id
 	try {
+		const account = await prisma.tgAccount.create({ data: { firstName: 'Анна <&>', label: 'internal-id', username: 'anna_fixture',
+			session: 'not-a-telegram-session', apiId: 1, apiHash: 'fixture', deviceModel: 'test', systemVersion: 'test', appVersion: 'test', langCode: 'ru', systemLangCode: 'ru' } })
+		accountId = account.id
 		const r = await recipient('Клиент <&>')
+		await prisma.tgRecipient.update({ where: { id: r.id }, data: { accountId } })
 		// Exercise the real poll -> persisted message -> initial notification -> queue path.
 		const campaign = Object.create(CampaignService.prototype) as any
 		campaign.prisma = prisma
@@ -43,8 +53,9 @@ async function main() {
 		campaign.notifyAdmin = async (html: string) => initial.push(html)
 		await campaign.applyDialogState({ recipient: { ...r, campaign: { name: 'Fixture' } }, readTo: 1, top: 10 }, [
 			{ id: 10, out: false, message: 'Покажите <пример> & результат', date: start.getTime() / 1000 },
-		], { id: 'fixture', label: 'Анна' })
+		], account)
 		assert.equal(initial.length, 1, 'Existing immediate notification remains')
+		assert.match(initial[0], /С аккаунта: <b>Анна &lt;&amp;&gt; \(@anna_fixture\)<\/b>/)
 		assert.equal(await service.tick(at(29)), 0)
 		// Opening a chat must not cancel an unanswered message.
 		await prisma.tgRecipient.update({ where: { id: r.id }, data: { unreadIn: 0 } })
@@ -52,6 +63,7 @@ async function main() {
 		assert.match(alerts[0], /Напоминание 1 из 2/)
 		assert.match(alerts[0], /&lt;пример&gt; &amp; результат/)
 		assert.match(alerts[0], /Клиент &lt;&amp;&gt;/)
+		assert.match(alerts[0], /С аккаунта: <b>Анна &lt;&amp;&gt; \(@anna_fixture\)<\/b>/)
 		assert.match(alerts[0], new RegExp(`dialog=${r.id}`))
 		assert.equal(await service.tick(at(31)), 0)
 		await incoming(r.id, 11, 40, 'Еще один вопрос')
@@ -116,6 +128,7 @@ async function main() {
 		console.log('Reply reminders: poll integration, 30/90 min, read state, burst, restart, concurrency, reply cancellation, new cycle, downtime, API failure and race checks passed')
 	} finally {
 		await prisma.tgCampaign.delete({ where: { id: campaignId } })
+		if (accountId) await prisma.tgAccount.delete({ where: { id: accountId } })
 		assert.equal(await prisma.tgReplyReminder.count({ where: { recipient: { campaignId } } }), 0)
 		await prisma.$disconnect()
 	}

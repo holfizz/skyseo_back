@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { TelegramService } from '../telegram/telegram.service'
+import { senderLabel } from './sender-label'
 
 const MINUTE = 60_000
 export const REPLY_REMINDER_DELAYS = [30 * MINUTE, 90 * MINUTE] as const
@@ -91,7 +92,7 @@ export class ReplyReminderService implements OnModuleInit, OnModuleDestroy {
 				const recipient = await this.prisma.tgRecipient.findUnique({
 					where: { id: reminder.recipientId },
 					select: { firstName: true, middleName: true, lastName: true, domain: true,
-						account: { select: { label: true, firstName: true } } },
+						account: { select: { label: true, firstName: true, lastName: true, username: true } } },
 				})
 				if (!recipient) continue
 				const who = [recipient.firstName, recipient.middleName, recipient.lastName].filter(Boolean).join(' ') || 'Контакт'
@@ -100,7 +101,7 @@ export class ReplyReminderService implements OnModuleInit, OnModuleDestroy {
 					await this.telegram.sendOutreachNotification(
 						`⏳ <b>Вы не ответили клиенту</b>\n\n` +
 						`<b>${esc(who)}</b>${recipient.domain ? ` · ${esc(recipient.domain)}` : ''}\n` +
-						`Аккаунт: ${esc(recipient.account?.label || recipient.account?.firstName || 'не указан')}\n` +
+						`С аккаунта: <b>${esc(senderLabel(recipient.account))}</b>\n` +
 						`Без ответа: ${wait} мин. Напоминание ${attempt} из 2.\n\n` +
 						`<blockquote>${esc(current.text.slice(0, 700))}</blockquote>\n` +
 						`<a href="https://skyseo.site/holfizz/telegram?tab=inbox&amp;dialog=${encodeURIComponent(reminder.recipientId)}">Ответить в переписке</a>`,
