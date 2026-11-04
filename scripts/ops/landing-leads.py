@@ -2,12 +2,16 @@
 """Emergency landing-only intake. SQLite + durable Telegram outbox; no CRM workers."""
 import argparse
 import hashlib
+import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import socket
 import sqlite3
+import ssl
 import threading
 import time
 import urllib.error
@@ -89,13 +93,37 @@ def save(path, body, primary, secondary='7271373084', now=None):
             db.execute('INSERT INTO notifications(lead_id,chat_id,next_at) VALUES(?,?,?)', (lead_id, chat, now))
     return lead_id, False
 
+class TelegramHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self):
+        super().__init__('api.telegram.org', timeout=10, context=ssl.create_default_context())
+
+    def connect(self):
+        override = os.environ.get('SKYSEO_TELEGRAM_IPV4', '').strip()
+        if not override:
+            return super().connect()
+        address = str(ipaddress.IPv4Address(override))
+        sock = socket.create_connection((address, 443), timeout=self.timeout)
+        try:
+            # Only the TCP address changes. Host, SNI and certificate validation
+            # remain api.telegram.org; no third-party proxy sees the bot token.
+            self.sock = self._context.wrap_socket(sock, server_hostname='api.telegram.org')
+        except Exception:
+            sock.close()
+            raise
+
 def send_notification(token, row):
     head = 'Автосохранение: форму заполнили, но не отправили' if row['auto'] else 'Заявка с сайта: бесплатный тест'
     text = f"{head}\nСайт: https://{row['site']}\nTelegram: {row['telegram']}\nЗаявка: {row['lead_id']}"
     payload = json.dumps({'chat_id':row['chat_id'], 'text':text, 'disable_web_page_preview':True}).encode()
-    request = urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage', data=payload, headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        result = json.load(response)
+    connection = TelegramHTTPSConnection()
+    try:
+        connection.request('POST', f'/bot{token}/sendMessage', body=payload, headers={'Content-Type':'application/json'})
+        response = connection.getresponse()
+        if response.status >= 400:
+            raise urllib.error.HTTPError('telegram',response.status,'Telegram rejected the request',None,None)
+        result = json.loads(response.read())
+    finally:
+        connection.close()
     if not result.get('ok'):
         raise RuntimeError('telegram_rejected')
     return int(result['result']['message_id'])

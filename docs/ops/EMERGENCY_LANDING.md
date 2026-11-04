@@ -29,6 +29,8 @@ TELEGRAM_BOT_TOKEN=<existing website notification bot>
 TELEGRAM_ADMIN_ID=<existing primary recipient>
 SITE_LEAD_SECONDARY_CHAT_ID=7271373084
 SKYSEO_ALLOWED_HOSTS=skyseo.site,www.skyseo.site,85.208.85.102
+# Optional: verified reachable Telegram API IPv4 if the DNS-selected address fails.
+SKYSEO_TELEGRAM_IPV4=149.154.167.220
 ```
 
 Do not copy Telegram user sessions, the old database, CRM bot settings, payment
@@ -52,6 +54,9 @@ autosaved drafts notify the primary only. Outbox delivery retries with backoff
 after network/API failures and survives process restarts. A notification timeout
 can lead to duplicate internal notifications; the stable application ID permits
 recognition. This service never sends messages to the lead's Telegram account.
+An optional Telegram IPv4 override changes only the TCP destination; HTTPS Host,
+SNI and certificate validation stay `api.telegram.org`. No third-party relay is
+used and TLS verification must never be disabled.
 
 Health: `GET /v1/api/health`. Inspect only aggregate application/outbox counts
 with Python sqlite3, or select an individual application by its test ID.

@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch, Mock
 import urllib.error
 import urllib.request
 
@@ -97,6 +98,20 @@ class IntakeTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_ipv4_override_preserves_verified_api_hostname(self):
+        connection=leads.TelegramHTTPSConnection()
+        self.assertTrue(connection._context.check_hostname)
+        self.assertEqual(connection._context.verify_mode,leads.ssl.CERT_REQUIRED)
+        context=Mock()
+        connection._context=context
+        sock=Mock()
+        with patch.dict(leads.os.environ,{'SKYSEO_TELEGRAM_IPV4':'149.154.167.220'}), patch.object(leads.socket,'create_connection',return_value=sock) as dial:
+            connection.connect()
+        dial.assert_called_once_with(('149.154.167.220',443),timeout=10)
+        context.wrap_socket.assert_called_once_with(sock,server_hostname='api.telegram.org')
+        self.assertEqual(connection.host,'api.telegram.org')
+        connection.close()
 
 if __name__=='__main__':
     unittest.main()
