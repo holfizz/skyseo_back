@@ -1,0 +1,22 @@
+[Unit]
+Description=SkySEO website applications and Telegram outbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=skyseo
+Group=skyseo
+EnvironmentFile=/etc/skyseo-landing.env
+Environment=SKYSEO_LEADS_DB=/var/lib/skyseo-landing/leads.sqlite3
+StateDirectory=skyseo-landing
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /srv/skyseo/back/scripts/ops/landing-leads.py --port 4018
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

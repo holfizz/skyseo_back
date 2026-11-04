@@ -7,6 +7,8 @@ dist
 .DS_Store
 backups/
 logs/
+__pycache__/
+*.pyc
 
 *.gpg
 releases/latest-mac.yml

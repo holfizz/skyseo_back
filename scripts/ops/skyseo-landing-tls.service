@@ -1,0 +1,9 @@
+[Unit]
+Description=Activate SkySEO HTTPS after DNS propagation
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/skyseo/back/scripts/ops/activate-landing-tls.py
+TimeoutStartSec=240

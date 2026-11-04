@@ -1,0 +1,21 @@
+[Unit]
+Description=SkySEO public landing (emergency host)
+After=network.target
+
+[Service]
+Type=simple
+User=skyseo
+Group=skyseo
+WorkingDirectory=/srv/skyseo/front/.next/standalone
+Environment=NODE_ENV=production
+Environment=PORT=3018
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/opt/skyseo-node/bin/node server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
