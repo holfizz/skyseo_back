@@ -8,7 +8,7 @@ import tempfile
 
 IP = '85.208.85.102'
 DOMAIN = 'skyseo.site'
-ROOT = Path('/srv/skyseo/back/scripts/ops')
+ROOT = Path(__file__).resolve().parent
 TARGET = Path('/etc/nginx/sites-available/skyseo-landing')
 CERT = Path('/etc/letsencrypt/live/skyseo.site/fullchain.pem')
 

@@ -99,19 +99,19 @@ class IntakeTest(unittest.TestCase):
             server.server_close()
             thread.join()
 
-    def test_ipv4_override_preserves_verified_api_hostname(self):
-        connection=leads.TelegramHTTPSConnection()
-        self.assertTrue(connection._context.check_hostname)
-        self.assertEqual(connection._context.verify_mode,leads.ssl.CERT_REQUIRED)
-        context=Mock()
-        connection._context=context
-        sock=Mock()
-        with patch.dict(leads.os.environ,{'SKYSEO_TELEGRAM_IPV4':'149.154.167.220'}), patch.object(leads.socket,'create_connection',return_value=sock) as dial:
-            connection.connect()
-        dial.assert_called_once_with(('149.154.167.220',443),timeout=10)
-        context.wrap_socket.assert_called_once_with(sock,server_hostname='api.telegram.org')
-        self.assertEqual(connection.host,'api.telegram.org')
-        connection.close()
+    def test_http2_notification_keeps_credentials_off_argv_and_verifies_hostname(self):
+        row={'chat_id':'1','auto':False,'site':'example.ru','telegram':'@valid_user','lead_id':'test'}
+        result=leads.subprocess.CompletedProcess([],0,'{"ok":true,"result":{"message_id":123}}\n200','')
+        with patch.dict(leads.os.environ,{'SKYSEO_TELEGRAM_IPV4':'149.154.167.220'}), patch.object(leads.subprocess,'run',return_value=result) as call:
+            self.assertEqual(leads.send_notification('fake-test-token',row),123)
+        args=call.call_args.args[0]
+        config=call.call_args.kwargs['input']
+        self.assertNotIn('fake-test-token',' '.join(args))
+        self.assertIn('https://api.telegram.org/botfake-test-token/sendMessage',config)
+        self.assertIn('resolve = "api.telegram.org:443:149.154.167.220"',config)
+        self.assertIn('\nhttp2\n',config)
+        self.assertNotIn('insecure',config)
+        self.assertEqual(args[:2],['curl','--disable'])
 
 if __name__=='__main__':
     unittest.main()

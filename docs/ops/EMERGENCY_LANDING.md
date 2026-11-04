@@ -21,6 +21,9 @@ Install the versioned `skyseo-landing.service`, `skyseo-leads.service`,
 Install `skyseo-landing-http.conf` into
 `/etc/nginx/sites-available/skyseo-landing` and link it in sites-enabled.
 Run `nginx -t` before reload. Enable the landing and leads services and TLS timer.
+Install `activate-landing-tls.py` and `skyseo-landing-http.conf` into the root-owned
+`/usr/local/lib/skyseo-landing/` directory. The privileged TLS unit runs that
+installed copy, never application-user-writable code from the Git checkout.
 
 Root-only `/etc/skyseo-landing.env` contains **only**:
 
@@ -56,7 +59,8 @@ can lead to duplicate internal notifications; the stable application ID permits
 recognition. This service never sends messages to the lead's Telegram account.
 An optional Telegram IPv4 override changes only the TCP destination; HTTPS Host,
 SNI and certificate validation stay `api.telegram.org`. No third-party relay is
-used and TLS verification must never be disabled.
+used and TLS verification must never be disabled. Delivery uses the host's curl
+HTTP/2 support, with token/payload passed through stdin and no user curl config.
 
 Health: `GET /v1/api/health`. Inspect only aggregate application/outbox counts
 with Python sqlite3, or select an individual application by its test ID.

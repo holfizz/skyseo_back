@@ -5,5 +5,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /srv/skyseo/back/scripts/ops/activate-landing-tls.py
+ExecStart=/usr/bin/python3 /usr/local/lib/skyseo-landing/activate-landing-tls.py
 TimeoutStartSec=240
