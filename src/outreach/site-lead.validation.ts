@@ -19,3 +19,18 @@ export function normalizeLeadTelegram(value: string): string | null {
  const username = value.trim().replace(/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\//i, '').replace(/^@/, '').replace(/\/$/, '')
  return /^[a-z][a-z0-9_]{3,31}$/i.test(username) ? `@${username}` : null
 }
+
+/** Contact stays unformatted while typing; normalize only when saving/submitting. */
+export function normalizeLeadContact(value: string): string | null {
+ const raw = value.trim()
+ if (raw.length > 120) return null
+ const telegram = normalizeLeadTelegram(raw)
+ if (telegram) return telegram
+ if (!/^\+?[0-9\s().-]+$/.test(raw)) return null
+ let digits = raw.replace(/[^0-9]/g, '')
+ if (!raw.startsWith('+')) {
+  if (digits.length === 10) digits = '7' + digits
+  else if (digits.length === 11 && digits.startsWith('8')) digits = '7' + digits.slice(1)
+ }
+ return /^[1-9][0-9]{7,14}$/.test(digits) ? '+' + digits : null
+}

@@ -33,6 +33,21 @@ class IntakeTest(unittest.TestCase):
         with leads.connect(self.path) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM leads').fetchone()[0],0)
 
+    def test_phone_contact_persists_and_deduplicates_across_formats(self):
+        first = leads.save(self.path, {**self.body, 'telegram': '8 (999) 123-45-67'}, '1', '2', now=1000)
+        second = leads.save(self.path, {**self.body, 'telegram': '+7 999 1234567'}, '1', '2', now=1001)
+        self.assertEqual(first, (second[0], False))
+        self.assertTrue(second[1])
+        leads.initialize(self.path)
+        with leads.connect(self.path) as db:
+            rows = db.execute('SELECT telegram FROM leads').fetchall()
+            self.assertEqual([row['telegram'] for row in rows], ['+79991234567'])
+            self.assertEqual(db.execute('SELECT count(*) FROM notifications').fetchone()[0], 2)
+        self.assertEqual(leads.normalize_contact('9991234567'), '+79991234567')
+        self.assertEqual(leads.normalize_contact('+44 20 7946 0958'), '+442079460958')
+        for value in ['', '12345', '+00000000', '@12345', 'abc +79991234567', '@@username', 'https://example.ru']:
+            self.assertIsNone(leads.normalize_contact(value))
+
     def test_concurrent_duplicates_are_one_durable_lead(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda _: leads.save(self.path,self.body,'1','2',now=1000),range(8)))
@@ -112,6 +127,13 @@ class IntakeTest(unittest.TestCase):
         self.assertIn('\nhttp2\n',config)
         self.assertNotIn('insecure',config)
         self.assertEqual(args[:2],['curl','--disable'])
+        with patch.object(leads.subprocess, 'run', return_value=result) as call:
+            leads.send_notification('fake-test-token', {**row, 'telegram': '+79991234567'})
+        line = next(line for line in call.call_args.kwargs['input'].splitlines() if line.startswith('data-binary = '))
+        payload = json.loads(json.loads(line.removeprefix('data-binary = ')))
+        self.assertIn('Телефон: +79991234567', payload['text'])
+        self.assertNotIn('Telegram:', payload['text'])
+
 
 if __name__=='__main__':
     unittest.main()

@@ -1,6 +1,6 @@
 import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator'
 
-/** Заявка с формы на сайте: сайт обязателен, Telegram обязателен. */
+/** Заявка с формы на сайте: сайт и контакт (Telegram или телефон) обязательны. */
 export class SiteLeadDto {
 	@IsString()
 	@MaxLength(300)

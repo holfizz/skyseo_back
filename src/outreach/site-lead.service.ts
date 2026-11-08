@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PrismaService } from '../prisma/prisma.service'
 import { SiteLeadDto } from './dto/site-lead.dto'
-import { validateLeadSite, normalizeLeadTelegram } from './site-lead.validation'
+import { validateLeadSite, normalizeLeadContact } from './site-lead.validation'
 
 const SITE_LEAD_SECONDARY_CHAT_ID = '7271373084'
 
@@ -24,8 +24,10 @@ export class SiteLeadService {
 	async create(dto: SiteLeadDto) {
         const { domain, error } = validateLeadSite(dto.site ?? '')
         if (error) throw new BadRequestException(error)
-        const telegram = normalizeLeadTelegram(dto.telegram ?? '')
-        if (!telegram) throw new BadRequestException('Укажите Telegram: @username или ссылку t.me/username')
+        const contact = normalizeLeadContact(dto.telegram ?? '')
+        if (!contact) throw new BadRequestException('Укажите Телеграм или номер телефона')
+        const telegram = contact.startsWith('@') ? contact : null
+        const phone = telegram ? null : contact
 
 		const auto = !!dto.auto
 
@@ -33,9 +35,9 @@ export class SiteLeadService {
 			data: {
 				domain,
 				telegram,
-				phone: null,
+				phone,
 				// Заявка с Telegram сразу попадает в очередь менеджеру.
-				telegramManual: true,
+				telegramManual: !!telegram,
 				channel: auto ? 'Автосохранение с сайта' : 'Заявка с сайта',
 				status: 'NEW',
 				message: auto
@@ -48,14 +50,14 @@ export class SiteLeadService {
 		})
 
 		// Уведомление не должно мешать сохранению заявки, если Telegram недоступен.
-		this.notifyAdmin({ domain, telegram, auto }).catch(e =>
+		this.notifyAdmin({ domain, telegram, phone, auto }).catch(e =>
 			this.log.warn(`Не отправил уведомление о заявке: ${e}`),
 		)
 
 		return { ok: true }
 	}
 
-	private async notifyAdmin(l: { domain: string; telegram: string; auto: boolean }) {
+	private async notifyAdmin(l: { domain: string; telegram: string | null; phone?: string | null; auto: boolean }) {
 		const token = this.config.get<string>('TELEGRAM_BOT_TOKEN')
 		const adminId = this.config.get<string>('TELEGRAM_ADMIN_ID')
 		if (!token || token.length < 20 || token === 'dummy-token') return
@@ -70,7 +72,7 @@ export class SiteLeadService {
 		const text =
 			`${head}\n` +
 			`🌐 https://${l.domain}\n` +
-			`✈️ Telegram: ${l.telegram}`
+			(l.phone ? `☎️ Телефон: ${l.phone}` : `✈️ Telegram: ${l.telegram}`)
 
 		const results = await Promise.allSettled(chatIds.map(async chatId => {
 			const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

@@ -43,7 +43,10 @@ backend, outreach, admin API and background campaign workers are not started.
 ## Application data and delivery
 
 `POST /v1/api/lead` preserves the current form payload `{site,telegram,auto?}` and
-returns `{ok:true,id,duplicate}` only after committing the application and its
+accepts a Telegram username/link or a phone number in the legacy `telegram` field.
+Phones normalize to `+<digits>` on submission; no input mask or mode switching.
+SQLite retains the same column for compatibility; notifications label phones
+as phone numbers. It returns `{ok:true,id,duplicate}` only after committing the application and its
 notification outbox. Site/Telegram validation is performed server-side. JSON is
 limited to 4 KiB, unrelated browser origins are rejected, and nginx rate-limits
 submissions. Ten-minute normalized duplicates reuse the original ID and outbox.

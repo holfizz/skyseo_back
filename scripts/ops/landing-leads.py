@@ -47,6 +47,23 @@ def initialize(path):
         db.executescript(SCHEMA)
     os.chmod(path, 0o600)
 
+def normalize_contact(value):
+    if not isinstance(value, str) or len(value.strip()) > 120:
+        return None
+    raw = value.strip()
+    username = re.sub(r'^(?:https?://)?(?:t\.me|telegram\.me)/', '', raw, flags=re.I).removeprefix('@').removesuffix('/')
+    if re.fullmatch(r'[a-z][a-z0-9_]{3,31}', username, re.I | re.ASCII):
+        return '@' + username
+    if not re.fullmatch(r'\+?[0-9\s().-]+', raw):
+        return None
+    digits = re.sub(r'[^0-9]', '', raw)
+    if not raw.startswith('+'):
+        if len(digits) == 10:
+            digits = '7' + digits
+        elif len(digits) == 11 and digits.startswith('8'):
+            digits = '7' + digits[1:]
+    return '+' + digits if re.fullmatch(r'[1-9][0-9]{7,14}', digits) else None
+
 def validate(body):
     if not isinstance(body, dict):
         raise ValueError('Ожидается объект JSON')
@@ -65,15 +82,13 @@ def validate(body):
             raise ValueError()
     except (ValueError, UnicodeError):
         raise ValueError('Проверьте адрес сайта') from None
-    if not isinstance(contact, str) or len(contact) > 120:
-        raise ValueError('Укажите Telegram')
-    username = re.sub(r'^(?:https?://)?(?:t\.me|telegram\.me)/', '', contact.strip(), flags=re.I).lstrip('@').rstrip('/')
-    if not re.fullmatch(r'[a-z][a-z0-9_]{3,31}', username, re.I):
-        raise ValueError('Укажите Telegram: @username или ссылку t.me/username')
+    contact = normalize_contact(contact)
+    if contact is None:
+        raise ValueError('Укажите Телеграм или номер телефона')
     auto = body.get('auto', False)
     if not isinstance(auto, bool):
         raise ValueError('Некорректный тип auto')
-    return domain, '@' + username, auto
+    return domain, contact, auto
 
 def save(path, body, primary, secondary='7271373084', now=None):
     site, telegram, auto = validate(body)
@@ -93,7 +108,8 @@ def save(path, body, primary, secondary='7271373084', now=None):
 
 def send_notification(token, row):
     head = 'Автосохранение: форму заполнили, но не отправили' if row['auto'] else 'Заявка с сайта: бесплатный тест'
-    text = f"{head}\nСайт: https://{row['site']}\nTelegram: {row['telegram']}\nЗаявка: {row['lead_id']}"
+    contact_label = 'Телефон' if row['telegram'].startswith('+') else 'Telegram'
+    text = f"{head}\nСайт: https://{row['site']}\n{contact_label}: {row['telegram']}\nЗаявка: {row['lead_id']}"
     payload = json.dumps({'chat_id':row['chat_id'], 'text':text, 'disable_web_page_preview':True})
     # This host reaches Bot API reliably over HTTP/2. Pass secrets through stdin,
     # not argv/files; curl retains normal hostname/SNI/certificate verification.
@@ -176,7 +192,7 @@ def handler(path, primary, secondary, allowed_hosts):
                 body = json.loads(self.rfile.read(length))
                 lead_id, duplicate = save(path, body, primary, secondary)
             except (ValueError, UnicodeError):
-                return self.reply(400, {'ok':False, 'message':'Проверьте адрес сайта и Telegram'})
+                return self.reply(400, {'ok':False, 'message':'Проверьте адрес сайта и контакт'})
             except sqlite3.Error:
                 return self.reply(503, {'ok':False, 'message':'Не удалось сохранить заявку. Попробуйте еще раз'})
             self.reply(200, {'ok':True, 'id':lead_id, 'duplicate':duplicate})
