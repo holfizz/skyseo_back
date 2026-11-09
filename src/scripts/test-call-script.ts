@@ -40,7 +40,7 @@ async function main() {
 	assert.equal((html.match(/<article>/g) || []).length, 9)
 	const presentation = renderCallPresentationHtml({ ...brief, companyName: 'Тестовая компания', addressee: null, generatedAt: new Date(), region: 'Москва', measuredAt: new Date('2026-10-12'), keywords: brief.keywords.map(keyword => ({ ...keyword, volume: null, competitors: keyword.competitors.map(other => ({ ...other, url: 'https://competitor.ru/catalog' })) })) })
 	assert.ok((presentation.match(/data-slide-id=/g) || []).length >= 5)
-	assert.ok(presentation.includes('60+ примеров работ') && presentation.includes('Выберем следующий шаг'))
+	assert.ok(presentation.includes('60+ примеров работ') && presentation.includes('С чего начнем на вашем сайте'))
 	assert.ok(!presentation.includes('undefined'))
 	writeFileSync('/private/tmp/skyseo-call-script-fixture.json', JSON.stringify({ ...context, crmLead: { ...context.crmLead, id: 'crm-test' }, script }))
 	writeFileSync('/private/tmp/skyseo-call-script-fixture.html', renderCallScriptHtml(script))

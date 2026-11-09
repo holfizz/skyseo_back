@@ -1,0 +1,48 @@
+{
+  "source": "skyseo_front/app/cases/casesData.ts FEATURED",
+  "verifiedAt": "2026-11-09",
+  "cases": [
+    {
+      "id": "zerkalo",
+      "title": "Стекло и зеркала",
+      "color": "#275b47",
+      "metric": "86 → 2",
+      "metricLabel": "место в Яндексе",
+      "category": "Производство",
+      "niche": "Производство стекла и зеркал на заказ",
+      "region": "Яндекс, Москва",
+      "domain": "зеркало-стекло.рф",
+      "logo": "zerkalo.png",
+      "image": "https://skyseo.site/cases/tv/zerkalo.jpg",
+      "href": "https://skyseo.site/cases/zerkalo"
+    },
+    {
+      "id": "pribor",
+      "title": "Прибор-Р",
+      "color": "#2956a5",
+      "metric": "10 из 14",
+      "metricLabel": "запросов в топ-3",
+      "category": "B2B",
+      "niche": "Газоанализаторы и течеискатели",
+      "region": "Яндекс, Москва",
+      "domain": "pribor-r.ru",
+      "logo": "pribor.svg",
+      "image": "https://skyseo.site/cases/tv/pribor.jpg",
+      "href": "https://skyseo.site/cases/pribor"
+    },
+    {
+      "id": "klinmetiz",
+      "title": "Клинметиз",
+      "color": "#7a4832",
+      "metric": "ТОП-10",
+      "metricLabel": "по профильным запросам",
+      "category": "Промышленность",
+      "niche": "Метизный завод",
+      "region": "Яндекс, Московская область",
+      "domain": "klinmetiz.ru",
+      "logo": "klinmetiz.png",
+      "image": "https://skyseo.site/cases/serp/52.jpg",
+      "href": "https://skyseo.site/cases/klinmetiz"
+    }
+  ]
+}

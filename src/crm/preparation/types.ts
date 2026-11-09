@@ -20,5 +20,5 @@ export type Research = {
  issues: Array<{phase: PreparationPhase; message: string}>; completed: PreparationPhase[];
  trial: 'CONFIRMED' | 'UNCONFIRMED' | 'UNAVAILABLE'; createdAt: string
 }
-export type DeckSlide = {id: string; kind: 'COVER' | 'POSITIONS' | 'COMPARISON' | 'POTENTIAL' | 'CASE' | 'ADVANTAGES' | 'PORTFOLIO' | 'NEXT' | 'KEYWORDS'; title: string; comparisonId?: string; keywordOffset?: number}
+export type DeckSlide = {id: string; kind: 'COVER' | 'FOCUS' | 'POSITIONS' | 'COMPARISON' | 'POTENTIAL' | 'CASE' | 'ADVANTAGES' | 'PORTFOLIO' | 'NEXT' | 'KEYWORDS'; title: string; comparisonId?: string; keywordOffset?: number}
 export const PHASES: PreparationPhase[] = ['SITE','KEYWORDS','POSITIONS','COMPETITORS','DOCUMENTS']

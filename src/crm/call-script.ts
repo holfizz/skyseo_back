@@ -1,5 +1,5 @@
 import type { Research, DeckSlide } from './preparation/types'
-import { scenarioRows } from '../report/call-presentation.template'
+import { measuredKeywords, scenarioRows } from '../report/call-presentation.template'
 export type CallQuestion = { key: string; text: string; answer: string; known: boolean; kind?: 'datetime'; optional?: boolean; choices?: Array<{label:string;value:string}>; when?: {key:string;values:string[]} }
 export type CallStep = { id: string; title: string; slides: number[]; say: string; questions: CallQuestion[]; commentKey: string; comment: string; hints: Record<string, string> }
 export type CallScript = { name: string; site: string; steps: CallStep[] }
@@ -97,10 +97,10 @@ export function buildCallScript(context:Context,brief:Brief|null,prepared?:{rese
  const provider=q('seoProvider','Кто занимается SEO?',{choices:choices([['AGENCY','Агентство'],['IN_HOUSE','В штате'],['FREELANCER','Фрилансер'],['UNKNOWN','Не знаю']]),when:{key:'hasSeo',values:['YES']}})
  const satisfaction=q('seoSatisfied','А насколько вас устраивают текущие результаты?',{choices:choices([['YES','Устраивают'],['PARTIAL','Частично'],['NO','Не устраивают'],['UNKNOWN','Не знаю']]),when:{key:'hasSeo',values:['YES']}})
  if(values.currentSeo){provider.known=true;satisfaction.known=true}
- const steps=[step('hello','Знакомство',`${greeting?greeting+', здравствуйте!':'Здравствуйте!'} Как у вас дела?\n\nСмотрите, я подготовил небольшой разбор вашего сайта.${statements?' Я '+statements+' и нашел несколько интересных моментов.':''} Но сначала хотел бы пару вещей уточнить.`,[],'callIntroComment','cover'),step('discovery','Перед презентацией','Чтобы разбор был полезен для ваших задач, уточню пару вещей.',[hasSeo,provider,satisfaction,q('seoGoal','Какая у вас сейчас основная задача: больше заявок или продвижение конкретных направлений?'),q('priorityCategories','Какие товары, услуги или регионы сейчас в приоритете?')],'callDiscoveryComment',undefined,{'Если заинтересован':'«Понял вас. Тогда давайте покажу, что удалось найти».','Если уже есть агентство':'«Понял. А насколько вас устраивают текущие результаты?»'})]
+ const steps=[step('hello','Знакомство',`${greeting?greeting+', здравствуйте!':'Здравствуйте!'} Как у вас дела?\n\nСмотрите, я подготовил небольшой разбор вашего сайта.${statements?' Я '+statements+' и нашел несколько интересных моментов.':''} Но сначала хотел бы пару вещей уточнить.`,[],'callIntroComment','cover'),step('discovery','Перед презентацией','Чтобы разбор был полезен для ваших задач, уточню пару вещей.',[hasSeo,provider,satisfaction,q('seoGoal','Какая у вас сейчас основная задача: больше заявок или продвижение конкретных направлений?'),q('priorityCategories','Какие товары, услуги или регионы сейчас в приоритете?')],'callDiscoveryComment',slides.some(s=>s.id==='focus')?'focus':undefined,{'Если заинтересован':'«Понял вас. Тогда давайте покажу, что удалось найти».','Если уже есть агентство':'«Понял. А насколько вас устраивают текущие результаты?»'})]
  for(const slide of slides){
   if(slide.kind==='POSITIONS'){
-   const measured=research.keywords.filter(k=>!k.error&&k.measuredAt),ranked=measured.filter(k=>k.position!==null).sort((a,b)=>a.position!-b.position!)
+   const measured=measuredKeywords(research),ranked=measured.filter(k=>k.position!==null).sort((a,b)=>a.position!-b.position!)
    const strong=ranked.filter(k=>k.position!<=10).slice(0,2),growth=ranked.filter(k=>k.position!>10).slice(0,2)
    const positions=(rows:typeof ranked)=>rows.map(k=>`по запросу «${k.keyword}» — ${k.position}-е место`).join(', ')
    const start=strong.length?`Смотрите, начнем с хорошего. ${positions(strong).replace(/^по/,'По')}.`:ranked.length?`Смотрите, вот измеренные позиции: ${positions(ranked.slice(0,2))}.`:`В проверенной выдаче сайт по этим запросам не найден. Глубина проверки указана на слайде.`

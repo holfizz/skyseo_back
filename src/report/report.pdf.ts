@@ -49,6 +49,10 @@ export async function renderPdf(html: string, portrait = false): Promise<Buffer>
 	try {
 		const page = await browser.newPage()
 		await page.setContent(html, { waitUntil: 'load' })
+		await page.evaluate(async () => {
+			await document.fonts.ready
+			await Promise.all(Array.from(document.images).map(image => image.decode()))
+		})
 		const pdf = await page.pdf({
 			...(portrait ? { format: 'A4', preferCSSPageSize: true } : { width: '297mm', height: '167mm' }),
 			printBackground: true,

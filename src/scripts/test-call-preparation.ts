@@ -5,7 +5,7 @@ import {validate} from 'class-validator'
 import {publicAddress,publicUrl} from '../crm/preparation/public-web'
 import {rankResult,measureKeyword,SourceUnavailable} from '../crm/preparation/search'
 import {siteCandidates,relevant,comparePages} from '../crm/preparation/research'
-import {buildSlideOutline,renderResearchPresentation} from '../report/call-presentation.template'
+import {buildSlideOutline,renderResearchPresentation,renderCallPresentationHtml,measuredKeywords} from '../report/call-presentation.template'
 import {buildCallScript} from '../crm/call-script'
 import {renderCallScriptHtml} from '../crm/call-script.pdf'
 import {PrepareCallDto} from '../crm/preparation/dto'
@@ -32,6 +32,13 @@ async function main(){
  const comparison=comparePages(page,{...page,url:'https://competitor.example/catalog',text:'Гидронасос Bosch Rexroth. Мощность, напряжение, давление.',links:[]},research.keywords[0],research.comparisons[0].competitor)
  assert.ok(comparison?.apply);assert.equal(comparePages(page,{...page,url:'https://competitor.example/catalog'},research.keywords[0],research.comparisons[0].competitor),null,'Identical pages do not prove a competitor advantage');assert.ok(!comparison?.clientFinding.includes('нет'))
  const slides=buildSlideOutline(research),script=buildCallScript({firstName:'Иван',crmLead:{qualification:{seoGoal:'Больше заявок',hasSeo:'NO',budgetComment:'Записано'},budgetComment:'50000'}},null,{research,slides})
+ assert.equal(slides[script.steps.find(s=>s.id==='discovery')!.slides[0]-1].kind,'FOCUS','Business questions must point to the actual new slide')
+ const missing={...research,keywords:research.keywords.map(k=>({...k,measuredAt:undefined,volumeAt:undefined}))}
+ assert.equal(measuredKeywords(missing).length,0)
+ assert.ok(!buildSlideOutline(missing).some(s=>s.kind==='POSITIONS'||s.kind==='POTENTIAL'),'Unmeasured keywords cannot become rankings or demand')
+ const legacy=renderCallPresentationHtml({domain:'legacy.example',companyName:'<script>unsafe</script>',addressee:null,region:null,measuredAt:null,generatedAt:new Date(),keywords:[{keyword:'legacy query',position:3,volume:1000,competitors:[]}]})
+ assert.ok(!legacy.includes('data-slide-id="positions"')&&!legacy.includes('data-slide-id="potential"'),'Old undated data must not appear as measured evidence')
+ assert.ok(legacy.includes('&lt;script&gt;unsafe&lt;/script&gt;')&&!legacy.includes('<script>unsafe'))
  for(const step of script.steps)for(const number of step.slides)assert.ok(slides[number-1],step.id)
  const compStep=script.steps.find(s=>s.id==='comparison-test')!;assert.equal(slides[compStep.slides[0]-1].kind,'COMPARISON');assert.ok(compStep.say.includes('competitor.example')&&compStep.say.includes('3-м'))
  assert.ok(script.steps.find(s=>s.id==='potential')?.say.includes('1,8'))
