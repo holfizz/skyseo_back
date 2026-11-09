@@ -1,0 +1,8 @@
+[Unit]
+Description=Local SkySEO operator database and encryption-key backup
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/skyseo-operator/backup-operator.py
+UMask=0077

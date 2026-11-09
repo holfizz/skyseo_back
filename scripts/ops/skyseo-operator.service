@@ -1,0 +1,25 @@
+[Unit]
+Description=SkySEO internal CRM and Telegram API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=skyseo
+Group=skyseo
+WorkingDirectory=/srv/skyseo/back
+EnvironmentFile=/etc/skyseo-operator.env
+ExecStart=/opt/skyseo-node/bin/node dist/src/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/skyseo/back /var/lib/skyseo-operator
+MemoryMax=850M
+
+[Install]
+WantedBy=multi-user.target

@@ -4,9 +4,14 @@ import { NestFactory } from '@nestjs/core'
 import { json, urlencoded } from 'express'
 import helmet from 'helmet'
 import { AppModule } from './app.module'
+import { OperatorModule } from './operator.module'
 
 async function bootstrap() {
-	const app = await NestFactory.create(AppModule)
+	const operator = process.env.SKYSEO_RUNTIME === 'operator'
+	if (operator && (!process.env.DATABASE_URL || (process.env.JWT_SECRET?.length ?? 0) < 32 || (process.env.SECRETS_KEY?.length ?? 0) < 32)) {
+		throw new Error('Operator runtime requires DATABASE_URL, JWT_SECRET and SECRETS_KEY (at least 32 characters each for keys)')
+	}
+	const app = await NestFactory.create(operator ? OperatorModule : AppModule)
 
 	// Дефолт express — 100 KB. import.json одного прогона парсера выдачи
 	// весит 1-2 MB (весь топ-50 по каждому ключу + контакты), с дефолтом
@@ -65,7 +70,7 @@ async function bootstrap() {
 	)
 
 	const port = process.env.PORT || 3000
-	await app.listen(port, '0.0.0.0')
+	await app.listen(port, process.env.HOST || (operator ? '127.0.0.1' : '0.0.0.0'))
 	console.log(`🚀 Server running on http://localhost:${port}/v1/api`)
 }
 
