@@ -63,14 +63,8 @@ function measurementSource(research: Research) {
  const dates = [...new Set(measuredKeywords(research).map(k => date(k.measuredAt)))]
  return dates.length ? `Яндекс, ${research.region.name}. Замеры ${dates.join(', ')}.` : `Регион: ${research.region.name}.`
 }
-function paperStats(research: Research) {
- const measured = measuredKeywords(research), top = measured.filter(k => k.position !== null && k.position <= 10)
- return `<div class="paper-stack"><div class="paper-back"></div><div class="stat-paper">
-  <div class="paper-label">${esc(research.domain)}</div><strong class="paper-total">${measured.length}</strong>
-  <p>запросов с замером</p><div class="paper-stats"><div><b>${top.length}</b><span>в топ-10</span></div>
-  <div><b>${measured.length - top.length}</b><span>за топ-10</span></div></div>
-  <div class="paper-chart">${measured.length ? measured.slice(0, 12).map(k => `<span class="${k.position !== null && k.position <= 10 ? 'in-top' : ''}"></span>`).join('') : '<small>Позиции еще не измерены</small>'}</div>
-  <small>${esc(measurementSource(research))}</small></div></div>`
+function coverVisual() {
+ return `<div class="cover-visual"><img src="${asset('editorial-focus-v1.png')}" alt="Художественная иллюстрация оптики в серо-синей гамме"></div>`
 }
 function comparisonPanel(research: Research, kind: 'client' | 'competitor', c: Research['comparisons'][number]) {
  const mine = kind === 'client', image = mine ? c.clientImage : c.image
@@ -86,8 +80,8 @@ function slideContent(research: Research, slide: DeckSlide): { body: string; que
   case 'COVER': return {
    body: `<div class="proposal-cover"><div class="cover-message"><span class="soft-label">SEO и продвижение в нейросетях</span>
     <p>Покажем, где сайт сейчас.<br>Обсудим, куда двигаться дальше.</p><div class="domain-sticker">${esc(research.domain)}</div>
-    <small>${esc(research.region.name)}${research.region.assumed ? ' (регион требует уточнения)' : ''}</small></div>${paperStats(research)}</div>`,
-   question: 'Что вы хотели бы изменить в привлечении клиентов с сайта?',
+    <small>${esc(research.region.name)}${research.region.assumed ? ' (регион требует уточнения)' : ''}</small></div>${coverVisual()}</div>`,
+   source: measurementSource(research), question: 'Что вы хотели бы изменить в привлечении клиентов с сайта?',
   }
   case 'FOCUS': {
    const topics = [...new Set(research.keywords.map(k => k.group || k.keyword))].slice(0, 3)
@@ -102,8 +96,8 @@ function slideContent(research: Research, slide: DeckSlide): { body: string; que
    const top = ranked.filter(k => k.position! <= 10).length
    const rows = [...ranked.slice(0, 3), ...measured.filter(k => k.position === null)].slice(0, 4)
    return { body: `<div class="positions-layout"><div class="position-map"><div class="count-pair"><div><strong>${top}</strong><span>в топ-10</span></div>
-    <div><strong>${measured.length - top}</strong><span>за топ-10</span></div></div><div class="visibility-blocks">${measured.slice(0, 40).map(k => `<span class="${k.position !== null && k.position <= 10 ? 'in-top' : ''}"></span>`).join('')}</div>
-    <small>Один квадрат = один проверенный запрос${measured.length > 40 ? '. Показаны первые 40 замеров' : ''}</small><p>${measured.length} замеров из ${research.keywords.length} выбранных фраз</p></div>
+    <div><strong>${measured.length - top}</strong><span>за топ-10</span></div></div>
+    <p>${measured.length} замеров из ${research.keywords.length} выбранных фраз</p></div>
     <div class="position-examples">${rows.map(k => `<div class="position-row"><span>${esc(k.keyword)}</span><b>${rank(k.position, k.scanned)}</b></div>`).join('')}
     <small>Число справа = место сайта. Знак &gt; означает отсутствие в проверенной глубине.</small></div></div>`,
     source: measurementSource(research), question: 'По каким из этих запросов вам особенно нужны обращения?',
@@ -119,7 +113,7 @@ function slideContent(research: Research, slide: DeckSlide): { body: string; que
   case 'POTENTIAL': {
    const rows = scenarioRows(research)
    return { body: `<div class="scenario-label">Условный сценарий. Уточним по вашей аналитике</div><div class="conversion-flow"><div><b>6%</b><span>в переходы</span></div><i>→</i><div><b>3%</b><span>в заявки</span></div><i>→</i><div><b>20%</b><span>в сделки</span></div></div>
-    <div class="demand-papers">${rows.slice(0, 3).map(k => `<div class="demand-paper"><span>${esc(k.keyword)}</span><strong>${num(k.volume!)}</strong><small>показов Wordstat</small><div><b>${num(k.volume! * .06 * .03)}</b><span>заявки в примере</span></div></div>`).join('')}</div>
+    <div class="demand-grid">${rows.slice(0, 3).map(k => `<div class="demand-card"><span>${esc(k.keyword)}</span><strong>${num(k.volume!)}</strong><small>показов Wordstat</small><div><b>${num(k.volume! * .06 * .03)}</b><span>заявки в примере</span></div></div>`).join('')}</div>
     <p class="quiet-note">Спрос × 6% × 3% = пример заявок. Проценты условные. Частоты не складываем.</p>`,
     source: `Wordstat, ${research.region.name}. Даты ${[...new Set(rows.map(k => date(k.volumeAt)))].join(', ')}. Широкое соответствие.`,
     question: 'Сколько заявок из поиска вы получаете сейчас?',
@@ -142,9 +136,9 @@ function slideContent(research: Research, slide: DeckSlide): { body: string; que
    const topics = new Set(tokens(research.keywords.map(k => k.keyword).join(' ')))
    const related = (label: string) => tokens(label).filter(t => topics.has(t)).length
    const examples = [...portfolio.items].sort((a, b) => related(b.label) - related(a.label))
-   return { body: `<div class="case-fan">${featured.map((c, i) => `<a class="fan-card fan-${i}" href="${url(c.href)}" style="--case-color:${esc(c.color)}">
-    <div class="fan-brand"><img src="${asset(`case-cards/${c.logo}`, c.logo.endsWith('.svg') ? 'image/svg+xml' : 'image/png')}" alt="${esc(c.title)}"><span>${esc(c.category)}</span></div>
-    <h2>${esc(c.title)}</h2><p>${esc(c.niche)}</p><strong>${esc(c.metric)}</strong><span class="fan-metric-label">${esc(c.metricLabel)}</span>
+   return { body: `<div class="featured-case-grid">${featured.map(c => `<a class="portfolio-feature" href="${url(c.href)}" style="--case-color:${esc(c.color)}">
+    <div class="case-brand"><img src="${asset(`case-cards/${c.logo}`, c.logo.endsWith('.svg') ? 'image/svg+xml' : 'image/png')}" alt="${esc(c.title)}"><span>${esc(c.category)}</span></div>
+    <h2>${esc(c.title)}</h2><p>${esc(c.niche)}</p><strong>${esc(c.metric)}</strong><span class="case-metric-label">${esc(c.metricLabel)}</span>
     <small>${esc(c.region)}</small></a>`).join('')}</div><div class="portfolio-ribbon">${examples.slice(0, 8).map(item => `<a href="https://skyseo.site/cases/serp/${item.id}.jpg"><img src="${asset(`portfolio/${item.id}.jpg`, 'image/jpeg')}" alt="${esc(item.label)}"><span>${esc(item.label)}</span></a>`).join('')}</div>`,
     source: 'Примеры опубликованных работ. Карточки ведут к кейсам, миниатюры открывают полные снимки выдачи.',
     question: 'Какие примеры ближе к вашему бизнесу?',
@@ -155,7 +149,7 @@ function slideContent(research: Research, slide: DeckSlide): { body: string; que
    const offer = confirmed ? '5 дней бесплатно на вашем сайте' : research.trial === 'UNAVAILABLE' ? 'План под задачи вашего сайта' : 'Начнем с оценки сайта для бесплатного теста'
    const steps = confirmed ? ['Выбираем запросы', 'Проводим тест', 'Сравниваем позиции'] : ['Выбираем направление', 'Специалист оценивает сайт', 'Согласуем следующий шаг']
    return { body: `<div class="next-layout"><div><div class="next-offer">${offer}</div><div class="next-domain">${esc(research.domain)}</div><div class="next-steps">${steps.map(t => `<div>${t}</div>`).join('')}</div></div>
-    <img class="next-art" src="${asset('free-test-still-life.png')}" alt="Иллюстрация работы с сайтом"></div>`,
+    <img class="next-art" src="${asset('editorial-focus-v1.png')}" alt="Художественная иллюстрация оптики"></div>`,
     question: confirmed ? 'Запускаем тест по согласованному направлению?' : 'Передаем сайт специалисту и выбираем подходящий формат?',
    }
   }
